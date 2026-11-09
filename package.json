@@ -1,0 +1,14 @@
+{
+  "name": "herdr-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs mod/harness/*.test.mjs",
+    "install:local": "node scripts/install.mjs",
+    "verify:install": "node scripts/verify-install.mjs",
+    "rollback": "node scripts/rollback.mjs"
+  }
+}

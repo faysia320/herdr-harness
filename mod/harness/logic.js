@@ -1,0 +1,56 @@
+// 대장 값으로 화면 문구를 계산한다. Herdr를 가져오지 않아 node로 바로 시험할 수 있다.
+const IDLE_STAGE = { QUEUED: "research", RESEARCHING: "research", READY_TO_IMPLEMENT: "implement", IMPLEMENTING: "implement", QA: "qa" };
+const RESULT = { ok: "완료", approved: "승인", revise: "수정 요청", rejected: "반려", "decision-needed": "결정 필요", "scope-violation": "범위 위반", empty: "결과 비어 있음", "no-result": "결과 없음", "fingerprint-mismatch": "지문 불일치", "skill-mismatch": "스킬 불일치", stopped: "중단" };
+const TONE = { ok: "good", approved: "good", PASS: "good", "CONDITIONAL PASS": "warn", revise: "warn", stopped: "warn", BLOCKED: "warn", "decision-needed": "warn" };
+const STATUS = { running: "진행 중", lost: "유실", stopped: "중단" };
+
+const time = (at) => { const n = Date.parse(at ?? ""); return Number.isNaN(n) ? 0 : n; };
+const activeRun = (task) => (task.current ? task.runs?.[task.current.run] : null);
+const running = (task) => activeRun(task)?.status === "running";
+const baseName = (path) => path.replace(/\/+$/, "").split("/").at(-1);
+
+export const span = (ms) => {
+  const m = Math.floor(Math.max(0, ms) / 60000);
+  if (m < 1) return "1분 미만";
+  if (m < 60) return `${m}분`;
+  return m % 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : `${Math.floor(m / 60)}시간`;
+};
+
+// Lead CLI의 위임 전 검사(swh.mjs checkDispatch) 가운데 의존성·동시 실행 상한·파일 겹침만 옮겼다. 위임은 CLI가 다시 판정하므로 여기 값은 안내용이다.
+// 실행 중·막힘·끝난 업무는 기다리는 상태가 아니라 null, 막는 조건이 없으면 []를 돌려준다.
+export function waitReasons(task, ledger, maxParallel, exempt = []) {
+  if (["DONE", "FAILED", "BLOCKED"].includes(task.state) || running(task)) return null;
+  const tasks = ledger.tasks ?? {}, reasons = [];
+  const pending = (task.depends ?? []).filter((id) => tasks[id]?.state !== "DONE");
+  if (pending.length) reasons.push({ text: `선행 업무 대기: ${pending.join(", ")}` });
+  const count = Object.values(tasks).filter(running).length;
+  if (maxParallel && count >= maxParallel) reasons.push({ text: `동시 실행 상한 ${count}/${maxParallel}` });
+  if ((task.pending ?? IDLE_STAGE[task.state]) === "implement") {
+    for (const other of Object.values(tasks)) {
+      if (other.id === task.id || !["IMPLEMENTING", "QA"].includes(other.state)) continue;
+      const theirs = new Set([...(other.planned_files ?? []), ...(other.candidate?.paths ?? []).map((p) => p.path)]);
+      const clash = (task.planned_files ?? []).filter((f) => !exempt.includes(f) && (theirs.has(f) || [...theirs].some((x) => x.endsWith("/") && f.startsWith(x))));
+      if (!clash.length) continue;
+      const shown = clash.slice(0, 2).map(baseName).join(", ");
+      reasons.push({ text: `파일 겹침: ${other.id} · ${shown}${clash.length > 2 ? ` 외 ${clash.length - 2}개` : ""}`, tip: clash.join("\n") });
+    }
+  }
+  return reasons;
+}
+
+// 실행별 소요 시간과 단계별 합계. 단계 사이 대기 시간은 넣지 않는다.
+export function timeline(runs, now) {
+  const rows = (runs ?? []).map((run) => {
+    const started = time(run.started), live = run.status === "running";
+    const end = live ? now : time(run.ended);
+    const failed = run.outcome && !TONE[run.outcome];
+    return {
+      stage: run.stage, round: run.round ?? null, ms: started && end ? end - started : 0, live, note: run.note ?? null,
+      result: run.outcome ? RESULT[run.outcome] ?? run.outcome : STATUS[run.status] ?? run.status ?? "",
+      tone: live ? "live" : failed ? "bad" : TONE[run.outcome] ?? (STATUS[run.status] ? "warn" : null),
+    };
+  });
+  const totals = new Map();
+  for (const row of rows) totals.set(row.stage, (totals.get(row.stage) ?? 0) + row.ms);
+  return { rows, totals: [...totals].map(([stage, ms]) => ({ stage, ms })) };
+}

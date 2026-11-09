@@ -1,0 +1,171 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { decisions, importantRecords, changes, snapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests } from './attention.js';
+
+const now = Date.parse('2026-11-09T02:00:00Z');
+const task = (id, state, patch = {}) => ({ id, state, title: id, reason: '', awaiting: null, updated: now - 1000, runs: [], history: [], depends: [], ...patch });
+const project = (tasks, events = []) => ({ name: 'fixture', projectId: 'fixture', root: 'D:/fixture', tasks, events, lead: 't7' });
+const transition = (id, from, to, why = '', delta = 1000) => ({ task: id, from, to, why, at: now - delta });
+
+test('현재 막힘만 결정함에 남고 직접 후속 영향·우선순위 순으로 정렬한다', () => {
+  const p = project([task('a', 'BLOCKED', { awaiting: 'decision' }), task('b', 'BLOCKED', { priority: 20 }),
+    task('c', 'QUEUED', { depends: ['a'] }), task('d', 'DONE', { awaiting: 'decision' }), task('e', 'BLOCKED', { archived: true })]);
+  assert.deepEqual(decisions(p).map((d) => d.task.id), ['a', 'b']);
+  assert.equal(decisions(p)[0].affected.length, 1);
+  assert.equal(decisions(p)[0].kind, '방향 결정');
+  assert.match(decisions(p)[0].reason, /기록되지/);
+});
+
+test('네 대기 종류를 구분하고 읽음은 대장이나 결정함을 바꾸지 않는다', () => {
+  const p = project(['ac-approval', 'decision', 'permission', null].map((awaiting, i) => task(String(i), 'BLOCKED', { awaiting })));
+  const before = JSON.stringify(p), seen = snapshot(p, now);
+  assert.deepEqual(decisions(p).map((d) => d.kind), ['완료 기준 승인', '방향 결정', '권한 결정', '확인 필요']);
+  assert.equal(decisions(p).length, 4); assert.equal(JSON.stringify(p), before);
+  assert.equal(changes(p, seen, now).length, 0);
+  p.tasks[0].state = 'IMPLEMENTING';
+  assert.equal(decisions(p).length, 3);
+});
+
+test('event/history 중복은 합치고 같은 시각의 서로 다른 사건은 보존한다', () => {
+  const e = transition('a', 'QA', 'DONE', 'PASS');
+  const t = task('a', 'DONE', { history: [{ ...e, at: new Date(e.at).toISOString() }] });
+  const p = project([t, task('b', 'FAILED')], [e, transition('b', 'IMPLEMENTING', 'FAILED', '실패')]);
+  assert.equal(importantRecords(p).length, 2);
+  assert.deepEqual(digest(changes(p, null, now)).map((x) => x.kind).sort(), ['failed', 'qa']);
+});
+
+test('updated만 변경되면 새 소식이 아니며 같은 상태의 사유 변경은 다시 보인다', () => {
+  const t = task('a', 'BLOCKED', { reason: '범위 선택', history: [transition('a', 'RESEARCHING', 'BLOCKED')] });
+  const p = project([t]), seen = snapshot(p, now);
+  t.updated = now + 1000;
+  assert.equal(changes(p, seen, now).length, 0);
+  t.reason = '권한 선택';
+  assert.deepEqual(changes(p, seen, now).map((r) => r.kind), ['decision']);
+});
+
+test('해제 후 같은 이유로 다시 막혀도 새 회차가 보인다', () => {
+  const t = task('a', 'BLOCKED', { reason: '선택', history: [transition('a', 'RESEARCHING', 'BLOCKED')] });
+  const p = project([t]), seen = snapshot(p, now);
+  t.history.push(transition('a', 'BLOCKED', 'IMPLEMENTING', '답변', 500), transition('a', 'IMPLEMENTING', 'BLOCKED', '선택', 100));
+  assert.ok(changes(p, seen, now).some((r) => r.kind === 'blocked'));
+});
+
+test('사유 A를 읽고 B를 읽은 뒤 A로 돌아오면 새 변경이다', () => {
+  const t = task('a', 'BLOCKED', { reason: 'A' }), p = project([t]);
+  const first = snapshot(p, now);
+  t.reason = 'B';
+  const second = snapshot(p, now + 1, first);
+  t.reason = 'A';
+  assert.deepEqual(changes(p, second, now).map((r) => r.body), ['A']);
+});
+
+test('오래된 인스턴스의 읽음은 최신 사유의 확인 기준을 되돌리지 않는다', () => {
+  const older = { ...project([task('a', 'BLOCKED', { reason: 'A' })]), observedAt: 100 };
+  const newer = { ...project([task('a', 'BLOCKED', { reason: 'B' })]), observedAt: 200 };
+  const first = snapshot(older, now), second = snapshot(newer, now + 1, first);
+  const lateClick = snapshot(older, now + 2, second);
+  assert.deepEqual(lateClick, second);
+  assert.equal(changes(newer, lateClick, now).length, 0);
+  assert.equal(changes(older, lateClick, now).length, 0);
+});
+
+test('처음은 하루 이내만, 확인 후 늦게 수집된 과거 사건도 누락하지 않는다', () => {
+  const t = task('a', 'DONE', { history: [transition('a', 'QA', 'DONE', '오래된 결과', 90000000)] });
+  const p = project([t]);
+  assert.equal(changes(p, null, now).length, 0);
+  const seen = snapshot(p, now);
+  p.events.push(transition('a', 'QA', 'READY_TO_IMPLEMENT', '뒤늦게 수집', 100000000));
+  assert.equal(changes(p, seen, now).length, 1);
+});
+
+test('사건 파일이 사라졌다 돌아와도 이미 확인한 사건을 반복하지 않는다', () => {
+  const p = project([task('a', 'DONE')], [transition('a', 'QA', 'DONE')]);
+  const first = snapshot(p, now), original = p.events;
+  p.events = [];
+  const second = snapshot(p, now + 1, first);
+  p.events = original;
+  assert.equal(changes(p, second, now).length, 0);
+});
+
+test('확인 기준은 root/id로 분리되며 직렬화·두 인스턴스에 재사용된다', () => {
+  const p = project([task('a', 'DONE')], [transition('a', 'QA', 'DONE')]);
+  const second = JSON.parse(JSON.stringify(snapshot(p, now)));
+  assert.equal(changes(p, second, now).length, 0);
+  assert.equal(projectKey(p), projectKey({ ...p, root: 'd:\\fixture\\' }));
+  assert.notEqual(projectKey(p), projectKey({ ...p, projectId: 'other' }));
+  assert.notEqual(projectKey(p), projectKey({ ...p, root: 'D:/another' }));
+});
+
+test('QA 재작업·실패·QA 통과와 명시적 승인 근거만 분류한다', () => {
+  const p = project([task('a', 'DONE', { approval: { by: 'auto', quote: '자동' } }), task('b', 'FAILED'), task('c', 'READY_TO_IMPLEMENT'),
+    task('d', 'IMPLEMENTING', { approval: { by: 'user', quote: '신규 고객부터', at: new Date(now).toISOString() } })],
+    [transition('a', 'QA', 'DONE'), transition('b', 'IMPLEMENTING', 'FAILED'), transition('c', 'QA', 'READY_TO_IMPLEMENT')]);
+  const r = importantRecords(p);
+  assert.deepEqual(r.map((x) => x.kind).sort(), ['approval', 'failed', 'qa', 'rework']);
+  assert.equal(r.find((x) => x.kind === 'qa').title, '로컬 QA 통과');
+  assert.ok(!JSON.stringify(r).includes('배포 완료'));
+});
+
+test('Lead는 연결이 존재하는 로컬 터미널만 대상으로 삼는다', () => {
+  const p = project([]), live = new Map([['t7', { address: 't7' }], ['t8', { address: 't8', labels: { 'harness.project': 'other' } }]]);
+  assert.equal(leadTerminal(p, live).address, 't7');
+  assert.equal(leadTerminal(p, live, { x_lead: 't8' }), null);
+  assert.equal(leadTerminal(p, live, { x_lead: 'missing' }), null);
+});
+
+test('DONE 뒤 병합·미등록 업무 질문은 BLOCKED 없이 Lead 보고에 보인다', () => {
+  const p = project([task('SW-0045', 'DONE')]);
+  const message = 'PR #793 준비됨; 병합 여부와 콜아웃 업무 답 대기';
+  const t = { address: 't7', state: 'live', status: 'done', created_ms: 10, report: { app: 'claude-code', msg: message } };
+  const live = new Map([['t7', t]]);
+  assert.equal(decisions(p).length, 0);
+  assert.equal(leadReport(p, live).text, message);
+  p.tasks = []; t.status = 'idle';
+  assert.equal(leadReport(p, live).text, message);
+  t.report.msg = '범위 좁게 진행하기로 답변받음';
+  assert.equal(leadReport(p, live).text, t.report.msg);
+});
+
+test('진행 중 상태는 직전 응답의 해결 증거가 아니며 새 응답만 기록을 교체한다', () => {
+  const p = project([]), t = { address: 't7', state: 'live', status: 'done', created_ms: 10, report: { msg: '콜아웃 범위 답 대기' } };
+  const live = new Map([['t7', t]]), previous = leadReport(p, live).remember;
+  t.status = 'working'; t.report.msg = '다른 업무 QA';
+  let report = leadReport(p, live, previous);
+  assert.equal(report.text, '콜아웃 범위 답 대기'); assert.equal(report.progress, '다른 업무 QA'); assert.equal(report.retained, true);
+  t.report = {}; assert.equal(leadReport(p, live, previous).text, previous.text);
+  t.status = 'idle'; t.report.msg = '범위 답변 반영 완료';
+  report = leadReport(p, live, previous);
+  assert.equal(report.text, '범위 답변 반영 완료'); assert.equal(report.retained, false);
+  t.created_ms = 20; t.report = {};
+  assert.equal(leadReport(p, live, previous).available, false);
+});
+
+test('Lead 부재·다른 프로젝트·원격·stale·빈 보고를 질문 없음으로 판정하지 않는다', () => {
+  const p = project([]), t = { address: 't7', state: 'live', status: 'done', report: { msg: '질문' } };
+  const live = new Map([['t7', t]]);
+  for (const candidate of [{ ...p, stale: true }, { ...p, lead: 'missing' }, { ...p, lead: 'remote/t7' }]) {
+    const report = leadReport(candidate, live); assert.equal(report.available, false); assert.match(report.reason, /확인할 수 없습니다/);
+  }
+  t.labels = { 'harness.project': 'other' }; assert.equal(leadReport(p, live).available, false);
+  t.labels = {}; t.report.msg = ' '; assert.equal(leadReport(p, live).available, false);
+  t.report.msg = '질문'; t.state = 'exited'; assert.equal(leadReport(p, live).available, false);
+});
+
+test('질문별 기록은 DONE·보관·Lead 교체·새 보고·읽음과 독립적으로 명시 해소까지 유지한다', () => {
+  const request = { id: 'callout-scope', question: '콜아웃 등록 여부와 범위?', source: 'fixture 실제 질문', task: null, options: [], status: 'open', revision: 1, created: new Date(now).toISOString() };
+  const inbox = decisionInbox(JSON.stringify({ version: 1, project: 'fixture', requests: { [request.id]: request } }), 'fixture');
+  const p = { ...project([task('a', 'DONE', { archived: true })]), requests: inbox.requests };
+  snapshot(p, now); p.lead = 'new-lead';
+  assert.equal(openRequests(p).length, 1);
+  p.tasks = []; assert.equal(openRequests(p).length, 1);
+  p.requests = [{ ...request, status: 'resolved', revision: 2, resolution: { quote: '좁게', source: 'fixture 답변' } }];
+  assert.equal(openRequests(p).length, 0);
+});
+
+test('질문 파일 누락·잘못된 프로젝트·버전·입력은 정상 빈 결정함으로 숨기지 않는다', () => {
+  assert.equal(decisionInbox(null, 'fixture').status, 'missing');
+  for (const text of [undefined, '{broken', '{}', JSON.stringify({ version: 2, project: 'fixture', requests: {} }), JSON.stringify({ version: 1, project: 'other', requests: {} }), JSON.stringify({ version: 1, project: 'fixture', requests: { a: {} } })]) {
+    assert.equal(decisionInbox(text, 'fixture').status, 'error');
+  }
+  assert.equal(decisionInbox(JSON.stringify({ version: 1, project: 'fixture', requests: {} }), 'fixture').status, 'ready');
+});

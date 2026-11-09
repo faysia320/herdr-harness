@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.local/
+mod/harness/decisions.js
+mod/harness/contract.js
+mod/harness/projects.json
+*.local.json
+.env*
+__pycache__/
