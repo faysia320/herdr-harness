@@ -9,6 +9,21 @@ const activeRun = (task) => (task.current ? task.runs?.[task.current.run] : null
 const running = (task) => activeRun(task)?.status === "running";
 const baseName = (path) => path.replace(/\/+$/, "").split("/").at(-1);
 
+// Herdr readTextFile의 한도는 UTF-8 1 MiB다. 호스트에 Node의 Buffer를 요구하지 않는다.
+export function ledgerCapacityNote(raw) {
+  let bytes = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && raw.charCodeAt(i + 1) >= 0xdc00 && raw.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  const ratio = bytes / (1 << 20);
+  if (ratio < 0.75) return null;
+  return `대장 용량 ${Math.ceil(bytes / 1024)} KiB / 1 MiB (${Math.floor(ratio * 100)}%) · ${ratio >= 0.9 ? "읽기 한도 임박" : "용량 주의"} · 프로젝트에서 과거 실행 이력의 분리 보관을 준비하세요.`;
+}
+
 export const span = (ms) => {
   const m = Math.floor(Math.max(0, ms) / 60000);
   if (m < 1) return "1분 미만";

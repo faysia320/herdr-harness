@@ -6,8 +6,8 @@ import * as logic from './logic.js';
 
 // 호스트 경계만 대역으로 바꾸고 실제 load/render/클릭 함수를 실행한다.
 const source = fs.readFileSync(new URL('./main.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export default class Harness', 'class Harness');
-function setup() {
-  const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [];
+function setup(overrides = {}) {
+  const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [], reads = [];
   const terminalList = [{ address: 't7', state: 'live', status: 'working', created_ms: 10 }];
   const spaceList = [{ name: 'fixture', active: true, machine: null }], paneList = [], gitRenders = [];
   const el = () => {
@@ -23,12 +23,14 @@ function setup() {
   };
   const api = { CONTRACT: 1, View: class {}, div: el, svg: el, h_flex: el, v_flex: el,
     ...attention, ...logic, appHome: () => 'fixture-home', readTextFile: async (p) => {
+      reads.push(p);
       const value = files.get(p); if (value instanceof Error) throw value; return value ?? null;
     }, watchFolder: () => new Promise(() => {}), terminals: () => terminalList,
     spaces: () => spaceList, panes: () => paneList, shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
-    theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {} };
+    theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {},
+    GitTree: class {}, nextCommand: () => new Promise(() => {}), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
-  return { ...module, files, store, clicks, commands, texts, terminalList, spaceList, paneList, gitRenders,
+  return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList, gitRenders,
     git: { render(projects) { gitRenders.push(projects); return el(); } }, cx: { notify() {}, stop_propagation() {} } };
 }
 const project = { name: 'fixture', root: 'D:/fixture' };
@@ -39,6 +41,117 @@ const install = (s) => {
   s.files.set(configPath, JSON.stringify({ project: { id: 'fixture', state_dir: 'state' } }));
   s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: task }, lead: { terminal: 't7' } }));
 };
+
+function refreshFixture() {
+  const s = setup(); install(s);
+  const other = { name: 'other', root: 'D:/other' };
+  s.files.set(`${other.root}/.agents/harness/config.json`, JSON.stringify({ project: { id: 'other', state_dir: 'state' } }));
+  s.files.set(`${other.root}/state/ledger.json`, JSON.stringify({ version: 1, project: 'other', tasks: {} }));
+  s.files.set('fixture-home/mods/harness/projects.json', JSON.stringify({ projects: [project, other] }));
+  const v = new s.Harness(); Object.assign(v, { projects: [], expanded: new Set() });
+  v.watch = () => {};
+  const jobs = [], timers = [];
+  const cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); }, timer: { after(ms, fn) { timers.push({ ms, fn }); } } };
+  const drain = async () => { while (jobs.length) await Promise.all(jobs.splice(0)); };
+  const tick = () => { const timer = timers.shift(); assert.equal(timer.ms, 200); timer.fn(cx); };
+  return { ...s, v, other, cx, jobs, timers, drain, tick };
+}
+
+test('대장 용량은 한글·이모지 UTF-8 바이트 기준 75%·90%에서 경고한다', async () => {
+  const limit = 1 << 20;
+  assert.equal(logic.ledgerCapacityNote('a'.repeat(limit * 0.75 - 1)), null);
+  assert.match(logic.ledgerCapacityNote('a'.repeat(limit * 0.75)), /768 KiB.*75%.*용량 주의/);
+  assert.match(logic.ledgerCapacityNote('a'.repeat(Math.ceil(limit * 0.9))), /90%.*읽기 한도 임박/);
+  for (const text of ['가'.repeat(270000), '😀'.repeat(200000), '\ud800'.repeat(270000)]) {
+    const bytes = Buffer.byteLength(text);
+    assert.ok(logic.ledgerCapacityNote(text).includes(`${Math.ceil(bytes / 1024)} KiB`));
+  }
+  const s = refreshFixture();
+  const raw = JSON.stringify({ version: 1, project: 'fixture', tasks: { a: { ...task, detail: '가'.repeat(270000) } } });
+  s.files.set(ledgerPath, raw); s.v.refresh(s.cx); await s.drain(); s.v.render();
+  assert.ok(s.texts.some((text) => text.includes('대장 용량') && text.includes('용량 주의')));
+  assert.equal(s.files.get(ledgerPath), raw);
+  const note = s.v.projects[0].capacityNote;
+  s.files.set(ledgerPath, new Error('1 MiB limit')); s.v.refresh(s.cx, [project.root]); await s.drain();
+  assert.equal(s.v.projects[0].capacityNote, note); assert.equal(s.v.projects[0].stale, true);
+  install(s); s.v.refresh(s.cx, [project.root]); await s.drain();
+  assert.equal(s.v.projects[0].capacityNote, null); assert.equal(s.v.projects[0].stale, false);
+});
+
+test('연속 변경을 묶어 대상만 다시 읽고 다른 프로젝트의 오류·자료를 그대로 유지한다', async () => {
+  const s = refreshFixture(); s.v.refresh(s.cx); await s.drain();
+  const other = s.v.projects[1]; other.stale = true; other.note = '마지막 정상 자료 표시';
+  s.reads.length = 0;
+  for (let i = 0; i < 10; i++) s.v.scheduleRefresh(s.cx, [project.root]);
+  assert.equal(s.timers.length, 1); assert.equal(s.reads.length, 0);
+  s.tick(); await s.drain();
+  assert.equal(s.reads.length, 4);
+  assert.ok(s.reads.every((p) => p.startsWith(project.root)));
+  assert.equal(s.v.projects[1], other); assert.equal(other.note, '마지막 정상 자료 표시');
+  s.reads.length = 0;
+  s.v.scheduleRefresh(s.cx, [project.root]); s.v.scheduleRefresh(s.cx, [s.other.root]);
+  s.tick(); await s.drain(); assert.equal(s.reads.length, 8);
+});
+
+test('조회 도중 변경은 후속 조회에 남고 전체 조회 요청은 대상 조회보다 우선한다', async () => {
+  const s = refreshFixture(); s.v.refresh(s.cx); await s.drain(); s.reads.length = 0;
+  const raw = s.files.get(ledgerPath); let release;
+  s.files.set(ledgerPath, new Promise((resolve) => { release = resolve; }));
+  s.v.refresh(s.cx, [project.root]);
+  await Promise.resolve(); await Promise.resolve();
+  s.v.scheduleRefresh(s.cx, [project.root]); s.tick();
+  assert.equal(s.v.loading, true);
+  s.files.set(ledgerPath, raw); release(raw); await s.drain();
+  assert.equal(s.timers.length, 1); s.tick(); await s.drain();
+  assert.equal(s.reads.filter((p) => p === ledgerPath).length, 2);
+  s.reads.length = 0;
+  s.v.scheduleRefresh(s.cx, [project.root]); s.v.scheduleRefresh(s.cx);
+  s.files.set('fixture-home/mods/harness/projects.json', JSON.stringify({ projects: [s.other] }));
+  s.tick(); await s.drain();
+  assert.deepEqual(s.v.projects.map((p) => p.name), ['other']);
+  assert.equal(s.reads.includes(ledgerPath), false);
+  assert.equal(s.reads[0], 'fixture-home/mods/harness/projects.json');
+});
+
+test('목록 읽기 오류는 부분 갱신으로 지우지 않고 전체 재조회에서 복구한다', async () => {
+  const s = refreshFixture(); s.v.refresh(s.cx); await s.drain();
+  const path = 'fixture-home/mods/harness/projects.json', raw = s.files.get(path);
+  s.files.set(path, '{'); s.v.refresh(s.cx); await s.drain(); assert.ok(s.v.error);
+  s.v.refresh(s.cx, [project.root]); await s.drain(); assert.ok(s.v.error);
+  s.files.set(path, raw); s.v.refresh(s.cx); await s.drain(); assert.equal(s.v.error, null);
+});
+
+test('시각 타이머는 파일을 읽지 않고 60초 재조회는 누락된 변경을 복구한다', async () => {
+  const s = refreshFixture(), intervals = new Map();
+  s.cx.timer.every = (ms, fn) => intervals.set(ms, fn);
+  const errors = [];
+  s.cx.spawn = (fn) => { fn(s.cx).catch((e) => errors.push(e)); };
+  const settle = async () => {
+    for (let i = 0; i < 100 && s.v.loading; i++) await Promise.resolve();
+    assert.equal(s.v.loading, false); assert.deepEqual(errors, []);
+  };
+  s.v.init({}, s.cx); await settle(); s.reads.length = 0;
+  intervals.get(15000)(s.cx); assert.equal(s.reads.length, 0);
+  intervals.get(60000)(s.cx); await settle(); assert.equal(s.reads.length, 9);
+});
+
+test('상태·설정 감시는 프로젝트를 좁히고 제거된 경로와 실패한 감시는 정리한다', async () => {
+  const waiting = new Map();
+  const s = setup({ watchFolder: (dir) => new Promise((resolve, reject) => waiting.set(dir, { resolve, reject })) });
+  install(s); const v = new s.Harness(); v.projects = [await s.load(project)];
+  const calls = [], jobs = [], cx = { spawn(fn) { jobs.push(fn(cx)); } };
+  v.scheduleRefresh = (_cx, roots) => calls.push(roots ?? null);
+  const state = `${project.root}/state`, config = `${project.root}/.agents/harness`, list = 'fixture-home/mods/harness';
+  for (const dir of [state, config, list]) v.watch(dir, cx);
+  for (const dir of [state, config, list]) { waiting.get(dir).resolve(); await Promise.resolve(); }
+  assert.deepEqual(calls, [[project.root], [project.root], null]);
+  v.projects = [];
+  waiting.get(state).resolve(); waiting.get(config).reject(new Error('watch failed'));
+  await Promise.all(jobs.slice(0, 2));
+  assert.equal(v.watched.has(state), false); assert.equal(v.watched.has(config), false);
+  v.projects = [await s.load(project)]; v.watch(config, cx);
+  assert.equal(v.watched.has(config), true);
+});
 
 test('일반 저장소는 전체 보기·브리핑 선택 상태에서도 현재 Git Tree만 표시한다', async () => {
   const s = setup(); install(s);

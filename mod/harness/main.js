@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand } from "herdr";
 import { GitTree } from "./git-tree.js";
-import { span, timeline, waitReasons } from "./logic.js";
+import { span, timeline, waitReasons, ledgerCapacityNote } from "./logic.js";
 import { decisions, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, leadReportKey, decisionInbox, openRequests } from "./attention.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
@@ -77,7 +77,8 @@ async function load(project) {
     const id = config.project.id, dir = `${project.root}/${config.project.state_dir}`;
     empty = { ...empty, dir, projectId: id };
     const observedAt = Date.now();
-    const ledger = parse(await readTextFile(`${dir}/ledger.json`));
+    const ledgerText = await readTextFile(`${dir}/ledger.json`);
+    const ledger = parse(ledgerText);
     if (!ledger) throw new Error("작업 대장을 읽지 못했습니다");
     if (ledger.version !== CONTRACT) throw new Error(`지원하지 않는 계약 v${ledger.version ?? 0}`);
     if (ledger.project !== id) throw new Error("설정과 대장의 프로젝트가 다릅니다");
@@ -93,6 +94,7 @@ async function load(project) {
       .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", project: project.name }));
     const inbox = decisionInbox(await readTextFile(`${dir}/decisions.json`).catch(() => undefined), id);
     return { ...project, projectId: id, dir, tasks, events, lead: ledger.lead?.terminal ?? null, note: null, stale: false, observedAt,
+      capacityNote: ledgerCapacityNote(ledgerText),
       requests: inbox.requests, decisionStatus: inbox.status, decisionNote: inbox.note,
       historyNote: partial ? "사건 이력 일부를 읽지 못해 업무별 이력으로 보완했습니다." : null };
   } catch (e) { return { ...empty, note: String(e.message ?? e) }; }
@@ -104,8 +106,9 @@ export default class Harness extends View {
     this.projects = []; this.open = null; this.showEnded = false; this.seen = null; this.error = null;
     this.allProjects = false; this.expanded = new Set(); this.showChanges = false; this.showTransitions = false;
     this.refresh(cx);
-    // 상대 시각("3분 전")과 진행 시간도 이 타이머로 갱신된다.
-    cx.timer.every(15000, (cx) => this.refresh(cx));
+    // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
+    cx.timer.every(15000, (cx) => cx.notify());
+    cx.timer.every(60000, (cx) => this.refresh(cx));
     cx.timer.every(30000, (cx) => {
       if (this.currentPage() === "git") this.git.refresh(this.shown().find((p) => p.root === this.git.root) ?? this.shown()[0], cx);
     });
@@ -117,39 +120,75 @@ export default class Harness extends View {
     });
   }
 
-  // 대장 폴더 변경을 기다렸다가 다시 읽는다. 감시가 끊기면 15초 타이머가 대신한다.
+  // 짧은 변경 묶음은 한 번만 읽는다. 읽는 도중 들어온 변경도 후속 조회에 남긴다.
+  scheduleRefresh(cx, roots = null) {
+    this.pendingRoots ??= new Set();
+    if (roots === null) this.pendingFull = true;
+    else for (const root of roots) this.pendingRoots.add(norm(root));
+    if (this.refreshTimer) return;
+    this.refreshTimer = true;
+    cx.timer.after(200, (cx) => {
+      this.refreshTimer = false;
+      if (this.loading) return;
+      if (!this.pendingFull && !this.pendingRoots.size) return;
+      const roots = this.pendingFull ? null : [...this.pendingRoots];
+      this.pendingFull = false; this.pendingRoots.clear();
+      this.refresh(cx, roots);
+    });
+  }
+
+  // 상태·설정 폴더를 감시한다. 제거되거나 경로가 바뀐 프로젝트의 감시는 다음 사건에서 끝난다.
   watch(dir, cx) {
     this.watched ??= new Set();
     if (this.watched.has(dir)) return;
     this.watched.add(dir);
     cx.spawn(async (cx) => {
-      try { for (;;) { await watchFolder(dir); this.refresh(cx); } }
-      catch { this.watched.delete(dir); }
+      try {
+        for (;;) {
+          await watchFolder(dir);
+          if (norm(dir) === norm(`${appHome()}/mods/harness`)) this.scheduleRefresh(cx);
+          else {
+            const roots = this.projects.filter((p) => norm(p.dir) === norm(dir) || norm(`${p.root}/.agents/harness`) === norm(dir)).map((p) => p.root);
+            if (!roots.length) break;
+            this.scheduleRefresh(cx, roots);
+          }
+        }
+      } catch { /* 60초 조회에서 다시 감시한다. */ }
+      finally { this.watched.delete(dir); }
     });
   }
 
-  refresh(cx) {
-    if (this.loading) { this.again = true; return; }
+  refresh(cx, roots = null) {
+    if (this.loading) { this.scheduleRefresh(cx, roots); return; }
+    const targets = roots === null ? null : new Set(roots.map(norm));
+    if (targets === null) { this.pendingFull = false; this.pendingRoots?.clear(); }
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const list = parse(await readTextFile(`${appHome()}/mods/harness/projects.json`).catch(() => null));
-        if (!Array.isArray(list?.projects)) throw new Error("mods/harness/projects.json을 읽지 못했습니다");
-        const loaded = await Promise.all(list.projects.map(load));
+        const list = targets === null ? parse(await readTextFile(`${appHome()}/mods/harness/projects.json`).catch(() => null)) : null;
+        if (targets === null && !Array.isArray(list?.projects)) throw new Error("mods/harness/projects.json을 읽지 못했습니다");
+        const loaded = await Promise.all((targets === null ? list.projects : this.projects).map((p) =>
+          targets !== null && !targets.has(norm(p.root)) ? p : load({ name: p.name, root: p.root })));
         const projects = loaded.map((p) => {
+          if (targets !== null && !targets.has(norm(p.root))) return p;
           // 설정 자체를 못 읽으면 동일 폴더의 마지막 자료를 stale로 보존한다. 확인된 다른 ID는 섞지 않는다.
           const previous = this.projects.find((old) => norm(old.root) === norm(p.root) && (p.projectId === null || old.projectId === p.projectId));
           if (p.stale && previous) return { ...previous, stale: true, note: `${p.note} · 마지막 정상 자료 표시` };
           if (p.decisionStatus !== "ready" && previous?.requests?.length) return { ...p, requests: previous.requests, decisionNote: `${p.decisionNote} · 마지막 정상 질문 유지` };
           return p;
         });
-        for (const p of projects) if (p.dir) this.watch(p.dir, cx);
         this.alert(projects);
-        this.projects = projects; this.error = list ? null : "mods/harness/projects.json을 읽지 못했습니다";
+        this.projects = projects;
+        if (targets === null) this.error = null;
+        this.watch(`${appHome()}/mods/harness`, cx);
+        for (const p of projects) {
+          this.watch(`${p.root}/.agents/harness`, cx);
+          if (p.dir) this.watch(p.dir, cx);
+        }
       } catch (e) { this.error = String(e); }
       finally {
         this.loading = false; cx.notify();
-        if (this.again) { this.again = false; this.refresh(cx); }
+        if (this.pendingFull || this.pendingRoots?.size) this.scheduleRefresh(cx, []);
       }
     });
   }
@@ -302,6 +341,7 @@ export default class Harness extends View {
           .bg(lead ? (lead.status === "working" ? t.working : t.done) : t.border)
           .tooltip(lead ? `Lead ${p.lead} · ${lead.status ?? "실행 중"}` : `Lead ${p.lead} · 꺼짐`))))
       .when(Boolean(p.note), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.dim).child(p.note)))
+      .when(Boolean(p.capacityNote), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.blocked).child(p.capacityNote)))
       .when(!p.note && !tasks.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
         .child(svg(ICON("check")).size(12).flex_none()).child("진행 중인 업무 없음")))
       .children(tasks.map((task) => this.task(p, task, live, t)));
