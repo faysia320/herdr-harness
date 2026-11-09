@@ -3,7 +3,7 @@ import { dirname, basename, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
-import { build, modFiles } from './build.mjs';
+import { build, modFiles, autoFiles } from './build.mjs';
 import { run } from '../core/process.js';
 import { withInstallLock } from './install-lock.mjs';
 const { hash, verify } = createRequire(import.meta.url)('../adapters/runtime.cjs');
@@ -37,15 +37,20 @@ function installUnlocked(plan, check) {
   verify(release, built.manifestHash);
   mkdirSync(dirname(plan.modPath), { recursive: true });
   const stage = mkdtempSync(join(dirname(plan.modPath), '.harness-stage-'));
+  const autoPath = join(dirname(plan.modPath), 'harness-auto'), autoStage = join(stage, 'harness-auto');
   const configPath = join(plan.modPath, 'projects.json');
   try {
     for (const name of modFiles) cpSync(join(release, 'mod/harness', name), join(stage, name));
+    mkdirSync(autoStage);
+    for (const name of autoFiles) cpSync(join(release, 'mod/harness-auto', name), join(autoStage, name));
     writeFileSync(join(stage, 'projects.json'), existsSync(configPath) ? readFileSync(configPath) : '{"projects":[]}\n');
     check(stage, plan.herdrExecutable);
+    check(autoStage, plan.herdrExecutable);
     const id = randomUUID(), recordPath = join(plan.store, 'installs', `${id}.json`);
     const activePath = join(plan.store, 'active.json');
     const writes = [
       ...modFiles.map((name) => ({ file: join(plan.modPath, name), bytes: readFileSync(join(stage, name)) })),
+      ...autoFiles.map((name) => ({ file: join(autoPath, name), bytes: readFileSync(join(autoStage, name)) })),
       ...plan.bindings.map((b) => ({ file: b.file, bytes: Buffer.from(`${JSON.stringify({ version: 1, project: b.project, release, manifestHash: built.manifestHash, command: b.command, cwd: b.cwd }, null, 2)}\n`) })),
     ];
     // 사용자 설정은 처음 설치할 때만 만들며 업데이트·복구 대상에서 제외한다.
@@ -57,6 +62,7 @@ function installUnlocked(plan, check) {
     try {
       for (const w of writes) atomic(w.file, w.bytes);
       check(plan.modPath, plan.herdrExecutable);
+      check(autoPath, plan.herdrExecutable);
       atomic(activePath, JSON.stringify({ version: 1, id, recordPath, release, manifestHash: built.manifestHash }, null, 2));
     } catch (e) {
       for (const f of record.files) { if (f.before === null) rmSync(f.file, { force: true }); else atomic(f.file, Buffer.from(f.before, 'base64')); }

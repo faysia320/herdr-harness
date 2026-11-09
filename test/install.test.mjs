@@ -19,6 +19,7 @@ function fixture(t) {
 test('설치 지문·업데이트·rollback은 개인 설정과 업무 자료를 보존한다', (t) => {
   const f = fixture(t), options = { check: () => {} };
   const first = install({ ...f.plan, modPath: f.plan.modPath.replaceAll('\\', '/') }, options); verifyInstall(f.plan.store);
+  assert.ok(existsSync(join(f.root, 'harness-auto/main.js')));
   writeFileSync(join(f.modPath, 'projects.json'), 'changed personal config');
   install(f.plan, options); rollback(f.plan.store); verifyInstall(f.plan.store);
   rollback(f.plan.store);
@@ -27,6 +28,7 @@ test('설치 지문·업데이트·rollback은 개인 설정과 업무 자료를
   assert.equal(readFileSync(join(f.state, 'ledger.json'), 'utf8'), 'ledger bytes');
   assert.equal(readFileSync(join(f.state, 'decisions.json'), 'utf8'), 'decision bytes');
   assert.equal(existsSync(join(f.state, 'harness-binding.json')), false);
+  assert.equal(existsSync(join(f.root, 'harness-auto/main.js')), false);
   assert.ok(first.manifestHash);
 });
 test('검사 실패·설치 후 변조를 감지하고 이전 파일을 보존한다', (t) => {
@@ -34,7 +36,7 @@ test('검사 실패·설치 후 변조를 감지하고 이전 파일을 보존�
   assert.throws(() => install(f.plan, { check: () => { throw new Error('native failure'); } }), /native failure/);
   assert.equal(readFileSync(join(f.modPath, 'main.js'), 'utf8'), 'old source');
   let checks = 0;
-  assert.throws(() => install(f.plan, { check: () => { if (++checks === 2) throw new Error('after failure'); } }), /after failure/);
+  assert.throws(() => install(f.plan, { check: () => { if (++checks === 3) throw new Error('after failure'); } }), /after failure/);
   assert.equal(readFileSync(join(f.modPath, 'main.js'), 'utf8'), 'old source');
   const installed = install(f.plan, { check: () => {} });
   writeFileSync(join(installed.release, 'core/decisions.js'), 'tampered');
@@ -59,9 +61,9 @@ test('설치 중 다른 설치·복구는 거부하고 실패 복원 뒤 잠금�
   assert.throws(() => install(f.plan, { check: () => {
     assert.throws(() => install(f.plan, { check: () => {} }), /진행 중/);
     assert.throws(() => rollback(f.plan.store), /진행 중/);
-    if (++checked === 2) throw new Error('second native failure');
+    if (++checked === 3) throw new Error('second native failure');
   } }), /second native failure/);
-  assert.equal(checked, 2);
+  assert.equal(checked, 3);
   assert.deepEqual(readFileSync(join(f.modPath, 'main.js')), original);
   verifyInstall(f.plan.store);
   rollback(f.plan.store);

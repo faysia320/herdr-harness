@@ -9,6 +9,7 @@ const source = fs.readFileSync(new URL('./main.js', import.meta.url), 'utf8').re
 function setup() {
   const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [];
   const terminalList = [{ address: 't7', state: 'live', status: 'working', created_ms: 10 }];
+  const spaceList = [{ name: 'fixture', active: true, machine: null }], paneList = [], gitRenders = [];
   const el = () => {
     let id;
     const element = new Proxy({}, { get: (_, name) => (...args) => {
@@ -24,10 +25,11 @@ function setup() {
     ...attention, ...logic, appHome: () => 'fixture-home', readTextFile: async (p) => {
       const value = files.get(p); if (value instanceof Error) throw value; return value ?? null;
     }, watchFolder: () => new Promise(() => {}), terminals: () => terminalList,
-    spaces: () => [{ name: 'fixture', active: true, machine: null }], shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
+    spaces: () => spaceList, panes: () => paneList, shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
     theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {} };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
-  return { ...module, files, store, clicks, commands, texts, terminalList, cx: { notify() {}, stop_propagation() {} } };
+  return { ...module, files, store, clicks, commands, texts, terminalList, spaceList, paneList, gitRenders,
+    git: { render(projects) { gitRenders.push(projects); return el(); } }, cx: { notify() {}, stop_propagation() {} } };
 }
 const project = { name: 'fixture', root: 'D:/fixture' };
 const configPath = project.root + '/.agents/harness/config.json';
@@ -37,6 +39,38 @@ const install = (s) => {
   s.files.set(configPath, JSON.stringify({ project: { id: 'fixture', state_dir: 'state' } }));
   s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: task }, lead: { terminal: 't7' } }));
 };
+
+test('일반 저장소는 전체 보기·브리핑 선택 상태에서도 현재 Git Tree만 표시한다', async () => {
+  const s = setup(); install(s);
+  const v = new s.Harness();
+  Object.assign(v, { projects: [await s.load(project)], expanded: new Set(), page: 'brief', allProjects: true, git: s.git });
+  Object.assign(s.spaceList[0], { name: 'herdr-harness', folder: 'D:/old', tabs: [{ id: 'tab' }] });
+  s.paneList.push({ tab: 'unrelated', cwd: 'D:/unrelated' }, { tab: 'tab', cwd: 'D:/repositories/herdr-harness' });
+  v.render(s.cx);
+  assert.equal(s.clicks.has('harness-tab-brief'), false);
+  assert.equal(s.clicks.has('harness-scope'), false);
+  assert.equal(s.clicks.has('harness-tab-git'), true);
+  assert.equal(s.texts.includes('내 결정·확인'), false);
+  assert.deepEqual(s.gitRenders.at(-1).map((p) => p.root), ['D:/repositories/herdr-harness']);
+  // 공간 이름이 등록된 프로젝트와 같아도 다른 실제 경로에 브리핑을 노출하지 않는다.
+  s.spaceList[0].name = 'fixture'; s.clicks.clear(); v.render(s.cx);
+  assert.equal(s.clicks.has('harness-tab-brief'), false);
+  // 등록된 저장소로 복귀하면 기존 탭 선택을 복원한다. 경로 구분자·대소문자·하위 폴더도 허용한다.
+  s.paneList[1].cwd = 'd:\\FIXTURE\\src'; s.clicks.clear(); v.render(s.cx);
+  assert.equal(s.clicks.has('harness-tab-brief'), true);
+  assert.equal(s.clicks.has('harness-scope'), true);
+  assert.ok(s.texts.includes('내 결정·확인'));
+});
+
+test('미등록 공간은 projects.json이 없어도 폴더로 Git Tree를 표시한다', () => {
+  const s = setup(), v = new s.Harness();
+  Object.assign(v, { projects: [], error: '설정 없음', git: s.git });
+  Object.assign(s.spaceList[0], { name: 'other', folder: 'D:/other' });
+  v.render(s.cx);
+  assert.equal(s.gitRenders.at(-1)[0].root, 'D:/other');
+  assert.equal(s.texts.includes('설정 없음'), false);
+  assert.equal(s.clicks.has('harness-tab-brief'), false);
+});
 
 test('대장 읽기 실패·다른 project·계약 불일치를 정상 빈 대장으로 표시하지 않는다', async () => {
   const s = setup(); install(s);

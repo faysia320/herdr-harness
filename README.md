@@ -2,6 +2,8 @@
 
 개인 AI 개발 하네스의 공통 결정함, 실행 진입점, Herdr mod를 함께 관리한다. 프로젝트의 승인·QA·스케줄링 정책과 실제 업무 데이터는 각 프로젝트에 남긴다.
 
+Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`에 등록된 smart-workspace, vms-design-platform, v-project는 브리핑과 Git Tree를 제공하고, 나머지는 Git Tree 탭만 제공한다. 일반 저장소는 별도 등록 없이 공간의 첫 터미널 현재 경로를 사용한다. 전체 저장소 보기는 등록된 하네스 프로젝트에서만 제공한다.
+
 ## 관리 경계
 
 | 여기에서 한 번 관리 | 프로젝트에서 관리 | 로컬에만 보관 |
@@ -48,7 +50,7 @@ node --test test/adapters.integration.mjs
 ## 설치·업데이트
 
 1. `examples/install.example.json`을 `.local/install.json`으로 복사해 로컬 경로를 채운다. 프로젝트 `command`는 공통 bridge가 연결된 실제 CLI를 가리켜야 한다. 설치 대상 mod는 `harness`다.
-2. 테스트를 통과한 뒤 `node scripts/install.mjs .local/install.json`을 실행한다.
+2. 테스트를 통과한 뒤 `node scripts/install.mjs .local/install.json`을 실행한다. `harness`와 같은 상위 폴더의 `harness-auto`도 함께 설치·백업·검증한다. 기존 layout의 `harness-auto` 블록이 공간 전환에 맞춰 패널을 표시한다.
 3. staging native check → 소스·binding 백업 → 설치 → native check를 통과하면 active 기록을 바꾼다. `node scripts/verify-install.mjs <store>`로 실제 설치 파일 지문을 검증한다.
 4. 기존 Lead가 새 CLI와 프로젝트의 `COMMON.md` 지침을 사용하는지 별도로 확인한다. 설치는 Lead에 메시지를 보내거나 현재 업무를 재시작하지 않는다.
 

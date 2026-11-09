@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { appHome, readTextFile, watchFolder, terminals, spaces, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand } from "herdr";
+import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand } from "herdr";
 import { GitTree } from "./git-tree.js";
 import { span, timeline, waitReasons } from "./logic.js";
 import { decisions, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, leadReportKey, decisionInbox, openRequests } from "./attention.js";
@@ -107,7 +107,7 @@ export default class Harness extends View {
     // 상대 시각("3분 전")과 진행 시간도 이 타이머로 갱신된다.
     cx.timer.every(15000, (cx) => this.refresh(cx));
     cx.timer.every(30000, (cx) => {
-      if (this.page === "git") this.git.refresh(this.shown().find((p) => p.root === this.git.root) ?? this.shown()[0], cx);
+      if (this.currentPage() === "git") this.git.refresh(this.shown().find((p) => p.root === this.git.root) ?? this.shown()[0], cx);
     });
     cx.spawn(async (cx) => {
       for (;;) {
@@ -307,13 +307,29 @@ export default class Harness extends View {
       .children(tasks.map((task) => this.task(p, task, live, t)));
   }
 
-  // 선택된 공간의 저장소만 보인다. 맞는 저장소가 없는 공간에서는 harness-auto가 패널을 숨긴다. 알림은 세 저장소 모두 계속 받는다.
-  shown() {
-    if (this.allProjects) return this.projects;
+  // 공간 생성 당시 folder보다 첫 터미널의 현재 경로를 우선한다.
+  currentProject() {
     const space = spaces().find((s) => s.active && !s.machine);
-    // 공간 folder는 처음 만든 위치로 남아 다른 저장소를 가리킬 수 있어 이름만 본다(harness-auto와 같은 판정).
-    const match = space && this.projects.find((p) => p.name === space.name);
-    return match ? [match] : [];
+    if (!space) return null;
+    const tabs = new Set((space.tabs ?? []).map((tab) => tab.id));
+    const cwd = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd;
+    const root = cwd || space.folder;
+    const match = cwd
+      ? this.projects.find((p) => norm(cwd) === norm(p.root) || norm(cwd).startsWith(`${norm(p.root)}/`))
+      : this.projects.find((p) => p.name === space.name);
+    return match ?? (root ? { name: space.name, root, gitOnly: true, tasks: [], events: [] } : null);
+  }
+
+  currentPage() {
+    const current = this.currentProject();
+    return !current || current.gitOnly ? "git" : this.page ?? "brief";
+  }
+
+  shown() {
+    const current = this.currentProject();
+    if (!current) return [];
+    if (this.allProjects && !current.gitOnly) return this.projects;
+    return [current];
   }
 
   button(id, label, action, t) {
@@ -450,6 +466,7 @@ export default class Harness extends View {
 
   render(cx) {
     const t = theme(), overlay = props()?.overlay;
+    const current = this.currentProject(), full = Boolean(current && !current.gitOnly), page = this.currentPage();
     const live = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
     const shown = this.shown();
     const recent = shown.flatMap((p) => p.events).sort((a, b) => b.at - a.at).slice(0, 5);
@@ -459,22 +476,22 @@ export default class Harness extends View {
     return v_flex().id("harness").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(12)
       .child(h_flex().h(44).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(svg(ICON("layers")).size(15).flex_none().text_color(t.muted))
-        .child(div().font_semibold().text_size(13.5).child(this.page === "git" ? "Git Tree" : "내 작업 브리핑"))
-        .child(div().text_size(11).text_color(blocked ? t.blocked : t.dim).child(summary))
+        .child(div().font_semibold().text_size(13.5).child(page === "git" ? "Git Tree" : "내 작업 브리핑"))
+        .when(full, (e) => e.child(div().text_size(11).text_color(blocked ? t.blocked : t.dim).child(summary)))
         .child(div().flex_1())
         .when(this.loading, (e) => e.child(svg(ICON("spinner")).size(12).flex_none().text_color(t.dim)))
-        .child(this.button("harness-scope", this.allProjects ? "전체 저장소" : "현재 저장소", (cx) => { this.allProjects = !this.allProjects; cx.notify(); }, t))
+        .when(full, (e) => e.child(this.button("harness-scope", this.allProjects ? "전체 저장소" : "현재 저장소", (cx) => { this.allProjects = !this.allProjects; cx.notify(); }, t)))
         .when(Boolean(overlay), (e) => e.child(div().id("harness-close").px(6).cursor_pointer().text_color(t.dim).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click(() => closeOverlay(overlay)).child("✕"))))
       .child(h_flex().flex_none().px(8).py(7).gap(4).border_b(1).border_color(t.border)
-        .children([["brief", "브리핑"], ["git", "Git Tree"]].map(([page, title]) =>
-          div().id(`harness-tab-${page}`).flex_1().py(6).rounded(6).cursor_pointer().text_size(11.5).font_medium()
-            .bg((this.page ?? "brief") === page ? t.selected : t.background).text_color((this.page ?? "brief") === page ? t.foreground : t.dim)
-            .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { this.page = page; cx.notify(); })
+        .children((full ? [["brief", "브리핑"], ["git", "Git Tree"]] : [["git", "Git Tree"]]).map(([tab, title]) =>
+          div().id(`harness-tab-${tab}`).flex_1().py(6).rounded(6).cursor_pointer().text_size(11.5).font_medium()
+            .bg(page === tab ? t.selected : t.background).text_color(page === tab ? t.foreground : t.dim)
+            .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { this.page = tab; cx.notify(); })
             .child(h_flex().justify_center().items_center().gap(6)
-              .child(svg(ICON(page === "git" ? "git-branch" : "layers")).size(12)).child(title)))))
-      .when(this.page === "git", (e) => e.child(this.git.render(shown, cx)))
-      .when(this.page !== "git", (e) => e.child(v_flex().id("harness-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).gap(8)
+              .child(svg(ICON(tab === "git" ? "git-branch" : "layers")).size(12)).child(title)))))
+      .when(page === "git", (e) => e.child(this.git.render(shown, cx)))
+      .when(page !== "git", (e) => e.child(v_flex().id("harness-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).gap(8)
         .when(Boolean(this.error), (e) => e.child(div().px(8).text_color(t.ansi1).child(this.error)))
         .when(!this.error && this.projects.length > 0 && !shown.length, (e) => e.child(div().px(8).text_size(11).text_color(t.dim).child("이 공간에 연결된 하네스 저장소가 없습니다")))
         .when(shown.length > 0, (e) => e
