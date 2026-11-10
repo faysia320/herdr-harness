@@ -41,6 +41,7 @@ function installUnlocked(plan, check) {
     const config = json(b.adapterConfig);
     if (config.project?.id !== b.project) throw new Error('adapterConfig 프로젝트가 연결과 다르다.');
     createRequire(import.meta.url)(join(release, 'core/execution-policy.cjs')).configure(config);
+    createRequire(import.meta.url)(join(release, 'core/artifact-policy.cjs')).configure(config);
   }
   mkdirSync(dirname(plan.modPath), { recursive: true });
   const stage = mkdtempSync(join(dirname(plan.modPath), '.harness-stage-'));

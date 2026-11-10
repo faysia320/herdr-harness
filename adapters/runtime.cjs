@@ -40,8 +40,20 @@ function executionPolicy(file, input) {
   if (input.action === 'resolve') return { ...api.resolve(input.config, input.task, input.stage), releaseHash: b.manifestHash };
   throw new Error('지원하지 않는 실행 정책 동작이다.');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy };
+// 과정 산출물의 커밋 여부·보관·PR 검사도 binding으로 고정한 release 규칙을 쓴다.
+function artifactPolicy(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('과정 산출물 연결의 프로젝트·상태 경계가 다르다.');
+  const api = require(path.join(b.release, 'core/artifact-policy.cjs'));
+  if (input.action === 'config') return api.configure(input.config);
+  if (input.action === 'resolve') return api.resolve(input.config, input.vars);
+  if (input.action === 'violations') return api.violations(input.config, input.changes);
+  if (input.action === 'archive') return api.archive(input.config, { ...input.task, stateDir: input.stateDir });
+  throw new Error('지원하지 않는 과정 산출물 동작이다.');
+}
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy };
 if (require.main === module) {
-  try { process.stdout.write(`${JSON.stringify((process.argv[3] === 'policy' ? executionPolicy : bridge)(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
+  const handler = { policy: executionPolicy, artifacts: artifactPolicy }[process.argv[3]] ?? bridge;
+  try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

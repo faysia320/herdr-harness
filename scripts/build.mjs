@@ -9,7 +9,7 @@ export const autoFiles = ['main.js', 'mod.json'];
 export function build() {
   // mod 산출물만 복사한다. 순수 계약의 정본은 core/이며 생성본은 Git에서 제외한다.
   for (const name of ['decisions.js', 'contract.js']) copyFileSync(join(root, 'core', name), join(root, 'mod/harness', name));
-  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'core/execution-policy.cjs', 'policy/execution.json',
+  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'policy/execution.json', 'policy/artifacts.json',
     ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`)];
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };

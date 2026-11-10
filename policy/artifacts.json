@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "commit": false,
+  "archive": "tasks/{id}/artifacts",
+  "evidence": [
+    { "key": "qa", "label": "QA 판정·회차" },
+    { "key": "checks", "label": "실행한 검사와 종료 코드" },
+    { "key": "limits", "label": "실패·skip·미실행·외부 미검증" },
+    { "key": "models", "label": "단계별 실제 CLI·모델·effort" }
+  ]
+}

@@ -12,6 +12,7 @@ Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`�
 | 모델·effort·Fast·프로필·재작업 상향·실행 한도 | 스킬 경로·호출명·품질 기준 | 고정 release 경로와 binding |
 | 결정함 검증·원자 저장·mod 브리핑·Git Tree | 승인 근거·후보 지문·파일 겹침 판정 | 대장·결정 기록·실행 로그·인증 |
 | 실행 결과·timeout·설치/복구 | 기존 CLI와 대장 writer·잠금 | UI 읽음 상태와 개인 설정 |
+| 과정 산출물 커밋 여부·보관 위치·PR 검사·증거 항목 | 과정 문서 경로 선언·게시 지침·CI 스크립트 | 업무별 과정 산출물 보관본 |
 
 세 프로젝트는 같은 위임 정책을 읽고 실제 실행 인자를 같은 resolver에서 만든다. Python의 안내 전용 `next`, JS의 자동 실행 등 CLI 인터페이스와 프로젝트별 산출물 검증은 유지한다. 공통 launcher가 binding에 지정된 프로젝트 CLI를 실행한다. `decision`은 공통 저장기를, `policy`와 위임은 공통 실행 정책을 사용한다.
 
@@ -82,6 +83,26 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 사용자 지정 배치는 조사 Astra/high, 설계 Fable 5.2/high, 구현 Opus 5.5/high, QA Sol/xhigh다. 모든 단계에서 Fast를 끈다. 모델의 CLI가 바뀌면 표준 `.agents/skills`·`.claude/skills` 경로와 `$`·`/` 호출도 공통 resolver가 함께 맞춘다. 저장소별 스킬 이름·인자와 사용자 지정 경로는 유지한다. Codex workspace-write, Claude auto를 실행 인자로 지정한다. Codex 승인·네트워크 등 지정하지 않은 사용자 설정은 계속 상속하며 전역 설정을 쓰지 않는다. Fast 비활성화는 Codex의 `service_tier="default"`와 Claude의 `fastMode:false`로 명시한다([Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude Fast 설정](https://code.claude.com/docs/en/fast-mode)).
 
 현재 세 저장소의 `execution_overrides`는 모두 `{}`다. 앞으로 의도적 예외가 필요하면 프로젝트 config에 `execution_overrides: {"reason":"구체적인 사유", "roles":{"implement":{"effort":"medium"}}, "limits":{"max_parallel":1}}`처럼 선언한다. roles에는 모델·effort·Fast·실행 모드만, limits에는 공통 한도만 허용한다. 예전 roles의 model/args나 별도 routing은 거부하므로 중복 설정이 조용히 살아남지 않는다. 적용 순서는 공통 역할 → 명시적 저장소 예외 → 프로필 effort → 재작업 상향 → 사유 있는 업무별 model/effort 예외다. run의 `x_execution_policy`에 정책 지문·release·예외·실제 요청 Fast를 남긴다. 이 기록은 요청값이며 실제 모델 사용 증거는 각 CLI의 evidence로 구분한다.
+
+## 과정 산출물
+
+업무 진행 중에 쓰는 과정 문서(Project README·implementation·qa-report 등)는 기본으로 main에 커밋하지 않는다. 정본은 [policy/artifacts.json](policy/artifacts.json)이고 판정·보관은 `core/artifact-policy.cjs`가 맡는다. 업무 PR 뒤에 과정 문서만 지우는 정리 PR을 따로 만들지 않기 위해서다.
+
+- **선언**: 프로젝트 config에 `process_artifacts: {"paths": ["docs/projects/{slug}/"]}`처럼 업무별 과정 문서 폴더를 선언한다. 자리표시자는 `{id}`·`{slug}`·`{date}`만 쓸 수 있고, 하나 이상 들어가야 한다. 그래서 `docs/projects/README.md` 같은 공용 색인은 과정 문서로 잡히지 않는다. 선언하지 않은 저장소는 기존처럼 동작한다.
+- **커밋 여부**: 공통 기본은 `commit: false`다. 커밋해야 하는 저장소는 `commit: true`와 `reason`을 함께 둔다. 이미 main에 있고 남기기로 한 폴더는 `exempt: [{path, reason}]`로 지정한다.
+- **진행 중**: collect의 README·qa-report 게이트와 후보 지문은 worktree의 미커밋 파일을 그대로 읽는다. 과정 문서를 커밋하지 않아도 게이트는 바뀌지 않는다.
+- **보관**: 단계 수집 뒤, 그리고 worktree를 정리하기 전에 `archive`로 `<state_dir>/tasks/<ID>/artifacts/`에 복사한다. 보관은 같은 경로만 덮어쓰고, 이전 회차 보관본은 지우지 않는다. `manifest.json`에는 파일별 SHA-256을 남긴다.
+- **게시**: 커밋 전에 `violations`로 과정 문서의 추가·수정·이름 변경을 걸러 낸다. 삭제는 기존 문서 정리이므로 허용한다. 오래 남을 내용은 같은 업무 PR 안에서 옮긴다. 바뀐 계약은 Area로, 다시 쓸 조사 결론은 Resource로, 후속 작업은 Area 후속 절이나 티켓으로 보낸다.
+- **증거**: PR 본문과 티켓 NOTE에 QA 판정·회차, 실행한 검사와 종료 코드, 실패·skip·미실행·외부 미검증, 단계별 실제 CLI·모델·effort를 적는다. 병합 SHA 기준의 Project 파일 고정 링크로 증거를 대신하지 않는다.
+- **CI**: 저장소 CI는 PR 변경 목록을 같은 규칙으로 검사해 실패만 시킨다. 파일을 고치거나 지우지는 않는다. CI에는 개인 release가 없으므로 저장소 스크립트가 config 선언을 직접 읽는다. 공통 `violations`와 같은 판정이 나오는지는 저장소 시험에서 확인한다.
+
+CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSON 진입점을 쓴다.
+
+```powershell
+'{"action":"violations","project":"<id>","stateDir":"<상태폴더>","config":{...},"changes":[{"status":"A","path":"docs/projects/x/README.md"}]}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json artifacts
+```
+
+동작은 `config`, `resolve`(`vars`), `violations`(`changes`), `archive`(`task: {id, worktree, vars}`)다.
 
 ## 결정함 규칙
 
