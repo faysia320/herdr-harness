@@ -20,7 +20,9 @@ for (const adapter of adapters) test(`${adapter.name}: 공통 launcher → 회�
   mkdirSync(repo);
   const copy = (file) => { mkdirSync(dirname(join(repo, file)), { recursive: true }); copyFileSync(join(adapter.root, file), join(repo, file)); };
   for (const file of [adapter.cli, '.agents/harness/config.json', '.agents/harness/runtime.cjs']) copy(file);
-  assert.deepEqual(readFileSync(join(repo, '.agents/harness/runtime.cjs')), readFileSync(join(root, 'adapters/runtime.cjs')));
+  // Git checkout의 LF/CRLF 차이는 런타임 소스 변경으로 취급하지 않는다.
+  const source = (file) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+  assert.equal(source(join(repo, '.agents/harness/runtime.cjs')), source(join(root, 'adapters/runtime.cjs')));
   if (adapter.name === 'sw') copy('scripts/ci/check-worktree.mjs');
   const config = JSON.parse(readFileSync(join(repo, '.agents/harness/config.json'), 'utf8'));
   const project = config.project.id, stateDir = join(repo, config.project.state_dir);
