@@ -15,6 +15,13 @@ const fileOf = (id) => {
   return defaults.archive.replace('{id}', id);
 };
 const bytesOf = (task) => `${JSON.stringify(task, null, 2)}\n`;
+// FAILED→QUEUED로 다시 연 업무는 같은 ID로 다시 끝날 수 있다. 기존 보관본과 내용이 다르면 지문을 붙인 이름으로 따로 둔다.
+const versionOf = (id, sha) => fileOf(id).replace(/\.json$/, `.${sha.slice(0, 12)}.json`);
+const fileFor = (task) => {
+  const file = task.x_archive?.file;
+  if (file !== fileOf(task.id) && file !== versionOf(task.id, task.x_archive?.sha256 ?? '')) fail(`보관 파일 경로가 올바르지 않다: ${file}`);
+  return file;
+};
 
 // 대상: 끝난 지 min_age_hours가 지났고, 최근 끝난 keep_recent건이 아니며, 남은 업무가 의존하지 않고, 호출자가 붙잡지 않은 업무.
 // 호출자는 worktree가 남은 업무(게시·정리 전)와 미해소 질문이 걸린 업무를 keep으로 넘긴다.
@@ -43,17 +50,21 @@ function summarize(task, file, at) {
 }
 
 // 보관 파일을 먼저 쓰고 새 대장을 돌려준다. 호출자는 같은 잠금 안에서 돌려받은 대장을 원자 저장한다.
-// 같은 내용의 보관 파일은 재사용하고, 내용이 다르면 덮어쓰지 않고 실패한다.
+// 같은 내용의 보관 파일은 재사용한다. 기존 파일은 덮어쓰지 않고, 내용이 다르면 지문을 붙인 새 파일에 쓴다.
 function archive(ledger, stateDir, options = {}) {
   if (!path.isAbsolute(stateDir ?? '')) fail('상태 폴더는 절대 경로여야 한다.');
   const at = options.now ?? new Date().toISOString();
   const ids = options.ids ?? plan(ledger, options);
   const next = { ...ledger, tasks: { ...ledger.tasks } }, moved = [];
+  const where = (file) => path.join(stateDir, ...file.split('/'));
   for (const id of ids) {
     const task = ledger.tasks[id];
     if (!task || !ENDED.includes(task.state) || task.x_archive) fail(`보관할 수 없는 업무다: ${id}`);
-    const file = fileOf(id), target = path.join(stateDir, ...file.split('/')), bytes = bytesOf(task);
-    if (fs.existsSync(target)) { if (digest(fs.readFileSync(target)) !== digest(bytes)) fail(`이미 다른 내용의 보관 파일이 있다: ${file}`); }
+    const bytes = bytesOf(task), sha = digest(bytes);
+    let file = fileOf(id);
+    if (fs.existsSync(where(file)) && digest(fs.readFileSync(where(file))) !== sha) file = versionOf(id, sha);
+    const target = where(file);
+    if (fs.existsSync(target)) { if (digest(fs.readFileSync(target)) !== sha) fail(`이미 다른 내용의 보관 파일이 있다: ${file}`); }
     else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(`${target}.tmp`, bytes); fs.renameSync(`${target}.tmp`, target);
@@ -68,7 +79,7 @@ function archive(ledger, stateDir, options = {}) {
 // show 등 상세 조회용. 지문이 다르면 보관본을 신뢰하지 않는다.
 function restore(task, stateDir) {
   if (!task?.x_archive) return task;
-  const target = path.join(stateDir, ...fileOf(task.id).split('/'));
+  const target = path.join(stateDir, ...fileFor(task).split('/'));
   const bytes = fs.readFileSync(target);
   if (digest(bytes) !== task.x_archive.sha256) fail(`보관 파일 지문이 대장과 다르다: ${task.x_archive.file}`);
   return JSON.parse(bytes);
