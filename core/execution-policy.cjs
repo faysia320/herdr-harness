@@ -76,8 +76,9 @@ function resolve(local, task, stage) {
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
+  // Windows elevated sandbox는 별도 계정으로 실행돼 사용자 프로필의 python·node·hc를 읽지 못한다. 쓰기 경계는 unelevated도 같다.
   const argv = role.cli === 'codex'
-    ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-s', role.sandbox]
+    ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-c', 'windows.sandbox="unelevated"', '-s', role.sandbox]
     : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast })];
   return { ...role, argv, policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }
