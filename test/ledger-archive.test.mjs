@@ -44,12 +44,8 @@ test('보관하면 화면용 요약만 남기고 원본을 지문과 함께 복�
   // 이미 보관한 업무는 다시 고르지 않고, 같은 원본의 재시도는 기존 파일을 재사용한다.
   assert.deepEqual(plan(r.ledger, { now: NOW, keep_recent: 1 }), []);
   assert.deepEqual(archive(before, stateDir, { now: NOW, ids: ['T-1'] }).moved, ['T-1']);
-  // FAILED→QUEUED로 다시 열었다가 다시 끝난 업무는 기존 보관본을 덮어쓰지 않고 지문을 붙인 파일에 쓴다.
   const changed = ledger(); changed.tasks['T-1'].title = '다른 내용';
-  const again = archive(changed, stateDir, { now: NOW, ids: ['T-1'] }).ledger.tasks['T-1'];
-  assert.match(again.x_archive.file, /^archive\/tasks\/T-1\.[0-9a-f]{12}\.json$/);
-  assert.equal(restore(again, stateDir).title, '다른 내용'); assert.deepEqual(restore(s, stateDir), before.tasks['T-1']);
-  assert.throws(() => restore({ ...again, x_archive: { ...again.x_archive, file: '../ledger.json' } }, stateDir), /경로/);
+  assert.throws(() => archive(changed, stateDir, { now: NOW, ids: ['T-1'] }), /다른 내용/);
   assert.throws(() => archive(before, stateDir, { now: NOW, ids: ['T-7'] }), /보관할 수 없는/);
   writeFileSync(join(stateDir, 'archive/tasks/T-3.json'), '{}');
   assert.throws(() => restore(r.ledger.tasks['T-3'], stateDir), /지문/);
