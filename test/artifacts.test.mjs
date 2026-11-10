@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from '../scripts/build.mjs';
@@ -70,6 +70,23 @@ test('미커밋 과정 문서를 상태 폴더로 보관하고 이전 회차 보
   assert.match(readFileSync(join(dest, 'docs/projects/sw-0060-x/README.md'), 'utf8'), /구현/);
   assert.equal(Object.keys(manifest.files).length, 3);
   for (const bad of [{ ...input, id: '../x' }, { ...input, worktree: 'relative' }]) assert.throws(() => archive(sw(), bad));
+});
+
+test('보관 대상·원본 경로에 junction이 있으면 쓰거나 읽기 전에 거부한다', (t) => {
+  const temp = mkdtempSync(join(tmpdir(), 'herdr-artifacts-link-')); t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const wt = join(temp, 'wt'), stateDir = join(temp, 'state'), outside = join(temp, 'outside'), dir = join(wt, 'docs/projects/x');
+  mkdirSync(dir, { recursive: true }); mkdirSync(outside); mkdirSync(join(stateDir, 'tasks/SW-1'), { recursive: true });
+  writeFileSync(join(dir, 'README.md'), 'new\n'); writeFileSync(join(outside, 'README.md'), 'keep\n');
+  const input = { id: 'SW-1', worktree: wt, stateDir, vars: { slug: 'x' } };
+  // 상태 폴더 안의 보관 위치가 밖을 가리키면 외부 파일을 덮어쓰지 않는다.
+  symlinkSync(outside, join(stateDir, 'tasks/SW-1/artifacts'), 'junction');
+  assert.throws(() => archive(sw(), input), /링크/);
+  assert.equal(readFileSync(join(outside, 'README.md'), 'utf8'), 'keep\n');
+  unlinkSync(join(stateDir, 'tasks/SW-1/artifacts'));
+  // 원본 업무 폴더가 밖을 가리키면 그 내용을 보관하지 않는다.
+  rmSync(dir, { recursive: true }); symlinkSync(outside, dir, 'junction');
+  assert.throws(() => archive(sw(), input), /링크/);
+  assert.equal(existsSync(join(stateDir, 'tasks/SW-1/artifacts/docs/projects/x/README.md')), false);
 });
 
 test('binding으로 고정한 과정 산출물 규칙은 Node·Python용 JSON 진입점에서 같고 경계 변조를 거부한다', (t) => {
