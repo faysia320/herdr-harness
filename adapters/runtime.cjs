@@ -51,9 +51,20 @@ function artifactPolicy(file, input) {
   if (input.action === 'archive') return api.archive(input.config, { ...input.task, stateDir: input.stateDir });
   throw new Error('지원하지 않는 과정 산출물 동작이다.');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy };
+// 끝난 업무 보관. 호출자는 대장 잠금 안에서 부르고 돌려받은 대장을 저장한다.
+function ledgerArchive(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('대장 보관 연결의 프로젝트·상태 경계가 다르다.');
+  if (input.ledger?.project !== input.project) throw new Error('대장 프로젝트가 연결과 다르다.');
+  const api = require(path.join(b.release, 'core/ledger-archive.cjs'));
+  if (input.action === 'plan') return api.plan(input.ledger, input.options);
+  if (input.action === 'archive') return api.archive(input.ledger, input.stateDir, input.options);
+  if (input.action === 'restore') return api.restore(input.ledger.tasks[input.id], input.stateDir);
+  throw new Error('지원하지 않는 대장 보관 동작이다.');
+}
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive };
 if (require.main === module) {
-  const handler = { policy: executionPolicy, artifacts: artifactPolicy }[process.argv[3]] ?? bridge;
+  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

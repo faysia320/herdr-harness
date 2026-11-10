@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -8,16 +8,26 @@ export const modFiles = ['attention.js', 'contract.js', 'decisions.js', 'git-dat
 export const autoFiles = ['main.js', 'mod.json'];
 export function build() {
   // mod 산출물만 복사한다. 순수 계약의 정본은 core/이며 생성본은 Git에서 제외한다.
-  for (const name of ['decisions.js', 'contract.js']) copyFileSync(join(root, 'core', name), join(root, 'mod/harness', name));
-  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'policy/execution.json', 'policy/artifacts.json',
+  // 같은 내용이면 다시 쓰지 않는다. 동시에 build하는 다른 프로세스가 쓰는 중인 파일을 읽지 않게 한다.
+  for (const name of ['decisions.js', 'contract.js']) {
+    const from = join(root, 'core', name), to = join(root, 'mod/harness', name);
+    if (!existsSync(to) || !readFileSync(to).equals(readFileSync(from))) copyFileSync(from, to);
+  }
+  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
     ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`)];
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };
   const raw = `${JSON.stringify(manifest, null, 2)}\n`, digest = hash(raw);
   const release = join(root, 'dist', digest);
   if (!existsSync(release)) {
-    for (const file of files) { mkdirSync(dirname(join(release, file)), { recursive: true }); copyFileSync(join(root, file), join(release, file)); }
-    writeFileSync(join(release, 'manifest.json'), raw);
+    // 임시 폴더에 다 만든 뒤 이름을 바꾼다. 동시에 build한 쪽이 먼저 만들었으면 그 결과를 검증한다.
+    mkdirSync(join(root, 'dist'), { recursive: true });
+    const stage = mkdtempSync(join(root, 'dist', '.stage-'));
+    try {
+      for (const file of files) { mkdirSync(dirname(join(stage, file)), { recursive: true }); copyFileSync(join(root, file), join(stage, file)); }
+      writeFileSync(join(stage, 'manifest.json'), raw);
+      try { renameSync(stage, release); } catch (e) { if (!existsSync(release)) throw e; }
+    } finally { rmSync(stage, { recursive: true, force: true }); }
   }
   verify(release, digest);
   return { release, manifestHash: digest, version, provenance: 'content-hash' };
