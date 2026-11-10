@@ -57,6 +57,25 @@ function refreshFixture() {
   return { ...s, v, other, cx, jobs, timers, drain, tick };
 }
 
+test('화면의 실행 한도는 main의 과거 설정 대신 연결된 공통 정책과 명시적 예외를 따른다', async () => {
+  const s = setup(); install(s);
+  s.files.set(configPath, JSON.stringify({ project: { id: 'fixture', state_dir: 'state' }, limits: { max_parallel: 4 } }));
+  const active = (id) => ({ ...task, id, state: 'IMPLEMENTING', current: { stage: 'implement', run: 0 }, runs: [{ status: 'running' }] });
+  s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: active('a'), b: active('b'), c: { ...task, id: 'c', state: 'QUEUED' } } }));
+  s.files.set('D:/fixture/state/harness-binding.json', JSON.stringify({ project: 'fixture', release: 'D:/release', adapterConfig: 'D:/adapter/config.json' }));
+  s.files.set('D:/release/policy/execution.json', JSON.stringify({ version: 1, limits: { max_parallel: 2 } }));
+  const adapter = { project: { id: 'fixture' }, execution_overrides: {} };
+  s.files.set('D:/adapter/config.json', JSON.stringify(adapter));
+  assert.match((await s.load(project)).tasks.find((t) => t.id === 'c').waits[0].text, /2\/2/);
+  adapter.execution_overrides = { reason: '명시적 예외', limits: { max_parallel: 3 } };
+  s.files.set('D:/adapter/config.json', JSON.stringify(adapter));
+  assert.deepEqual((await s.load(project)).tasks.find((t) => t.id === 'c').waits, []);
+  s.files.set('D:/release/policy/execution.json', '{');
+  assert.equal((await s.load(project)).stale, true);
+  s.files.set('D:/fixture/state/harness-binding.json', new Error('binding read failed'));
+  assert.equal((await s.load(project)).stale, true);
+});
+
 test('대장 용량은 한글·이모지 UTF-8 바이트 기준 75%·90%에서 경고한다', async () => {
   const limit = 1 << 20;
   assert.equal(logic.ledgerCapacityNote('a'.repeat(limit * 0.75 - 1)), null);
@@ -85,12 +104,12 @@ test('연속 변경을 묶어 대상만 다시 읽고 다른 프로젝트의 오
   for (let i = 0; i < 10; i++) s.v.scheduleRefresh(s.cx, [project.root]);
   assert.equal(s.timers.length, 1); assert.equal(s.reads.length, 0);
   s.tick(); await s.drain();
-  assert.equal(s.reads.length, 4);
+  assert.equal(s.reads.length, 5);
   assert.ok(s.reads.every((p) => p.startsWith(project.root)));
   assert.equal(s.v.projects[1], other); assert.equal(other.note, '마지막 정상 자료 표시');
   s.reads.length = 0;
   s.v.scheduleRefresh(s.cx, [project.root]); s.v.scheduleRefresh(s.cx, [s.other.root]);
-  s.tick(); await s.drain(); assert.equal(s.reads.length, 8);
+  s.tick(); await s.drain(); assert.equal(s.reads.length, 10);
 });
 
 test('조회 도중 변경은 후속 조회에 남고 전체 조회 요청은 대상 조회보다 우선한다', async () => {
@@ -132,7 +151,7 @@ test('시각 타이머는 파일을 읽지 않고 60초 재조회는 누락된 �
   };
   s.v.init({}, s.cx); await settle(); s.reads.length = 0;
   intervals.get(15000)(s.cx); assert.equal(s.reads.length, 0);
-  intervals.get(60000)(s.cx); await settle(); assert.equal(s.reads.length, 9);
+  intervals.get(60000)(s.cx); await settle(); assert.equal(s.reads.length, 11);
 });
 
 test('상태·설정 감시는 프로젝트를 좁히고 제거된 경로와 실패한 감시는 정리한다', async () => {

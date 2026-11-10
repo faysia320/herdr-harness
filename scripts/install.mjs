@@ -35,6 +35,13 @@ function installUnlocked(plan, check) {
   const built = build(), release = join(plan.store, 'releases', built.manifestHash);
   if (!existsSync(release)) cpSync(built.release, release, { recursive: true, errorOnExist: true, force: false });
   verify(release, built.manifestHash);
+  // 화면과 CLI가 같은 adapter 설정을 읽도록 경로와 정책 유효성을 설치 전에 확인한다.
+  for (const b of plan.bindings) if (b.adapterConfig) {
+    if (!isAbsolute(b.adapterConfig)) throw new Error('adapterConfig는 절대 경로여야 한다.');
+    const config = json(b.adapterConfig);
+    if (config.project?.id !== b.project) throw new Error('adapterConfig 프로젝트가 연결과 다르다.');
+    createRequire(import.meta.url)(join(release, 'core/execution-policy.cjs')).configure(config);
+  }
   mkdirSync(dirname(plan.modPath), { recursive: true });
   const stage = mkdtempSync(join(dirname(plan.modPath), '.harness-stage-'));
   const autoPath = join(dirname(plan.modPath), 'harness-auto'), autoStage = join(stage, 'harness-auto');
@@ -51,7 +58,7 @@ function installUnlocked(plan, check) {
     const writes = [
       ...modFiles.map((name) => ({ file: join(plan.modPath, name), bytes: readFileSync(join(stage, name)) })),
       ...autoFiles.map((name) => ({ file: join(autoPath, name), bytes: readFileSync(join(autoStage, name)) })),
-      ...plan.bindings.map((b) => ({ file: b.file, bytes: Buffer.from(`${JSON.stringify({ version: 1, project: b.project, release, manifestHash: built.manifestHash, command: b.command, cwd: b.cwd }, null, 2)}\n`) })),
+      ...plan.bindings.map((b) => ({ file: b.file, bytes: Buffer.from(`${JSON.stringify({ version: 1, project: b.project, release, manifestHash: built.manifestHash, command: b.command, cwd: b.cwd, ...(b.adapterConfig ? { adapterConfig: b.adapterConfig } : {}) }, null, 2)}\n`) })),
     ];
     // 사용자 설정은 처음 설치할 때만 만들며 업데이트·복구 대상에서 제외한다.
     if (!existsSync(configPath)) atomic(configPath, '{"projects":[]}\n');

@@ -7,6 +7,8 @@ import { join, dirname } from 'node:path';
 import { build, root } from '../scripts/build.mjs';
 import { run } from '../core/process.js';
 import { decisionInbox } from '../core/decisions.js';
+import { createRequire } from 'node:module';
+const policy = createRequire(import.meta.url)('../core/execution-policy.cjs');
 
 // 회사 소스는 개인 저장소에 복제하지 않는다. 호출자가 지정한 checkout에서 임시 fixture로만 읽는다.
 assert.ok(process.env.HERDR_HARNESS_ADAPTERS, 'HERDR_HARNESS_ADAPTERS=<로컬 adapter 목록 JSON>이 필요하다');
@@ -52,6 +54,19 @@ for (const adapter of adapters) test(`${adapter.name}: 공통 launcher → 회�
     if (options.fail) { assert.notEqual(result.code, 0, result.stdout); return result; }
     assert.equal(result.code, 0, result.stderr); return JSON.parse(result.stdout);
   }
+  const effective = cli(['policy']);
+  const expected = policy.configure(config);
+  assert.deepEqual(effective.limits, expected.limits);
+  assert.deepEqual(effective.policy, expected.execution_policy);
+  assert.deepEqual(config.execution_overrides, {}, '현재 프로젝트 예외는 없어야 한다');
+  for (const [profile, stage, rework] of [['normal', 'research', 0], ['normal', 'implement', 0], ['normal', 'qa', 0], ['high-risk', 'architect', 0], ['ui-simple', 'research', 0], ['shared-component', 'implement', 1], ['normal', 'implement', 2], ['token', 'qa', 0]]) {
+    const result = cli(['policy', '--profile', profile, '--stage', stage, '--rework', String(rework)]);
+    const resolved = policy.resolve(config, { profile, rework }, stage);
+    assert.deepEqual(result.argv, resolved.argv);
+    assert.equal(result.releaseHash, built.manifestHash);
+    assert.equal(result.policy.sha256, expected.execution_policy.sha256);
+  }
+  cli(['policy', '--stage', 'implement', '--profile', 'typo'], { fail: true });
   const question = join(temp, 'question.json'), answer = join(temp, 'answer.json');
   writeFileSync(question, JSON.stringify({ question: '범위를 정해주세요', source: '합성 사용자 대화' }));
   writeFileSync(answer, JSON.stringify({ quote: '좁게', source: '합성 실제 답변' }));

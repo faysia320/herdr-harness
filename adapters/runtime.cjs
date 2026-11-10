@@ -1,4 +1,4 @@
-// herdr-harness가 배포하는 작은 호환 진입점. 정책과 업무 상태는 회사 CLI가 관리한다.
+// herdr-harness가 배포하는 작은 호환 진입점. 실행 정책은 공통 release, 업무 상태는 프로젝트 CLI가 관리한다.
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
@@ -31,8 +31,17 @@ function bridge(file, input) {
   if (r.error || r.status !== 0) throw new Error(r.error?.message ?? r.stderr.trim() ?? '공통 결정함 실행 실패');
   return JSON.parse(r.stdout);
 }
-module.exports = { hash, verify, binding, bridge };
+// Python도 같은 resolver를 호출한다. 언어별 모델 선택 로직을 복제하지 않는다.
+function executionPolicy(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('실행 정책 연결의 프로젝트·상태 경계가 다르다.');
+  const api = require(path.join(b.release, 'core/execution-policy.cjs'));
+  if (input.action === 'config') return api.configure(input.config);
+  if (input.action === 'resolve') return { ...api.resolve(input.config, input.task, input.stage), releaseHash: b.manifestHash };
+  throw new Error('지원하지 않는 실행 정책 동작이다.');
+}
+module.exports = { hash, verify, binding, bridge, executionPolicy };
 if (require.main === module) {
-  try { process.stdout.write(`${JSON.stringify(bridge(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
+  try { process.stdout.write(`${JSON.stringify((process.argv[3] === 'policy' ? executionPolicy : bridge)(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

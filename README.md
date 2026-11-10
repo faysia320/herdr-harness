@@ -1,6 +1,6 @@
 # Herdr Harness
 
-개인 AI 개발 하네스의 공통 결정함, 실행 진입점, Herdr mod를 함께 관리한다. 프로젝트의 승인·QA·스케줄링 정책과 실제 업무 데이터는 각 프로젝트에 남긴다.
+개인 AI 개발 하네스의 단계별 위임 정책, 공통 결정함, 실행 진입점, Herdr mod를 함께 관리한다. 프로젝트의 스킬·산출물 검증·업무 데이터는 각 프로젝트에 남긴다.
 
 Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`에 등록된 smart-workspace, vms-design-platform, v-project는 브리핑과 Git Tree를 제공하고, 나머지는 Git Tree 탭만 제공한다. 일반 저장소는 별도 등록 없이 공간의 첫 터미널 현재 경로를 사용한다. 전체 저장소 보기는 등록된 하네스 프로젝트에서만 제공한다.
 
@@ -9,11 +9,11 @@ Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`�
 | 여기에서 한 번 관리 | 프로젝트에서 관리 | 로컬에만 보관 |
 |---|---|---|
 | 질문 등록·수정·해소와 revision | 조사·구현·QA·architect 스킬 | `projects.json`, 설치 계획 |
-| 결정함 검증·원자 저장 | 모델·effort·Fast·실행 프로필 | 고정 release 경로와 binding |
-| mod 브리핑·Git Tree·Fetch/Pull | 승인 근거·후보 지문·겹침·재시도 | 대장·결정 기록·실행 로그·인증 |
+| 모델·effort·Fast·프로필·재작업 상향·실행 한도 | 스킬 경로·호출명·품질 기준 | 고정 release 경로와 binding |
+| 결정함 검증·원자 저장·mod 브리핑·Git Tree | 승인 근거·후보 지문·파일 겹침 판정 | 대장·결정 기록·실행 로그·인증 |
 | 실행 결과·timeout·설치/복구 | 기존 CLI와 대장 writer·잠금 | UI 읽음 상태와 개인 설정 |
 
-세 프로젝트의 스케줄러를 동일한 알고리즘으로 바꾸는 작업은 포함하지 않는다. Python의 안내 전용 `next`, JS의 자동 실행·예약 겹침 검사를 유지한다. 공통 launcher가 실제 회사 CLI를 실행하고, 기존 CLI의 `decision` 명령이 같은 공통 저장기를 호출한다. mod도 같은 순수 검증기를 사용한다.
+세 프로젝트는 같은 위임 정책을 읽고 실제 실행 인자를 같은 resolver에서 만든다. Python의 안내 전용 `next`, JS의 자동 실행 등 CLI 인터페이스와 프로젝트별 산출물 검증은 유지한다. 공통 launcher가 binding에 지정된 프로젝트 CLI를 실행한다. `decision`은 공통 저장기를, `policy`와 위임은 공통 실행 정책을 사용한다.
 
 ```text
 공통 launcher → 프로젝트 CLI (저장소·Lead 확인, 기존 ledger.lock)
@@ -45,25 +45,43 @@ $env:HERDR_HARNESS_ADAPTERS = 'C:/example/herdr-harness/.local/adapters.json'
 node --test test/adapters.integration.mjs
 ```
 
-지원 fixture 이름은 `sw`, `vp`(kind `python`), `vdp`다. 실제 AI·공유 DB·운영 대장을 쓰지 않는다. 기존 회사 하네스 회귀 시험도 해당 checkout에서 실행한다. SW 결정함 회귀에는 build가 반환한 release 경로를 `HERDR_HARNESS_TEST_RELEASE`로 지정한다.
+지원 fixture 이름은 `sw`, `vp`(kind `python`), `vdp`다. 실제 AI·공유 DB·운영 대장을 쓰지 않는다. 기존 회사 하네스 회귀 시험도 해당 checkout에서 실행한다. 세 CLI 회귀에는 build가 반환한 release 경로를 `HERDR_HARNESS_TEST_RELEASE`로 지정한다.
 
 ## 설치·업데이트
 
-1. `examples/install.example.json`을 `.local/install.json`으로 복사해 로컬 경로를 채운다. 프로젝트 `command`는 공통 bridge가 연결된 실제 CLI를 가리켜야 한다. 설치 대상 mod는 `harness`다.
+1. `examples/install.example.json`을 `.local/install.json`으로 복사해 로컬 경로를 채운다. 프로젝트 `command`는 공통 정책 bridge가 연결된 실제 CLI를, `adapterConfig`는 그 checkout의 `.agents/harness/config.json` 절대 경로를 가리켜야 한다. 설치 대상 mod는 `harness`다.
 2. 테스트를 통과한 뒤 `node scripts/install.mjs .local/install.json`을 실행한다. `harness`와 같은 상위 폴더의 `harness-auto`도 함께 설치·백업·검증한다. 기존 layout의 `harness-auto` 블록이 공간 전환에 맞춰 패널을 표시한다.
 3. staging native check → 소스·binding 백업 → 설치 → native check를 통과하면 active 기록을 바꾼다. `node scripts/verify-install.mjs <store>`로 실제 설치 파일 지문을 검증한다.
 4. 기존 Lead가 새 CLI와 프로젝트의 `COMMON.md` 지침을 사용하는지 별도로 확인한다. 설치는 Lead에 메시지를 보내거나 현재 업무를 재시작하지 않는다.
 
-각 상태 폴더의 `harness-binding.json`은 release 경로·manifest 지문·project ID·기존 CLI command/cwd만 담는다. 업무 내용·인증 정보는 넣지 않는다. 설치 프로그램은 프로젝트의 추적 파일을 수정하지 않으므로 회사 adapter 변경은 별도 브랜치로 검토·게시한다.
+각 상태 폴더의 `harness-binding.json`은 release 경로·manifest 지문·project ID·CLI command/cwd·adapterConfig만 담는다. 화면도 이 설정과 release의 공통 한도를 읽어 오래된 main 설정을 표시하지 않는다. 업무 내용·인증 정보는 넣지 않는다. 설치 프로그램은 프로젝트의 추적 파일을 수정하지 않으므로 회사 adapter 변경은 별도 브랜치로 검토·게시한다.
 
 기존 `projects.json`은 보존하고 처음 설치에만 빈 설정을 만든다. 예시는 `examples/projects.example.json`이다. 업무 대장·결정 기록·Herdr 읽음 상태는 설치와 복구가 건드리지 않는다. 소스를 수정해도 설치본은 자동으로 바뀌지 않는다. 검증 후 명시적으로 재설치한다.
 
 ```powershell
 node <release>/bin/harness.mjs --binding <상태폴더>/harness-binding.json decision list
+node <release>/bin/harness.mjs --binding <상태폴더>/harness-binding.json policy --stage implement --profile normal --rework 1
 node scripts/rollback.mjs <store>
 ```
 
 rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경이 있으면 덮어쓰지 않고 거부한다. 새 질문이나 사용자 설정은 되돌리지 않는다. 로컬 백업에는 이전 개인 파일 내용이 있으므로 store를 Git에 넣지 않는다.
+
+## 위임 정책
+
+정본은 [policy/execution.json](policy/execution.json) 하나다. 변경 후 검사·build·설치하면 세 프로젝트에 같은 정책이 적용된다. 새 CLI는 공통 설치가 없거나 지문이 다르면 실패하며 예전 모델로 조용히 돌아가지 않는다. 이미 실행 중인 에이전트는 유지하고 다음 위임부터 적용한다. 구 checkout의 직접 CLI 호출은 설치된 command를 우회하므로 Lead는 binding의 release와 공통 launcher를 사용한다.
+
+| 단계 | 모델 | 기본 effort | Fast |
+|---|---|---|---|
+| 조사 | gpt-6-astra | high | 끔 |
+| 구현 | claude-opus-5-5 | high | 끔 |
+| QA | gpt-6.1-sol | xhigh | 끔 |
+| 설계 검토 | claude-fable-5-2 | high | 끔 |
+
+`simple`과 `normal`은 기본값, `complex`는 구현 xhigh(조사는 모든 프로필 high, QA는 모든 프로필 xhigh), `high-risk`는 complex에 설계 검토와 단독 구현을 추가한다. 옛 이름은 모든 저장소에서 같은 별칭으로 지원한다: ui-simple→simple, feature→normal, shared-component→complex, token/architecture/high→high-risk. 재작업마다 구현 effort를 한 단계 올려 max에서 멈춘다. 동시 실행 2, 재작업 최대 2, 자동 실행 재시도 0이다.
+
+사용자 지정 배치는 조사 Astra/high, 설계 Fable 5.2/high, 구현 Opus 5.5/high, QA Sol/xhigh다. 모든 단계에서 Fast를 끈다. 모델의 CLI가 바뀌면 표준 `.agents/skills`·`.claude/skills` 경로와 `$`·`/` 호출도 공통 resolver가 함께 맞춘다. 저장소별 스킬 이름·인자와 사용자 지정 경로는 유지한다. Codex workspace-write, Claude auto를 실행 인자로 지정한다. Codex 승인·네트워크 등 지정하지 않은 사용자 설정은 계속 상속하며 전역 설정을 쓰지 않는다. Fast 비활성화는 Codex의 `service_tier="default"`와 Claude의 `fastMode:false`로 명시한다([Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude Fast 설정](https://code.claude.com/docs/en/fast-mode)).
+
+현재 세 저장소의 `execution_overrides`는 모두 `{}`다. 앞으로 의도적 예외가 필요하면 프로젝트 config에 `execution_overrides: {"reason":"구체적인 사유", "roles":{"implement":{"effort":"medium"}}, "limits":{"max_parallel":1}}`처럼 선언한다. roles에는 모델·effort·Fast·실행 모드만, limits에는 공통 한도만 허용한다. 예전 roles의 model/args나 별도 routing은 거부하므로 중복 설정이 조용히 살아남지 않는다. 적용 순서는 공통 역할 → 명시적 저장소 예외 → 프로필 effort → 재작업 상향 → 사유 있는 업무별 model/effort 예외다. run의 `x_execution_policy`에 정책 지문·release·예외·실제 요청 Fast를 남긴다. 이 기록은 요청값이며 실제 모델 사용 증거는 각 CLI의 evidence로 구분한다.
 
 ## 결정함 규칙
 

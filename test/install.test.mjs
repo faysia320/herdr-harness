@@ -69,3 +69,15 @@ test('설치 중 다른 설치·복구는 거부하고 실패 복원 뒤 잠금�
   rollback(f.plan.store);
   assert.equal(readFileSync(join(f.modPath, 'main.js'), 'utf8'), 'old source');
 });
+
+test('adapter 설정을 검증한 뒤 화면과 CLI에 같은 설정 경로를 연결한다', (t) => {
+  const f = fixture(t), file = join(f.root, 'config.json');
+  const config = { project: { id: 'fixture' }, roles: Object.fromEntries(['research', 'architect', 'implement', 'qa'].map((s) => [s, { skill: s, invoke: s }])) };
+  f.plan.bindings[0].adapterConfig = file;
+  writeFileSync(file, JSON.stringify({ ...config, project: { id: 'other' } }));
+  assert.throws(() => install(f.plan, { check: () => {} }), /프로젝트/);
+  assert.equal(existsSync(f.plan.bindings[0].file), false);
+  writeFileSync(file, JSON.stringify(config));
+  install(f.plan, { check: () => {} });
+  assert.equal(JSON.parse(readFileSync(f.plan.bindings[0].file)).adapterConfig, file);
+});

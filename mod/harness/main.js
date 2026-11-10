@@ -88,7 +88,19 @@ async function load(project) {
     const text = await readTextFile(`${dir}/events.jsonl`).catch(() => null);
     const eventLines = (text ?? "").split("\n").filter((s) => s.trim());
     const partial = text === null || eventLines.some((s) => !parse(s));
-    const maxParallel = config.limits?.max_parallel ?? config.limits?.max_parallel_tasks;
+    let maxParallel = config.limits?.max_parallel ?? config.limits?.max_parallel_tasks;
+    const bindingText = await readTextFile(`${dir}/harness-binding.json`);
+    if (bindingText) {
+      const binding = parse(bindingText);
+      if (!binding || binding.project !== id) throw new Error("실행 정책 연결을 읽지 못했습니다");
+      if (binding.adapterConfig) {
+        const adapter = parse(await readTextFile(binding.adapterConfig));
+        const policy = parse(await readTextFile(`${binding.release.replaceAll('\\', '/')}/policy/execution.json`));
+        if (adapter?.project?.id !== id || policy?.version !== 1) throw new Error("공통 실행 정책을 읽지 못했습니다");
+        maxParallel = adapter.execution_overrides?.limits?.max_parallel ?? policy.limits?.max_parallel;
+        if (!Number.isInteger(maxParallel) || maxParallel < 1) throw new Error("공통 실행 한도가 올바르지 않습니다");
+      }
+    }
     const tasks = rawTasks.map((t) => ({ ...normalize(t), waits: waitReasons(t, ledger, maxParallel, config.git?.overlap_exempt_paths), project: project.name }));
     const events = lines(text).filter((e) => e.event === "state" && e.project === id)
       .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", project: project.name }));

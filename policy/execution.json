@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "default_profile": "normal",
+  "roles": {
+    "research": { "cli": "codex", "model": "gpt-6-astra", "effort": "high", "fast": false, "sandbox": "workspace-write" },
+    "architect": { "cli": "claude", "model": "claude-fable-5-2", "effort": "high", "fast": false, "permission_mode": "auto" },
+    "implement": { "cli": "claude", "model": "claude-opus-5-5", "effort": "high", "fast": false, "permission_mode": "auto" },
+    "qa": { "cli": "codex", "model": "gpt-6.1-sol", "effort": "xhigh", "fast": false, "sandbox": "workspace-write" }
+  },
+  "profiles": {
+    "simple": { "stages": ["research", "implement", "qa"], "effort": {}, "exclusive": false },
+    "normal": { "stages": ["research", "implement", "qa"], "effort": {}, "exclusive": false },
+    "complex": { "stages": ["research", "implement", "qa"], "effort": { "implement": "xhigh" }, "exclusive": false },
+    "high-risk": { "stages": ["research", "architect", "implement", "qa"], "effort": { "implement": "xhigh" }, "exclusive": true }
+  },
+  "aliases": { "ui-simple": "simple", "feature": "normal", "shared-component": "complex", "token": "high-risk", "architecture": "high-risk", "high": "high-risk" },
+  "escalation": { "effort_ladder": ["low", "medium", "high", "xhigh", "max"], "implement_step_per_rework": 1 },
+  "limits": { "max_parallel": 2, "max_rework": 2, "max_retries": 0 }
+}
