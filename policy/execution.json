@@ -2,10 +2,10 @@
   "version": 1,
   "default_profile": "normal",
   "roles": {
-    "research": { "cli": "codex", "model": "gpt-6-astra", "effort": "high", "fast": false, "sandbox": "workspace-write" },
+    "research": { "cli": "codex", "model": "gpt-6-astra", "effort": "high", "fast": false, "sandbox": "danger-full-access" },
     "architect": { "cli": "claude", "model": "claude-fable-5-2", "effort": "high", "fast": false, "permission_mode": "auto" },
     "implement": { "cli": "claude", "model": "claude-opus-5-5", "effort": "high", "fast": false, "permission_mode": "auto" },
-    "qa": { "cli": "codex", "model": "gpt-6.1-sol", "effort": "xhigh", "fast": false, "sandbox": "workspace-write" }
+    "qa": { "cli": "codex", "model": "gpt-6.1-sol", "effort": "xhigh", "fast": false, "sandbox": "danger-full-access" }
   },
   "profiles": {
     "simple": { "stages": ["research", "implement", "qa"], "effort": {}, "exclusive": false },

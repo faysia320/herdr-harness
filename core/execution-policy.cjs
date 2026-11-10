@@ -14,7 +14,7 @@ const fail = (message) => { throw new Error(message); };
 function roleCheck(role) {
   if (!['codex', 'claude'].includes(role.cli) || typeof role.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(role.model)
     || !efforts.includes(role.effort) || typeof role.fast !== 'boolean') fail('지원하지 않는 모델·effort·Fast 설정이다.');
-  if (role.cli === 'codex' && !['read-only', 'workspace-write'].includes(role.sandbox)) fail('지원하지 않는 Codex sandbox다.');
+  if (role.cli === 'codex' && !['read-only', 'workspace-write', 'danger-full-access'].includes(role.sandbox)) fail('지원하지 않는 Codex sandbox다.');
   if (role.cli === 'claude' && role.permission_mode !== 'auto') fail('Claude 권한 모드는 auto여야 한다.');
   if ((role.cli === 'claude' && /^(?:gpt-|o\d)/i.test(role.model))
     || (role.cli === 'codex' && /^(?:claude-|(?:opus|fable|sonnet|haiku)(?:$|[-.]))/i.test(role.model))) fail('모델과 CLI 제공자가 다르다. 기존 모델 예외를 해제하거나 현재 CLI에 맞게 갱신한다.');
@@ -76,9 +76,8 @@ function resolve(local, task, stage) {
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
-  // Windows elevated sandbox는 별도 계정으로 실행돼 사용자 프로필의 python·node·hc를 읽지 못한다. 쓰기 경계는 unelevated도 같다.
   const argv = role.cli === 'codex'
-    ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-c', 'windows.sandbox="unelevated"', '-s', role.sandbox]
+    ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-s', role.sandbox]
     : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast })];
   return { ...role, argv, policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }

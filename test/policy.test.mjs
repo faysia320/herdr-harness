@@ -29,8 +29,7 @@ test('실행 Fast·권한은 상속에 맡기지 않고 명시하며 QA도 별�
   assert.ok(research.argv.includes('service_tier="default"'));
   assert.equal(qa.model, 'gpt-6.1-sol'); assert.ok(qa.argv.includes('model_reasoning_effort="xhigh"'));
   assert.ok(qa.argv.includes('service_tier="default"'));
-  assert.ok(qa.argv.includes('windows.sandbox="unelevated"') && research.argv.includes('windows.sandbox="unelevated"'));
-  assert.ok(qa.argv.includes('workspace-write')); assert.ok(impl.argv.includes('auto'));
+  assert.ok(qa.argv.includes('danger-full-access') && research.argv.includes('danger-full-access')); assert.ok(impl.argv.includes('auto'));
   assert.equal(qa.argv.includes('bypassPermissions'), false);
 });
 
