@@ -136,3 +136,25 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 - **조회**: `show` 같은 상세 조회는 `restore`로 원본을 읽는다. 지문이 다르면 실패한다.
 
 진입점은 `node .agents/harness/runtime.cjs <binding> ledger`이고, 동작은 `plan`·`archive`·`restore`다. `archived: true`는 목록에서 숨기는 표시일 뿐이라 JSON 크기를 줄이지 않는다.
+
+## 다음 계약 버전 후보
+
+`CONTRACT.md`(계약 v1)는 세 저장소가 바이트 단위로 같고 대장 버전과 묶여 있다. 아래는 바로 바꾸지 않고, 다음 계약 버전을 올릴 때 함께 반영할 후보다.
+
+### QA 실행 환경 차단 시 대체 QA와 사람 수용 경로
+
+- **배경**: 2026-11-10 SW-0060에서 일어났다.
+  - Codex QA r2·r3가 실행 환경 문제로 BLOCKED가 됐다. Windows Codex sandbox에서 자식 프로세스 EPERM, Herdr pipe 접근 거부가 났다.
+  - 사용자 결정으로 Claude 독립 QA r4를 돌렸고, CONDITIONAL PASS(Low 2)를 사용자가 받아들여 병합했다.
+  - 계약 v1에서 DONE은 QA `PASS` 수집으로만 들어간다. BLOCKED에서 DONE으로 가는 전이도 없다. 그래서 업무는 BLOCKED로 남았다.
+  - 그 업무에 의존하던 SW-0061·0062는 dispatch할 수 없었다. 결국 `fail`로 닫고 새 ID로 다시 등록했다.
+- **정할 것**:
+  - 실행 환경 차단을 결함 판정과 구분하는 QA 결과 코드. 예: `BLOCKED`에 `awaiting: qa-environment`를 붙인다.
+  - QA를 다른 CLI·모델로 바꿔 다시 돌릴 때의 기록 방식. 원래 단계 정책과의 차이, 사유, 사용자 결정 quote를 남긴다.
+  - 사람이 CONDITIONAL PASS를 받아들일 때의 종료 상태. 두 가지 안이 있다.
+    - DONE으로 보내되 `approval`처럼 `{by: "user", quote, report}` 근거를 남긴다.
+    - DONE과 구분되는 종료 상태를 따로 둔다.
+  - 의존 업무의 `depends` 판정이 위 종료 상태를 충족으로 볼지 여부. 이미 등록된 업무의 `depends`를 사람이 사유와 함께 바꾸는 명령이 필요한지도 함께 정한다.
+- **지금 처리 기준**(계약 v1):
+  - 사람이 받아들인 업무는 `fail --why`로 닫는다. 사유에는 QA 경위, 사용자 수용, PR·보고서 경로를 남긴다.
+  - 의존 업무는 같은 방식으로 닫고 새 ID로 다시 등록한다. 새 업무 설명의 첫 줄에 원래 ID를 적는다.
