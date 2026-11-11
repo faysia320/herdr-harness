@@ -1,9 +1,9 @@
 import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand } from "herdr";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc } from "herdr";
 import { GitTree } from "./git-tree.js";
-import { span, timeline, waitReasons, ledgerCapacityNote } from "./logic.js";
+import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage } from "./logic.js";
 import { decisions, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, leadReportKey, decisionInbox, openRequests } from "./attention.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
@@ -117,6 +117,7 @@ export default class Harness extends View {
     this.page = "brief"; this.git = new GitTree();
     this.projects = []; this.open = null; this.showEnded = false; this.seen = null; this.error = null;
     this.allProjects = false; this.expanded = new Set(); this.showChanges = false; this.showTransitions = false;
+    this.answers = new Map(); this.inputs = new Map();
     this.refresh(cx);
     // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
     cx.timer.every(15000, (cx) => cx.notify());
@@ -426,7 +427,47 @@ export default class Harness extends View {
       .when(Boolean(request.recommendation), (e) => e.child(div().text_size(11).text_color(t.accent).child(`Lead 추천: ${request.recommendation}`)))
       .child(div().text_size(10.5).text_color(t.dim).child(`출처: ${request.source}`))
       .when(p.stale || p.decisionStatus !== "ready", (e) => e.child(div().text_size(10.5).text_color(t.blocked).child("마지막 정상 기록 · 현재 해소 여부 확인 필요")))
+      .child(this.answerRow(p, request, live, t))
       .child(h_flex().child(this.leadButton(p, null, live, t, `request-${p.name}-${request.id}`)));
+  }
+
+  // 카드에서 고른 답은 Lead 터미널로만 전한다. 결정함 해소 기록은 Lead CLI가 한다.
+  answerRow(p, request, live, t) {
+    this.answers ??= new Map(); this.inputs ??= new Map();
+    const key = answerKey(p, request), sent = this.answers.get(key), id = `${p.name}-${request.id}`;
+    const lead = !p.stale && p.decisionStatus === "ready" && leadTerminal(p, live, null);
+    if (sent?.status === "sending") return div().text_size(11).text_color(t.muted).child(`Lead에 답 전달 중: ${sent.answer}`);
+    if (sent?.status === "sent") return div().text_size(11).text_color(t.accent).child(`전달됨 · Lead 기록 대기 — ${sent.answer}`);
+    if (!lead) return div().text_size(10.5).text_color(t.dim).child("Lead가 연결되고 결정함이 최신일 때 여기서 답할 수 있습니다.");
+    if (!this.inputs.has(key)) {
+      const input = InputState.new({ placeholder: "직접 입력 후 Enter" });
+      input.on("submit", (_e, cx) => this.answer(p, request, lead, input.value(), cx));
+      this.inputs.set(key, input);
+    }
+    const input = this.inputs.get(key);
+    return v_flex().gap(6)
+      .when(sent?.status === "failed", (e) => e.child(div().text_size(10.5).text_color(t.blocked).child(`전달 실패: ${sent.error} — 다시 시도하세요.`)))
+      .child(h_flex().gap(6).flex_wrap()
+        .children(request.options.map((option, i) => this.button(`answer-${id}-${i}`, option.label, (cx) => this.answer(p, request, lead, option.label, cx), t))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().id(`answer-${id}-input`).flex_1().min_w(0).h(28).px(8).flex().items_center().rounded(5).border_1().border_color(t.border)
+          .cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(input).h_full().text_size(11.5).text_color(t.foreground)))
+        .child(this.button(`answer-${id}-text`, "보내기", (cx) => this.answer(p, request, lead, input.value(), cx), t)));
+  }
+
+  answer(p, request, lead, value, cx) {
+    const message = answerMessage(request, value), key = answerKey(p, request);
+    if (!message || ["sending", "sent"].includes(this.answers.get(key)?.status)) return;
+    const answer = String(value).replace(/\s+/g, " ").trim();
+    this.answers.set(key, { status: "sending", answer });
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try { r = await hc(["send", lead.address, message]); } catch (e) { r = { code: -1, stderr: e?.message ?? String(e) }; }
+      this.answers.set(key, r.code === 0 ? { status: "sent", answer } : { status: "failed", answer, error: (r.stderr || r.stdout || `종료 코드 ${r.code}`).trim().slice(0, 160) });
+      cx.notify();
+    });
   }
 
   decisionCard(p, d, live, t) {

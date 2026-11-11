@@ -69,3 +69,13 @@ export function timeline(runs, now) {
   for (const row of rows) totals.set(row.stage, (totals.get(row.stage) ?? 0) + row.ms);
   return { rows, totals: [...totals].map(([stage, ms]) => ({ stage, ms })) };
 }
+
+// 화면에서 고른 답을 Lead에게 전하는 문장. 결정함 기록은 Lead CLI만 하므로 해소 절차와 원문을 함께 보낸다.
+export const answerKey = (p, r) => `${p.name}\u0000${r.id}\u0000${r.revision}`;
+export function answerMessage(r, answer) {
+  const text = String(answer ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return `[사용자 결정 · Herdr 하네스 모드] 질문 ${r.id}(revision ${r.revision})의 답: "${text}". `
+    + `사용자가 하네스 모드 카드에서 직접 고른 답이다. 이 문장을 quote로, 출처를 'Herdr 하네스 모드 사용자 선택'으로 해 `
+    + `decision resolve ${r.id} --revision ${r.revision} 로 기록한 뒤 그 결정대로 진행하라. revision이 바뀌었으면 기록하지 말고 사용자에게 다시 물어라.`;
+}

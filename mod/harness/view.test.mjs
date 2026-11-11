@@ -28,7 +28,9 @@ function setup(overrides = {}) {
     }, watchFolder: () => new Promise(() => {}), terminals: () => terminalList,
     spaces: () => spaceList, panes: () => paneList, shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
     theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {},
-    GitTree: class {}, nextCommand: () => new Promise(() => {}), ...overrides };
+    GitTree: class {}, nextCommand: () => new Promise(() => {}),
+    InputState: { new: () => { const handlers = {}; return { value: () => '', on: (n, f) => { handlers[n] = f; }, handlers }; } },
+    Input: { new: () => el() }, hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
   return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList, gitRenders,
     git: { render(projects) { gitRenders.push(projects); return el(); } }, cx: { notify() {}, stop_propagation() {} } };
@@ -324,6 +326,38 @@ test('질문 파일→실제 로더→화면: 무관한 완료 보고와 읽음�
   request.status = 'resolved'; request.revision = 2; request.resolution = { quote: '좁게 등록해', source: 'fixture 실제 답' }; write();
   v.projects = [await s.load(project)]; draw(); assert.equal(s.texts.includes(request.question), false);
   assert.equal(s.commands.length, 0);
+});
+
+test('질문 카드의 선택지는 Lead 터미널에 답을 전하고 결정함은 직접 고치지 않는다', async () => {
+  const sends = [];
+  const s = setup({ hc: async (args) => { sends.push(args); return { code: 0, stdout: '', stderr: '' }; } }); install(s);
+  const request = { id: 'tools', question: '검사 명령을 사전 승인 목록에 추가할까요?', task: 'a', status: 'open', revision: 3,
+    source: 'fixture 질문', created: new Date().toISOString(), options: [{ label: '추가', impact: '사전 승인 목록 확장' }, { label: '추가 안 함', impact: '실행 때마다 확인' }] };
+  const path = project.root + '/state/decisions.json', body = JSON.stringify({ version: 1, project: 'fixture', requests: { tools: request } });
+  s.files.set(path, body);
+  const p = await s.load(project), v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set(), answers: new Map(), inputs: new Map() });
+  const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  const draw = () => { s.texts.length = 0; s.clicks.clear(); v.render(); };
+  draw(); s.clicks.get('answer-fixture-tools-0')({}, cx);
+  // 전송 중에는 다른 선택지를 다시 보내지 않는다.
+  draw(); assert.equal(s.clicks.has('answer-fixture-tools-1'), false);
+  await Promise.all(jobs);
+  assert.deepEqual(sends.map((a) => a.slice(0, 2)), [['send', 't7']]);
+  assert.match(sends[0][2], /질문 tools\(revision 3\)의 답: "추가"/);
+  assert.match(sends[0][2], /decision resolve tools --revision 3/);
+  draw(); assert.ok(s.texts.some((x) => x.startsWith('전달됨 · Lead 기록 대기 — 추가')));
+  assert.equal(s.files.get(path), body);
+  // revision이 바뀌면 이전 전달 표시를 쓰지 않고 다시 답할 수 있다.
+  request.revision = 4; s.files.set(path, JSON.stringify({ version: 1, project: 'fixture', requests: { tools: request } }));
+  v.projects = [await s.load(project)]; draw(); assert.ok(s.clicks.has('answer-fixture-tools-0'));
+  // 전달 실패는 실패로 보이고 다시 시도할 수 있다.
+  const f = setup({ hc: async () => ({ code: 1, stdout: '', stderr: 'no such terminal' }) }); install(f); f.files.set(path, body);
+  const fv = new f.Harness(); Object.assign(fv, { projects: [await f.load(project)], expanded: new Set(), answers: new Map(), inputs: new Map() });
+  const fjobs = [], fcx = { ...f.cx, spawn(fn) { fjobs.push(fn(fcx)); } };
+  f.texts.length = 0; fv.render(); f.clicks.get('answer-fixture-tools-1')({}, fcx); await Promise.all(fjobs);
+  f.texts.length = 0; f.clicks.clear(); fv.render();
+  assert.ok(f.texts.some((x) => x.includes('전달 실패: no such terminal')));
+  assert.ok(f.clicks.has('answer-fixture-tools-0'));
 });
 
 test('결정함 읽기 실패는 직전 질문을 보존하고 최신 상태로 꾸미지 않는다', async () => {
