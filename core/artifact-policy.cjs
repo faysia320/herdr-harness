@@ -75,6 +75,17 @@ function files(dir, base = dir) {
   });
 }
 
+// base 아래 경로에 링크·junction이 끼어 있으면 쓰기·읽기 전에 거부한다. 경로 밖의 파일을 덮어쓰거나 읽지 않게 한다.
+function noLink(base, target) {
+  let at = base;
+  for (const part of path.relative(base, target).split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    if (isLink(at)) fail(`보관 경로에 링크가 있어 거부했다: ${at}`);
+    if (!fs.existsSync(at)) return;
+  }
+}
+const isLink = (p) => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
+
 // worktree의 미커밋 과정 문서를 상태 폴더로 복사한다. 이전 보관본은 지우지 않고 같은 경로만 갱신한다.
 function archive(local, input) {
   const c = declared(local);
@@ -82,12 +93,16 @@ function archive(local, input) {
   if (!path.isAbsolute(input.worktree ?? '') || !path.isAbsolute(input.stateDir ?? '')) fail('worktree와 상태 폴더는 절대 경로여야 한다.');
   const dest = path.join(input.stateDir, ...c.archive.replace('{id}', input.id).split('/'));
   const manifestFile = path.join(dest, 'manifest.json');
+  noLink(input.stateDir, manifestFile);
   const previous = fs.existsSync(manifestFile) ? JSON.parse(fs.readFileSync(manifestFile, 'utf8')) : { files: {} };
   const copied = {};
   for (const rel of resolve(local, { ...input.vars, id: input.id })) {
-    for (const abs of files(path.join(input.worktree, ...rel.split('/')))) {
+    const root = path.join(input.worktree, ...rel.split('/'));
+    noLink(input.worktree, root);
+    for (const abs of files(root)) {
       const name = path.relative(input.worktree, abs).split(path.sep).join('/');
       const bytes = fs.readFileSync(abs), target = path.join(dest, ...name.split('/'));
+      noLink(input.stateDir, target);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, bytes);
       copied[name] = digest(bytes);
