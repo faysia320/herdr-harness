@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc } from "herdr";
+import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc, exec, home } from "herdr";
 import { GitTree } from "./git-tree.js";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage } from "./logic.js";
 import { decisions, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, leadReportKey, decisionInbox, openRequests } from "./attention.js";
@@ -120,7 +120,10 @@ export default class Harness extends View {
     this.answers = new Map(); this.typing = null;
     this.answerInput = InputState.new({ placeholder: "직접 입력 후 Enter" });
     this.answerInput.on("submit", (_e, cx) => this.submitTyped(cx));
+    this.accounts = null; this.stopped = []; this.accountBusy = null; this.accountError = null;
     this.refresh(cx);
+    this.refreshAccounts(cx);
+    cx.timer.every(60000, (cx) => this.refreshAccounts(cx));
     // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
     cx.timer.every(15000, (cx) => cx.notify());
     cx.timer.every(60000, (cx) => this.refresh(cx));
@@ -480,6 +483,58 @@ export default class Harness extends View {
     });
   }
 
+  // Claude 계정 전환은 설치된 release의 bin/claude-account.mjs가 한다. 모드는 상태를 보여 주고 명령만 부른다.
+  async accountCommand(args) {
+    const active = JSON.parse(await readTextFile(`${home().replaceAll("\\", "/")}/.config/herdr-harness/active.json`) ?? "null");
+    if (!active?.release) throw new Error("설치된 하네스 release를 찾지 못했습니다");
+    const r = await exec("node", [`${active.release.replaceAll("\\", "/")}/bin/claude-account.mjs`, ...args], { timeout: 60000 });
+    if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().slice(0, 200) || `종료 코드 ${r.code}`);
+    return JSON.parse(r.stdout);
+  }
+
+  refreshAccounts(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        this.accounts = await this.accountCommand(["status"]);
+        this.stopped = this.accounts.accounts.length > 1 ? await this.accountCommand(["scan"]) : [];
+        this.accountError = null;
+      } catch (e) { this.accountError = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  accountAction(label, args, cx) {
+    if (this.accountBusy) return;
+    this.accountBusy = label; this.accountError = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try { await this.accountCommand(args); } catch (e) { this.accountError = `${label} 실패: ${e?.message ?? e}`; }
+      this.accountBusy = null;
+      this.refreshAccounts(cx);
+    });
+  }
+
+  accountSection(t) {
+    const list = this.accounts?.accounts ?? [];
+    if (list.length < 2 && !this.accountError) return null;
+    const current = list.find((a) => a.active);
+    return v_flex().flex_none().gap(6).p(10).rounded(8).bg(t.raised).border_1().border_color(this.stopped.length ? t.blocked : t.border)
+      .child(h_flex().gap(6).items_center()
+        .child(div().font_semibold().text_size(12).child("Claude 계정"))
+        .child(div().text_size(11).text_color(t.muted).child(current ? `현재 ${current.label}${current.email ? ` · ${current.email}` : ""}${current.plan ? ` · ${current.plan}` : ""}` : this.accounts?.unknownDir ? `등록되지 않은 폴더 사용 중: ${this.accounts.unknownDir}` : "확인 중")))
+      .child(h_flex().gap(6).flex_wrap()
+        .children(list.filter((a) => !a.active).map((a) => a.loggedIn
+          ? this.button(`account-use-${a.key}`, `${a.label}로 전환`, (cx) => this.accountAction(`${a.label} 전환`, ["use", a.key], cx), t)
+            .tooltip("새로 뜨는 Lead·에이전트가 이 계정을 씁니다. 이미 실행 중인 세션은 그대로입니다.")
+          : div().text_size(10.5).text_color(t.dim).child(`${a.label}: 로그인 필요 — 터미널에서 $env:CLAUDE_CONFIG_DIR='${a.dir}'; claude 실행 후 /login`))))
+      .children(this.stopped.map((s) => h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).text_size(11).text_color(t.blocked).child(`한도로 멈춤 · ${s.name ?? s.address}${s.where ? ` · ${s.where}` : ""}`))
+        .child(this.button(`account-resume-${s.address}`, "현재 계정으로 이어서 실행", (cx) => this.accountAction(`${s.name ?? s.address} 이어서 실행`, ["resume", s.address], cx), t)
+          .tooltip("같은 이름·위치로 다시 띄워 같은 대화를 지금 계정으로 이어 갑니다."))))
+      .when(Boolean(this.accountBusy), (e) => e.child(div().text_size(10.5).text_color(t.muted).child(`${this.accountBusy} 중…`)))
+      .when(Boolean(this.accountError), (e) => e.child(div().text_size(10.5).text_color(t.blocked).child(this.accountError)))
+      .child(div().text_size(10.5).text_color(t.dim).child("전환은 새로 뜨는 세션부터 적용됩니다. Lead는 하던 단계가 끝난 뒤 다시 띄우면 새 계정을 씁니다."));
+  }
+
   decisionCard(p, d, live, t) {
     const key = `decision-${p.name}-${d.task.id}`;
     return v_flex().flex_none().min_w(0).p(12).gap(7).rounded(8).bg(t.raised).border_1().border_color(t.blocked)
@@ -597,6 +652,7 @@ export default class Harness extends View {
       .when(page !== "git", (e) => e.child(v_flex().id("harness-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).gap(8)
         .when(Boolean(this.error), (e) => e.child(div().px(8).text_color(t.ansi1).child(this.error)))
         .when(!this.error && this.projects.length > 0 && !shown.length, (e) => e.child(div().px(8).text_size(11).text_color(t.dim).child("이 공간에 연결된 하네스 저장소가 없습니다")))
+        .when(Boolean(this.accountSection?.(t)), (e) => e.child(this.accountSection(t)))
         .when(shown.length > 0, (e) => e
           .child(h_flex().items_center().gap(6)
             .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && x.state !== "BLOCKED").length, t.working, t))

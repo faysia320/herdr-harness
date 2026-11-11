@@ -13,7 +13,7 @@ export function build() {
     const from = join(root, 'core', name), to = join(root, 'mod/harness', name);
     if (!existsSync(to) || !readFileSync(to).equals(readFileSync(from))) copyFileSync(from, to);
   }
-  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
+  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'bin/claude-account.mjs', 'core/claude-accounts.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
     ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`)];
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };

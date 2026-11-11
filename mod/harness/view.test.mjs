@@ -30,7 +30,7 @@ function setup(overrides = {}) {
     theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {},
     GitTree: class {}, nextCommand: () => new Promise(() => {}),
     InputState: { new: () => { let value = ''; return { value: () => value, set_value: (v) => { value = v; }, focus() {}, on() {} }; } },
-    Input: { new: () => el() }, hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
+    Input: { new: () => el() }, exec: async () => ({ code: 1, stdout: '', stderr: '' }), home: () => 'C:/fixture-home', hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
   return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList, gitRenders,
     git: { render(projects) { gitRenders.push(projects); return el(); } }, cx: { notify() {}, stop_propagation() {} } };
