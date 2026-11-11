@@ -117,7 +117,9 @@ export default class Harness extends View {
     this.page = "brief"; this.git = new GitTree();
     this.projects = []; this.open = null; this.showEnded = false; this.seen = null; this.error = null;
     this.allProjects = false; this.expanded = new Set(); this.showChanges = false; this.showTransitions = false;
-    this.answers = new Map(); this.inputs = new Map();
+    this.answers = new Map(); this.typing = null;
+    this.answerInput = InputState.new({ placeholder: "직접 입력 후 Enter" });
+    this.answerInput.on("submit", (_e, cx) => this.submitTyped(cx));
     this.refresh(cx);
     // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
     cx.timer.every(15000, (cx) => cx.notify());
@@ -433,27 +435,35 @@ export default class Harness extends View {
 
   // 카드에서 고른 답은 Lead 터미널로만 전한다. 결정함 해소 기록은 Lead CLI가 한다.
   answerRow(p, request, live, t) {
-    this.answers ??= new Map(); this.inputs ??= new Map();
+    this.answers ??= new Map();
     const key = answerKey(p, request), sent = this.answers.get(key), id = `${p.name}-${request.id}`;
     const lead = !p.stale && p.decisionStatus === "ready" && leadTerminal(p, live, null);
     if (sent?.status === "sending") return div().text_size(11).text_color(t.muted).child(`Lead에 답 전달 중: ${sent.answer}`);
     if (sent?.status === "sent") return div().text_size(11).text_color(t.accent).child(`전달됨 · Lead 기록 대기 — ${sent.answer}`);
     if (!lead) return div().text_size(10.5).text_color(t.dim).child("Lead가 연결되고 결정함이 최신일 때 여기서 답할 수 있습니다.");
-    if (!this.inputs.has(key)) {
-      const input = InputState.new({ placeholder: "직접 입력 후 Enter" });
-      input.on("submit", (_e, cx) => this.answer(p, request, lead, input.value(), cx));
-      this.inputs.set(key, input);
-    }
-    const input = this.inputs.get(key);
+    // 입력 상태는 init에서 하나만 만들 수 있다. 직접 입력은 한 번에 한 카드에서만 연다.
+    const typing = this.answerInput && this.typing?.key === key;
+    if (typing) this.typing = { key, p, request, lead };
     return v_flex().gap(6)
       .when(sent?.status === "failed", (e) => e.child(div().text_size(10.5).text_color(t.blocked).child(`전달 실패: ${sent.error} — 다시 시도하세요.`)))
       .child(h_flex().gap(6).flex_wrap()
-        .children(request.options.map((option, i) => this.button(`answer-${id}-${i}`, option.label, (cx) => this.answer(p, request, lead, option.label, cx), t))))
-      .child(h_flex().gap(6).items_center()
-        .child(div().id(`answer-${id}-input`).flex_1().min_w(0).h(28).px(8).flex().items_center().rounded(5).border_1().border_color(t.border)
+        .children(request.options.map((option, i) => this.button(`answer-${id}-${i}`, option.label, (cx) => this.answer(p, request, lead, option.label, cx), t)))
+        .when(Boolean(this.answerInput) && !typing, (e) => e.child(this.button(`answer-${id}-type`, "직접 입력…", (cx) => {
+          this.answerInput.set_value(""); this.typing = { key, p, request, lead }; this.answerInput.focus(); cx.notify();
+        }, t))))
+      .when(typing, (e) => e.child(h_flex().gap(6).items_center()
+        .child(div().id(`answer-${id}-input`).flex_1().min_w(0).h(28).px(8).flex().items_center().rounded(5).border_1().border_color(t.accent)
           .cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .child(Input.new(input).h_full().text_size(11.5).text_color(t.foreground)))
-        .child(this.button(`answer-${id}-text`, "보내기", (cx) => this.answer(p, request, lead, input.value(), cx), t)));
+          .child(Input.new(this.answerInput).h_full().text_size(11.5).text_color(t.foreground)))
+        .child(this.button(`answer-${id}-text`, "보내기", (cx) => this.submitTyped(cx), t))
+        .child(this.button(`answer-${id}-cancel`, "취소", (cx) => { this.typing = null; cx.notify(); }, t))));
+  }
+
+  submitTyped(cx) {
+    const target = this.typing, value = this.answerInput?.value() ?? "";
+    if (!target || !value.trim()) return;
+    this.typing = null; this.answerInput.set_value("");
+    this.answer(target.p, target.request, target.lead, value, cx);
   }
 
   answer(p, request, lead, value, cx) {

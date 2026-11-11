@@ -29,7 +29,7 @@ function setup(overrides = {}) {
     spaces: () => spaceList, panes: () => paneList, shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
     theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {},
     GitTree: class {}, nextCommand: () => new Promise(() => {}),
-    InputState: { new: () => { const handlers = {}; return { value: () => '', on: (n, f) => { handlers[n] = f; }, handlers }; } },
+    InputState: { new: () => { let value = ''; return { value: () => value, set_value: (v) => { value = v; }, focus() {}, on() {} }; } },
     Input: { new: () => el() }, hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
   return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList, gitRenders,
@@ -335,7 +335,7 @@ test('질문 카드의 선택지는 Lead 터미널에 답을 전하고 결정함
     source: 'fixture 질문', created: new Date().toISOString(), options: [{ label: '추가', impact: '사전 승인 목록 확장' }, { label: '추가 안 함', impact: '실행 때마다 확인' }] };
   const path = project.root + '/state/decisions.json', body = JSON.stringify({ version: 1, project: 'fixture', requests: { tools: request } });
   s.files.set(path, body);
-  const p = await s.load(project), v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set(), answers: new Map(), inputs: new Map() });
+  const p = await s.load(project), v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set(), answers: new Map() });
   const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
   const draw = () => { s.texts.length = 0; s.clicks.clear(); v.render(); };
   draw(); s.clicks.get('answer-fixture-tools-0')({}, cx);
@@ -350,9 +350,13 @@ test('질문 카드의 선택지는 Lead 터미널에 답을 전하고 결정함
   // revision이 바뀌면 이전 전달 표시를 쓰지 않고 다시 답할 수 있다.
   request.revision = 4; s.files.set(path, JSON.stringify({ version: 1, project: 'fixture', requests: { tools: request } }));
   v.projects = [await s.load(project)]; draw(); assert.ok(s.clicks.has('answer-fixture-tools-0'));
+  // 직접 입력은 init에서 만든 입력 하나를 그 카드에서만 연다(렌더 중 입력 상태 생성 금지).
+  v.answerInput = { value: () => '한글 직접 답', set_value() {}, focus() {} };
+  draw(); s.clicks.get('answer-fixture-tools-type')({}, cx); draw(); s.clicks.get('answer-fixture-tools-text')({}, cx); await Promise.all(jobs);
+  assert.match(sends.at(-1)[2], /질문 tools\(revision 4\)의 답: "한글 직접 답"/);
   // 전달 실패는 실패로 보이고 다시 시도할 수 있다.
   const f = setup({ hc: async () => ({ code: 1, stdout: '', stderr: 'no such terminal' }) }); install(f); f.files.set(path, body);
-  const fv = new f.Harness(); Object.assign(fv, { projects: [await f.load(project)], expanded: new Set(), answers: new Map(), inputs: new Map() });
+  const fv = new f.Harness(); Object.assign(fv, { projects: [await f.load(project)], expanded: new Set(), answers: new Map() });
   const fjobs = [], fcx = { ...f.cx, spawn(fn) { fjobs.push(fn(fcx)); } };
   f.texts.length = 0; fv.render(); f.clicks.get('answer-fixture-tools-1')({}, fcx); await Promise.all(fjobs);
   f.texts.length = 0; f.clicks.clear(); fv.render();
