@@ -29,7 +29,7 @@ function ago(sec, now) {
 
 export default class ClaudeAccounts extends View {
   init(_props, cx) {
-    this.status = null; this.usage = new Map(); this.stopped = []; this.busy = null; this.error = null;
+    this.status = null; this.usage = new Map(); this.stopped = []; this.leads = []; this.busy = null; this.error = null;
     this.refresh(cx, true);
     cx.timer.every(15000, (cx) => this.refresh(cx, false));
     cx.timer.every(60000, (cx) => this.refresh(cx, true));
@@ -38,7 +38,7 @@ export default class ClaudeAccounts extends View {
   async command(args) {
     const active = parse(await readTextFile(`${slash(home())}/.config/herdr-harness/active.json`));
     if (!active?.release) throw new Error("설치된 하네스 release를 찾지 못했습니다");
-    const r = await exec("node", [`${slash(active.release)}/bin/claude-account.mjs`, ...args], { timeout: 60000 });
+    const r = await exec("node", [`${slash(active.release)}/bin/claude-account.mjs`, ...args], { timeout: 120000 });
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().slice(0, 200) || `종료 코드 ${r.code}`);
     return JSON.parse(r.stdout);
   }
@@ -50,6 +50,7 @@ export default class ClaudeAccounts extends View {
         if (full || !this.status) {
           this.status = await this.command(["status"]);
           this.stopped = await this.command(["scan"]);
+          this.leads = await this.command(["leads"]);
         }
         for (const a of this.status.accounts) this.usage.set(a.key, parse(await readTextFile(`${slash(a.dir)}/usage-cache.json`)));
         this.error = null;
@@ -115,6 +116,15 @@ export default class ClaudeAccounts extends View {
         .child(div().text_size(10.5).text_color(t.blocked ?? t.ansi1).child(`한도로 멈춤 · ${s.name ?? s.address}`))
         .child(h_flex().child(this.button(`acct-resume-${s.address}`, "현재 계정으로 이어서 실행", (cx) => this.act(`${s.name ?? s.address} 이어서 실행`, ["resume", s.address], cx), t)
           .tooltip("같은 이름·위치로 다시 띄워 같은 대화를 지금 계정으로 이어 갑니다.")))))
+      .children(narrow() ? [] : this.leads.filter((l) => l.switchable).map((l) => {
+        const label = (key) => list.find((a) => a.key === key)?.label ?? key;
+        return v_flex().gap(3).px(8).py(5).rounded(6).border_1().border_color(t.border)
+          .child(div().text_size(10.5).text_color(t.muted).child(`Lead · ${l.project} · ${label(l.account)} 계정 사용 중`))
+          .child(l.status === "working"
+            ? div().text_size(10).text_color(t.dim).child("작업 중 — 이번 턴이 끝나면 교체할 수 있습니다")
+            : h_flex().child(this.button(`acct-lead-${l.address}`, `Lead를 ${label(l.active)} 계정으로 교체`, (cx) => this.act(`${l.project} Lead 교체`, ["switch-lead", l.address], cx), t)
+              .tooltip("같은 터미널에서 Claude만 다시 띄워 같은 대화를 지금 계정으로 이어 갑니다. 진행 중인 업무와 에이전트는 그대로입니다.")));
+      }))
       .when(Boolean(this.busy), (e) => e.child(div().px(2).text_size(10).text_color(t.muted).child(`${this.busy} 중…`)))
       .when(Boolean(this.error), (e) => e.child(div().px(2).text_size(10).text_color(t.blocked ?? t.ansi1).child(this.error)));
   }

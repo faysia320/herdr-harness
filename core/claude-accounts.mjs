@@ -87,8 +87,10 @@ export function use(key) {
   return status();
 }
 
+// 호출한 쪽이 hc 터미널이면 hc send가 글을 <hc from=…> 메시지로 감싼다. 셸 명령·슬래시 명령은 그대로 입력돼야 하므로 터미널 맥락을 지운다.
+const HC_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^HC_(TERMINAL_ID|TERMINAL_SOCKET|SCOPE)$/.test(k)));
 const hc = (args) => {
-  const r = spawnSync('hc', args, { encoding: 'utf8', windowsHide: true });
+  const r = spawnSync('hc', args, { encoding: 'utf8', windowsHide: true, env: HC_ENV });
   if (r.status !== 0) fail(`hc ${args[0]} 실패: ${(r.stderr || r.stdout).trim()}`);
   try { return JSON.parse(r.stdout); } catch { return r.stdout; }
 };
@@ -111,6 +113,72 @@ export function resumeTerminal(address, note) {
   const prompt = note ?? '계정 사용 한도로 멈춘 작업을 다른 계정에서 이어 간다. 멈추기 전에 하던 일을 그대로 이어서 끝내고, 원래 지시서대로 산출물과 receipt를 남겨라.';
   return hc(['run', '--bg', '--json', '--name', t.name, '--cwd', t.cwd, ...labels, ...parent, ...(t.die_with_parent ? [] : ['--outlive-parent']),
     'claude', ...keep, '--resume', t.name, '-n', t.name, '--', prompt]);
+}
+
+// ---- Lead 세션 교체 ----
+// Lead는 Herdr 셸(pwsh) 안에서 뜬 Claude다. 셸은 그대로 두고 Claude만 끝낸 뒤, 같은 셸에서 계정을 바꿔
+// `claude --resume <세션>`으로 다시 띄운다. 터미널 주소가 그대로라 하네스 대장의 Lead 기록도 바뀌지 않는다.
+const HARNESS_PROJECTS = join(homedir(), '.config', 'herdr-app', 'mods', 'harness', 'projects.json');
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function childClaude(pid) {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `Get-CimInstance Win32_Process -Filter "ParentProcessId=${Number(pid)} AND Name='claude.exe'" | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true });
+  return r.stdout.split(/\s+/).map(Number).find((n) => n > 0) ?? null;
+}
+
+// 실행 중인 Claude의 세션 ID와 계정: 각 계정 폴더의 sessions/<pid>.json 중 있는 쪽.
+function sessionOf(claudePid) {
+  for (const [key, a] of Object.entries(loadStore().accounts)) {
+    const s = json(join(dirOf(a), 'sessions', `${claudePid}.json`), null);
+    if (s?.sessionId) return { account: key, sessionId: s.sessionId, cwd: s.cwd };
+  }
+  return null;
+}
+
+const activeKey = () => {
+  const current = norm(userEnv());
+  return Object.entries(loadStore().accounts).find(([, a]) => norm(a.dir) === current)?.[0] ?? (current === null ? 'a' : null);
+};
+
+// 하네스에 연결된 레포마다 대장에 기록된 Lead 터미널과 그 Lead가 쓰는 계정.
+export function leads() {
+  const active = activeKey(), out = [];
+  for (const p of json(HARNESS_PROJECTS, { projects: [] }).projects ?? []) {
+    const config = json(join(p.root, '.agents', 'harness', 'config.json'), null);
+    const ledger = config?.project?.state_dir && json(join(p.root, config.project.state_dir, 'ledger.json'), null);
+    const address = ledger?.lead?.terminal;
+    if (!address) continue;
+    let t;
+    try { t = hc(['get', address]); } catch { continue; }
+    if (t.state !== 'live') continue;
+    const pid = childClaude(t.pid), session = pid && sessionOf(pid);
+    out.push({ project: p.name, address, where: t.labels?.where ?? null, status: t.status?.state ?? null,
+      account: session?.account ?? null, sessionId: session?.sessionId ?? null, active, switchable: Boolean(session) && session.account !== active });
+  }
+  return out;
+}
+
+export function switchLead(address, { force = false } = {}) {
+  const key = activeKey() ?? fail('현재 계정을 알 수 없다. 등록된 계정으로 먼저 전환한다.');
+  const a = loadStore().accounts[key];
+  const t = hc(['get', address]);
+  if (t.state !== 'live') fail(`${address}는 살아 있는 터미널이 아니다.`);
+  if (!/pwsh|powershell/i.test(`${t.argv?.[0] ?? ''} ${t.foreground?.name ?? ''}`)) fail(`${address}는 셸 안에서 뜬 Claude가 아니라 교체하지 않는다.`);
+  if (t.status?.state === 'working' && !force) fail(`${address} Lead가 작업 중이다. 이번 턴이 끝난 뒤 교체한다.`);
+  const pid = childClaude(t.pid) ?? fail(`${address}에서 실행 중인 Claude를 찾지 못했다.`);
+  const session = sessionOf(pid) ?? fail(`${address} Claude의 세션 기록을 찾지 못했다.`);
+  if (session.account === key) fail(`${address} Lead는 이미 현재 계정(${a.label})을 쓴다.`);
+  hc(['send', address, '/exit']);
+  for (let i = 0; i < 60 && childClaude(t.pid); i++) sleep(500);
+  if (childClaude(t.pid)) fail(`${address} Claude가 30초 안에 끝나지 않았다. 화면을 확인한다.`);
+  const env = a.dir ? `$env:CLAUDE_CONFIG_DIR='${a.dir.replaceAll("'", "''")}'` : 'Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue';
+  const prompt = `계정 전환으로 이 Lead 세션을 ${a.label} 계정에서 이어 간다. 하던 Lead 역할과 진행 중인 업무를 그대로 계속하라.`;
+  hc(['send', address, `${env}; claude --resume ${session.sessionId} '${prompt}'`]);
+  let next = null;
+  for (let i = 0; i < 60 && !next; i++) { sleep(500); next = childClaude(t.pid); }
+  if (!next) fail(`${address}에서 새 Claude가 뜨지 않았다. 화면을 확인한다.`);
+  return { address, from: session.account, to: key, sessionId: session.sessionId, pid: next };
 }
 
 // 살아 있는 Claude 터미널 중 작업 중이 아닌 것의 화면을 읽어 한도로 멈춘 것을 고른다.
