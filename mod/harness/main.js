@@ -121,10 +121,7 @@ export default class Harness extends View {
     this.answers = new Map(); this.typing = null;
     this.answerInput = InputState.new({ placeholder: "직접 입력 후 Enter" });
     this.answerInput.on("submit", (_e, cx) => this.submitTyped(cx));
-    this.leadAccounts = new Map(); this.leadBusy = null; this.leadError = null;
     this.refresh(cx);
-    this.refreshLeads(cx);
-    cx.timer.every(60000, (cx) => this.refreshLeads(cx));
     // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
     cx.timer.every(15000, (cx) => cx.notify());
     cx.timer.every(60000, (cx) => this.refresh(cx));
@@ -363,49 +360,9 @@ export default class Harness extends View {
           .tooltip(lead ? `Lead ${p.lead} · ${lead.status ?? "실행 중"}` : `Lead ${p.lead} · 꺼짐`))))
       .when(Boolean(p.note), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.dim).child(p.note)))
       .when(Boolean(p.capacityNote), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.blocked).child(p.capacityNote)))
-      .when(Boolean(this.leadAccounts?.get(p.name)?.switchable), (e) => e.child(this.leadSwitch(p, t)))
       .when(!p.note && !tasks.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
         .child(svg(ICON("check")).size(12).flex_none()).child("진행 중인 업무 없음")))
       .children(tasks.map((task) => this.task(p, task, live, t)));
-  }
-
-  // Claude 계정을 전역으로 바꿔도 이미 뜬 Lead는 이전 계정이다. 같은 터미널에서 같은 대화를 현재 계정으로 다시 띄운다.
-  // 실제 교체는 설치된 release의 bin/claude-account.mjs가 한다.
-  async accountCommand(args) {
-    const active = JSON.parse(await readTextFile(`${home().replaceAll("\\", "/")}/.config/herdr-harness/active.json`) ?? "null");
-    if (!active?.release) throw new Error("설치된 하네스 release를 찾지 못했습니다");
-    const r = await exec("node", [`${active.release.replaceAll("\\", "/")}/bin/claude-account.mjs`, ...args], { timeout: 120000 });
-    if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().slice(0, 200) || `종료 코드 ${r.code}`);
-    return JSON.parse(r.stdout);
-  }
-
-  refreshLeads(cx) {
-    cx.spawn(async (cx) => {
-      try {
-        const [status, leads] = [await this.accountCommand(["status"]), await this.accountCommand(["leads"])];
-        const label = (key) => status.accounts.find((a) => a.key === key)?.label ?? key;
-        this.leadAccounts = new Map(leads.map((l) => [l.project, { ...l, fromLabel: label(l.account), toLabel: label(l.active) }]));
-      } catch { this.leadAccounts = new Map(); }
-      cx.notify();
-    });
-  }
-
-  leadSwitch(p, t) {
-    const l = this.leadAccounts.get(p.name), busy = this.leadBusy === p.name;
-    return v_flex().px(6).pb(4).gap(4)
-      .child(h_flex().gap(6).items_center()
-        .child(div().flex_1().min_w(0).text_size(11).text_color(t.muted).child(`Lead가 ${l.fromLabel} 계정을 씁니다 · 새 세션은 ${l.toLabel} 계정`))
-        .child(busy ? div().text_size(10.5).text_color(t.muted).child("교체 중…")
-          : l.status === "working" ? div().text_size(10.5).text_color(t.dim).child("작업 중 · 턴이 끝나면 교체 가능")
-          : this.button(`lead-switch-${p.name}`, `${l.toLabel} 계정으로 교체`, (cx) => {
-            if (this.leadBusy) return;
-            this.leadBusy = p.name; this.leadError = null; cx.notify();
-            cx.spawn(async (cx) => {
-              try { await this.accountCommand(["switch-lead", l.address]); } catch (e) { this.leadError = `${p.name} Lead 교체 실패: ${e?.message ?? e}`; }
-              this.leadBusy = null; cx.notify(); this.refreshLeads(cx);
-            });
-          }, t).tooltip("같은 터미널에서 Claude만 다시 띄워 같은 대화를 지금 계정으로 이어 갑니다. 진행 중인 업무와 에이전트는 그대로입니다.")))
-      .when(Boolean(this.leadError) && this.leadError.startsWith(p.name), (e) => e.child(div().text_size(10.5).text_color(t.blocked).child(this.leadError)));
   }
 
   // 공간 생성 당시 folder보다 첫 터미널의 현재 경로를 우선한다.

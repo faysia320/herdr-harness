@@ -8,12 +8,12 @@ import { build, root } from '../scripts/build.mjs';
 import { run } from '../core/process.js';
 import { decisionInbox } from '../core/decisions.js';
 import { createRequire } from 'node:module';
-const policy = createRequire(import.meta.url)('../core/execution-policy.cjs');
 
 // 회사 소스는 개인 저장소에 복제하지 않는다. 호출자가 지정한 checkout에서 임시 fixture로만 읽는다.
 assert.ok(process.env.HERDR_HARNESS_ADAPTERS, 'HERDR_HARNESS_ADAPTERS=<로컬 adapter 목록 JSON>이 필요하다');
 const adapters = JSON.parse(readFileSync(process.env.HERDR_HARNESS_ADAPTERS, 'utf8'));
 const built = build();
+const policy = createRequire(import.meta.url)(join(built.release, 'core/execution-policy.cjs'));
 for (const adapter of adapters) test(`${adapter.name}: 공통 launcher → 회사 CLI → 공통 결정함`, async (t) => {
   const temp = mkdtempSync(join(tmpdir(), 'herdr-adapter-')), repo = join(temp, 'repo');
   t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -24,6 +24,7 @@ for (const adapter of adapters) test(`${adapter.name}: 공통 launcher → 회�
   const source = (file) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   assert.equal(source(join(repo, '.agents/harness/runtime.cjs')), source(join(root, 'adapters/runtime.cjs')));
   if (adapter.name === 'sw') copy('scripts/ci/check-worktree.mjs');
+  if (adapter.name === 'vdp') for (const file of ['.agents/harness/decision.mjs', '.agents/harness/process-artifacts.mjs', '.agents/harness/cli-io.mjs', 'scripts/check-process-artifacts.mjs']) copy(file);
   const config = JSON.parse(readFileSync(join(repo, '.agents/harness/config.json'), 'utf8'));
   const project = config.project.id, stateDir = join(repo, config.project.state_dir);
   mkdirSync(stateDir, { recursive: true });
@@ -64,7 +65,8 @@ for (const adapter of adapters) test(`${adapter.name}: 공통 launcher → 회�
   for (const [profile, stage, rework] of [['normal', 'research', 0], ['normal', 'implement', 0], ['normal', 'qa', 0], ['high-risk', 'architect', 0], ['ui-simple', 'research', 0], ['shared-component', 'implement', 1], ['normal', 'implement', 2], ['token', 'qa', 0]]) {
     const result = cli(['policy', '--profile', profile, '--stage', stage, '--rework', String(rework)]);
     const resolved = policy.resolve(config, { profile, rework }, stage);
-    assert.deepEqual(result.argv, resolved.argv);
+    const comparable = argv => argv.map((value,index) => index === 0 && process.platform === 'win32' ? value.toLowerCase() : value);
+    assert.deepEqual(comparable(result.argv), comparable(resolved.argv));
     assert.equal(result.releaseHash, built.manifestHash);
     assert.equal(result.policy.sha256, expected.execution_policy.sha256);
   }

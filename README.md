@@ -24,6 +24,18 @@ Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`�
                 공통 결정함 검증기 → Herdr mod
 ```
 
+## Claude 장기 토큰 선택
+
+A/B별 로그인 폴더 전환은 사용하지 않는다. 설정·MCP·대화는 하나의 공통 설정 폴더에 두고, 하네스에서 선택한 장기 토큰을 새 Claude 프로세스의 `CLAUDE_CODE_OAUTH_TOKEN`에 주입한다. 선택을 바꿔도 실행 중인 세션은 기존 토큰을 유지한다. Lead 교체·재개는 기존 대화와 실행 옵션을 보존한다.
+
+Windows에서 `claude setup-token`으로 원하는 계정의 토큰을 발급한 후 `herdr-token a` 또는 `herdr-token b`의 숨김 입력에 붙여 넣는다. 토큰을 채팅이나 명령 인자로 전달하지 않는다. 등록 후 사이드바에서 사용할 계정을 선택한다. 공통 계정 패널의 **이 공간의 Claude**에서 각 세션을 선택한 토큰으로 재개할 수 있다. 브리핑 모드나 하네스 프로젝트 등록은 필요하지 않다. 다른 공간의 세션은 표시하지 않고, 작업 중인 세션은 교체하지 않는다. 수동 Lead 실행은 `herdr-claude --resume <세션 ID>`를 사용한다. 일반 `claude` 명령은 하네스 토큰 선택을 거치지 않는다. 하네스가 위임하는 Claude 워커는 자동으로 토큰 실행기를 사용한다.
+
+설치 계획의 `commandPath`를 사용자 PATH에 포함된 디렉터리로 지정하면 `herdr-token.ps1`과 `herdr-claude.ps1` 진입점도 설치한다. 직접 실행할 때는 설치 release의 `bin/claude-token-import.ps1 -Key b`, `bin/claude-token-run.mjs`를 사용한다. CLI 선택은 `node <release>/bin/claude-account.mjs use b`다.
+
+토큰은 `~/.config/herdr-harness/tokens/<키>.dpapi`에 현재 Windows 사용자로 암호화해 저장한다. 선택·공통 폴더 경로만 `claude-tokens.json`에 기록하며, 토큰 평문을 전역 환경변수·실행 인자·대장에 저장하지 않는다. 토큰 누락·복호화 실패는 실행 전에 거부한다. 등록 여부는 서버 인증 성공 여부를 뜻하지 않는다. `--bare`는 이 인증 방식을 읽지 않아 지원하지 않는다.
+
+기존 로그인 폴더는 지우지 않는다. 이전 폴더에서 실행 중이던 세션을 재개할 때 종료 후 해당 대화와 하위 에이전트 기록만 공통 폴더로 복사하고, 덮어쓰는 기록은 백업한다. 설정과 `.credentials.json`은 복사하지 않는다. 사용량 캐시는 토큰별로 분리하며 statusline은 `HERDR_CLAUDE_USAGE_DIR`를 우선 사용해야 한다.
+
 ## 확장 로그인 없이 사용하는 E2E 브라우저
 
 `bin/herdr-browser.mjs mcp`는 Chrome DevTools MCP를 프로젝트 전용 Chrome 프로필에 연결한다. Claude 브라우저 확장을 거치지 않으므로 CLI 계정과 확장 로그인 계정을 맞출 필요가 없다. 테스트 사이트에는 전용 브라우저에서 별도로 로그인한다. 프로필은 `%LOCALAPPDATA%/HerdrBrowser/profiles/<프로젝트 키>`에 남고, 같은 Git 저장소의 worktree는 같은 브라우저를 사용한다. 병렬 에이전트는 각자 생성한 탭 ID를 사용해야 한다.

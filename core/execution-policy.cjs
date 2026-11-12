@@ -1,6 +1,7 @@
 // 세 CLI가 공유하는 위임 정책. 업무 대장·스킬·승인 판정은 변경하지 않는다.
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { createHash } = require('node:crypto');
 const raw = fs.readFileSync(path.join(__dirname, '../policy/execution.json'));
 const defaults = JSON.parse(raw);
@@ -58,6 +59,16 @@ function configure(local) {
     execution_policy: { version: defaults.version, sha256: digest(raw), overrides_sha256: digest(JSON.stringify(extra)), override_reason: extra.reason ?? null } };
 }
 
+// 진단 스위치: ~/.config/herdr-harness/claude-debug.json {"dir": "<절대 경로>"}가 있을 때만 Claude 위임에 디버그 로그를 붙인다.
+// 로그인 풀림처럼 워커가 먼저 겪는 실패의 서버 응답을 남기기 위한 것이다. 파일을 지우면 다음 위임부터 꺼진다.
+function claudeDebug(task, stage) {
+  let dir;
+  try { dir = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'herdr-harness', 'claude-debug.json'), 'utf8')).dir; } catch { return []; }
+  if (typeof dir !== 'string' || !path.isAbsolute(dir)) return [];
+  const id = String(task.id ?? 'task').replace(/[^A-Za-z0-9._-]/g, '_');
+  return ['--debug-file', path.join(dir, `worker-${id}-${stage}-r${task.rework ?? 0}.log`)];
+}
+
 function resolve(local, task, stage) {
   const config = configure(local);
   if (!stages.includes(stage)) fail(`알 수 없는 단계: ${stage}`);
@@ -78,7 +89,8 @@ function resolve(local, task, stage) {
   roleCheck(role);
   const argv = role.cli === 'codex'
     ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-s', role.sandbox]
-    : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast })];
+    : [process.execPath, path.join(__dirname, '../bin/claude-token-run.mjs'), '--', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast })];
+  if (role.cli === 'claude') argv.push(...claudeDebug(task, stage));
   return { ...role, argv, policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }
 

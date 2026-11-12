@@ -81,3 +81,17 @@ test('adapter 설정을 검증한 뒤 화면과 CLI에 같은 설정 경로를 �
   install(f.plan, { check: () => {} });
   assert.equal(JSON.parse(readFileSync(f.plan.bindings[0].file)).adapterConfig, file);
 });
+
+
+test('토큰 진입점 설치와 rollback도 기존 사용자 명령을 보존한다', (t) => {
+  const f=fixture(t), commandPath=join(f.root,'bin');
+  mkdirSync(commandPath);
+  writeFileSync(join(commandPath,'herdr-claude.ps1'),'previous launcher');
+  install({...f.plan,commandPath},{check:()=>{}});
+  verifyInstall(f.plan.store);
+  assert.match(readFileSync(join(commandPath,'herdr-claude.ps1'),'utf8'),/claude-token-run/);
+  assert.ok(existsSync(join(commandPath,'herdr-token.ps1')));
+  rollback(f.plan.store);
+  assert.equal(readFileSync(join(commandPath,'herdr-claude.ps1'),'utf8'),'previous launcher');
+  assert.equal(existsSync(join(commandPath,'herdr-token.ps1')),false);
+});
