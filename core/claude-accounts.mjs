@@ -95,7 +95,7 @@ export function syncSettings(dir) {
 export function use(key) {
   const s = loadStore(), a = s.accounts[key] ?? fail(`등록되지 않은 계정이다: ${key}`);
   requireLogin(key, a);
-  if (a.dir) {
+  if (a.dir && a.inheritSettings !== false) {
     syncSettings(a.dir);
   }
   userEnv(a.dir ?? null);
@@ -124,12 +124,7 @@ export function resumeTerminal(address, note) {
   if (!t.name) fail(`${address}에 이름이 없어 같은 대화를 찾을 수 없다.`);
   const key = activeKey() ?? fail('현재 계정을 알 수 없다. 등록된 계정으로 먼저 전환한다.');
   requireLogin(key, loadStore().accounts[key]);
-  const keep = [];
-  for (let i = 1; i < (t.argv ?? []).length; i++) {
-    const a = t.argv[i];
-    if (a === '--') break;
-    if (['--model', '--effort', '--permission-mode', '--settings', '--add-dir'].includes(a)) { keep.push(a, t.argv[++i]); }
-  }
+  const keep = launchOptions(t.argv);
   hc(['kill', address]); hc(['rm', address]);
   const labels = Object.entries(t.labels ?? {}).flatMap(([k, v]) => ['--label', `${k}=${v}`]);
   const parent = t.parent ? ['--parent', t.parent] : ['--no-parent'];
@@ -144,6 +139,80 @@ export function resumeTerminal(address, note) {
 const HARNESS_PROJECTS = join(homedir(), '.config', 'herdr-app', 'mods', 'harness', 'projects.json');
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const shellTerminal = (t) => /(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(t.argv?.[0] ?? '');
+
+// Windows CRT quoting: backslashes are special only immediately before a quote.
+export function splitCommandLine(line) {
+  const args = [];
+  let value = '', quoted = false, started = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (/\s/.test(c) && !quoted) {
+      if (started) args.push(value);
+      value = ''; started = false; continue;
+    }
+    started = true;
+    if (c === '\\') {
+      let count = 1;
+      while (line[i + 1] === '\\') { count++; i++; }
+      if (line[i + 1] === '"') {
+        value += '\\'.repeat(Math.floor(count / 2)); i++;
+        if (count % 2) value += '"';
+        else if (quoted && line[i + 1] === '"') { value += '"'; i++; }
+        else quoted = !quoted;
+      } else value += '\\'.repeat(count);
+    } else if (c === '"') {
+      if (quoted && line[i + 1] === '"') { value += '"'; i++; }
+      else quoted = !quoted;
+    } else value += c;
+  }
+  if (quoted) fail('Claude 실행 명령의 따옴표를 해석하지 못했다.');
+  if (started) args.push(value);
+  return args;
+}
+
+// Read the installed CLI's option arities so new flags are retained too. Never
+// replay the original positional prompt or old session-selection arguments.
+function launchOptions(argv) {
+  if (!argv?.length) fail('Claude 실행 인자를 읽지 못했다.');
+  const r = spawnSync(argv[0], ['--help'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+  if (r.status !== 0) fail('Claude 실행 옵션을 확인하지 못했다.');
+  const specs = new Map();
+  for (const line of r.stdout.split('\n')) {
+    const m = line.match(/^\s+(?:(-\w), )?(--[\w-]+)(?: ([<\[][^>\]]+[>\]]))?(?:\s|$)/);
+    if (!m) continue;
+    const spec = { value: Boolean(m[3]), required: m[3]?.startsWith('<'), many: m[3]?.includes('...'), name: m[2] };
+    specs.set(m[2], spec);
+    if (m[1]) specs.set(m[1], spec);
+  }
+  if (!specs.has('--resume')) fail('Claude 실행 옵션 형식을 확인하지 못했다.');
+  const keep = [], replace = new Set(['--resume', '--continue', '--session-id', '--fork-session']);
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') break;
+    if (!arg.startsWith('-')) continue;
+    const name = arg.split('=')[0], spec = specs.get(name);
+    if (!spec) fail(`Claude 실행 옵션을 해석하지 못했다: ${name}`);
+    const group = [arg];
+    if (spec.value && !arg.includes('=')) {
+      if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+        group.push(argv[++i]);
+        if (spec.many) while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) group.push(argv[++i]);
+      } else if (spec.required) fail(`Claude 실행 옵션 값이 없다: ${name}`);
+    }
+    if (!replace.has(spec.name)) keep.push(...group);
+  }
+  return keep;
+}
+
+function processArgv(pid) {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}" | Select-Object -ExpandProperty CommandLine`], { encoding: 'utf8', windowsHide: true });
+  if (r.status !== 0 || !r.stdout.trim()) fail('Claude 실행 명령을 읽지 못했다. 기존 세션은 유지한다.');
+  const argv = splitCommandLine(r.stdout.trim());
+  if (!/(?:^|[\\/])claude(?:\.exe)?$/i.test(argv[0] ?? '')) fail('Claude 실행 파일을 확인하지 못했다.');
+  return argv;
+}
+const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
 
 function childClaude(pid) {
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
@@ -194,14 +263,16 @@ export function switchLead(address, { force = false, note, allowSame = false } =
   const session = sessionOf(pid) ?? fail(`${address} Claude의 세션 기록을 찾지 못했다.`);
   if (session.account === key && !allowSame) fail(`${address} Lead는 이미 현재 계정(${a.label})을 쓴다.`);
   requireLogin(key, a);
-  if (a.dir) syncSettings(a.dir);
+  if (a.dir && a.inheritSettings !== false) syncSettings(a.dir);
+  const argv = processArgv(pid), keep = launchOptions(argv);
   hc(['send', address, '/exit']);
   for (let i = 0; i < 60 && childClaude(t.pid); i++) sleep(500);
   if (childClaude(t.pid)) fail(`${address} Claude가 30초 안에 끝나지 않았다. 화면을 확인한다.`);
   const env = a.dir ? `$env:CLAUDE_CONFIG_DIR='${a.dir.replaceAll("'", "''")}'` : 'Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue';
   // 버튼은 세션만 재개한다. 멈추기 직전 지시를 자동 재전송해 이미 끝난 작업을 반복하지 않는다.
   const prompt = note ?? (allowSame ? null : `계정 전환으로 이 Lead 세션을 ${a.label} 계정에서 이어 간다. 하던 Lead 역할과 진행 중인 업무를 그대로 계속하라.`);
-  hc(['send', address, `${env}; claude --resume '${session.sessionId.replaceAll("'", "''")}'${prompt ? ` '${prompt.replaceAll("'", "''")}'` : ''}`]);
+  const command = [argv[0], ...keep, '--resume', session.sessionId, ...(prompt ? ['--', prompt] : [])].map(psQuote).join(' ');
+  hc(['send', address, `${env}; & ${command}`]);
   let next = null;
   for (let i = 0; i < 60 && !next; i++) { sleep(500); next = childClaude(t.pid); }
   if (!next) fail(`${address}에서 새 Claude가 뜨지 않았다. 화면을 확인한다.`);
