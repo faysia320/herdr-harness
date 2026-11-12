@@ -60,9 +60,7 @@ function installUnlocked(plan, check) {
     check(accountStage, plan.herdrExecutable);
     const id = randomUUID(), recordPath = join(plan.store, 'installs', `${id}.json`);
     const activePath = join(plan.store, 'active.json');
-    if (plan.commandPath && !isAbsolute(plan.commandPath)) throw new Error('commandPath 절대 경로가 필요하다.');
     const writes = [
-      ...(plan.commandPath ? ['herdr-claude.ps1', 'herdr-token.ps1'].map(name => ({ file: join(plan.commandPath, name), bytes: readFileSync(join(release, 'bin', name)) })) : []),
       ...modFiles.map((name) => ({ file: join(plan.modPath, name), bytes: readFileSync(join(stage, name)) })),
       ...autoFiles.map((name) => ({ file: join(autoPath, name), bytes: readFileSync(join(autoStage, name)) })),
       ...accountFiles.map((name) => ({ file: join(accountPath, name), bytes: readFileSync(join(accountStage, name)) })),

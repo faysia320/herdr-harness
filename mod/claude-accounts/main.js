@@ -1,9 +1,9 @@
-// Claude 장기 토큰별 사용량과 전환. 전환·이어서 실행은 설치된 하네스 release의 bin/claude-account.mjs가 한다.
-// 사용량은 각 토큰의 독립 usage-cache.json(상태줄이 갱신)을 읽는다. 요금제에 5시간 한도가 없어 주간만 보여 준다.
+// 기본 Claude 설정의 사용량을 표시한다. 로그인·전환은 Claude CLI에서 직접 한다.
+// 사용량은 기본 설정의 usage-cache.json(상태줄이 갱신)을 읽는다.
 // Codex 사용량은 보기 전용으로 아래에 함께 그린다.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { readTextFile, exec, home, theme, layout, spaces } from "herdr";
+import { readTextFile, exec, home, theme, layout } from "herdr";
 
 const parse = (text) => { try { return JSON.parse(text); } catch { return null; } };
 const slash = (p) => String(p ?? "").replaceAll("\\", "/");
@@ -32,8 +32,8 @@ const known = (v) => v !== null && v !== undefined;
 
 export default class ClaudeAccounts extends View {
   init(_props, cx) {
-    this.status = null; this.usage = new Map(); this.sessions = []; this.refreshing = false; this.codex = null;
-    this.busy = null; this.error = null; this.refreshError = null;
+    this.status = null; this.usage = new Map(); this.refreshing = false; this.codex = null;
+    this.refreshError = null;
     this.refresh(cx, true);
     cx.timer.every(15000, (cx) => this.refresh(cx, false));
     cx.timer.every(60000, (cx) => this.refresh(cx, true));
@@ -47,7 +47,7 @@ export default class ClaudeAccounts extends View {
     return JSON.parse(r.stdout);
   }
 
-  // full=true면 토큰 등록·선택 상태, 한도로 멈춘 세션, Codex 사용량도 다시 읽는다. 계정 사용량 파일은 매번 읽는다.
+  // full=true면 Codex 사용량도 다시 읽는다. Claude 사용량 파일은 매번 읽는다.
   refresh(cx, full) {
     if (this.refreshing) return;
     this.refreshing = true;
@@ -59,29 +59,11 @@ export default class ClaudeAccounts extends View {
           // Codex는 보기 전용이라 실패해도 Claude 표시는 그대로 둔다.
           try { this.codex = await this.command(["codex"]); } catch { this.codex = null; }
         }
-        this.sessions = await this.command(["sessions"]);
         for (const a of this.status.accounts) this.usage.set(a.key, parse(await readTextFile(slash(a.usageFile))));
         this.refreshError = null;
       } catch (e) { this.refreshError = e?.message ?? String(e); }
       this.refreshing = false; cx.notify();
     });
-  }
-
-  act(label, args, cx) {
-    if (this.busy) return;
-    this.busy = label; this.error = null; cx.notify();
-    cx.spawn(async (cx) => {
-      try { await this.command(args); } catch (e) { this.error = `${label} 실패: ${e?.message ?? e}`; }
-      this.busy = null; cx.notify();
-      this.refresh(cx, true);
-    });
-  }
-
-  button(id, label, action, t) {
-    return div().id(id).px(8).py(2).rounded_full().flex_none().cursor_pointer().border_1().border_color(t.border)
-      .text_size(10).font_medium().text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground).border_color(t.accent))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(label);
   }
 
   // 사용률 색: 여유(초록) → 주의(노랑, 70%) → 위험(빨강, 90%).
@@ -130,24 +112,14 @@ export default class ClaudeAccounts extends View {
 
   account(a, now, t) {
     const u = this.usage.get(a.key), week = u?.seven_day;
-    if (narrow()) return this.compact(a.label, week, t, a.active);
-    const stale = u?.updated && now / 1000 - u.updated > 3 * 3600;
-    return v_flex().gap(6).px(9).py(8).rounded(8).bg(a.active ? t.selected : t.raised ?? t.background)
-      .border_1().border_color(a.active ? t.accent : t.border)
+    if (narrow()) return this.compact("Claude", week, t, false);
+    return v_flex().gap(6).px(9).py(8).rounded(8).bg(t.raised ?? t.background).border_1().border_color(t.border)
       .child(h_flex().gap(7).items_center()
-        .child(this.badge(a.label.slice(0, 1).toUpperCase(), a.active, t))
+        .child(this.badge("C", false, t))
         .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(10.5).font_medium().text_color(a.active ? t.foreground : t.muted).child(a.email ?? a.label))
-          .child(div().text_size(9).text_color(stale ? t.ansi3 : t.dim)
-            .child(a.configured ? (u?.updated ? `${ago(u.updated, now)} 갱신` : "기록 없음") : "토큰 등록 필요")))
-        .child(a.active
-          ? div().px(7).py(1).rounded_full().bg(t.accent).text_size(9.5).font_semibold().text_color(t.background).child("선택됨")
-          : a.configured
-            ? this.button(`acct-use-${a.key}`, "전환", (cx) => this.act(`${a.label} 전환`, ["use", a.key], cx), t)
-              .tooltip("새로 뜨는 Lead·에이전트가 이 계정을 씁니다. 실행 중인 세션은 그대로입니다.")
-            : div()))
-      .child(this.gauge(week, now, t))
-      .when(!a.configured, (e) => e.child(div().text_size(9).text_color(t.dim).child(`장기 토큰 등록: herdr-token ${a.key}`)));
+          .child(div().text_size(10.5).font_medium().text_color(t.muted).child("Claude"))
+          .child(div().text_size(9).text_color(t.dim).child(u?.updated ? `${ago(u.updated, now)} 갱신` : "사용량 기록 없음"))))
+      .child(this.gauge(week, now, t));
   }
 
   codexCard(now, t) {
@@ -163,41 +135,14 @@ export default class ClaudeAccounts extends View {
       .child(this.gauge(week, now, t));
   }
 
-  sessionCard(s, t) {
-    const selected = this.status?.accounts.find(a => a.active && a.configured);
-    const label = this.status?.accounts.find(a => a.key === s.account)?.label ?? "계정 미확인";
-    const applied = selected && s.account === selected.key && s.tokenBased;
-    const reason = applied ? (s.kind === "auth" ? "인증 오류 · 등록한 토큰을 확인하세요" : "터미널의 오류·대기 화면을 확인하세요") : !selected ? "사용할 토큰을 선택하세요"
-      : s.status === "working" ? "작업 중 · 완료 후 재개 가능"
-      : !s.resumable ? "대화 정보를 확인할 수 없습니다"
-      : s.status === "blocked" && s.kind !== "auth" ? "터미널의 대기 화면을 먼저 확인하세요" : null;
-    return v_flex().gap(5).px(9).py(7).rounded(8).bg(t.raised ?? t.background).border_1().border_color(t.border)
-      .child(div().truncate().text_size(10).text_color(t.muted).child(`${s.name} · ${s.address}`).tooltip(s.where ?? s.cwd ?? s.name))
-      .child(div().text_size(9).text_color(t.dim).child(`${label} · ${s.tokenBased ? "장기 토큰" : "기존 로그인"}`))
-      .child(reason ? div().text_size(9).text_color(t.dim).child(reason)
-        : this.button(`acct-resume-${s.address}`, `${selected.label} 토큰으로 재개`,
-          cx => this.act(`${s.name} 재개`, ["resume", s.address], cx), t)
-          .tooltip("이 터미널의 같은 대화를 선택한 토큰으로 다시 엽니다. 작업 지시는 자동으로 보내지 않습니다."));
-  }
-
   render(_cx) {
     const t = theme(), now = Date.now(), list = this.status?.accounts ?? [];
-    const space = spaces().find(s => s.active && !s.machine);
-    const selected = list.find(a => a.active && a.configured);
-    const sessions = space ? this.sessions.filter(s => s.space === space.id
-      && (!selected || !s.tokenBased || s.account !== selected.key
-        || ["blocked", "error", "failed"].includes(s.status))) : [];
     return v_flex().id("claude-accounts").size_full().min_h(0).overflow_y_scrollbar().p(7).gap(6).bg(t.background).text_color(t.foreground)
-      .child(this.heading(narrow() ? "Claude" : "Claude 장기 토큰", CLAUDE, t,
-        this.busy ? div().text_size(9.5).text_color(t.muted).child(`${this.busy} 중…`) : null))
-      .when(!list.length && !this.refreshError, (e) => e.child(div().px(2).text_size(10).text_color(t.dim).child(this.status ? "장기 토큰을 등록하세요: herdr-token a / b" : "확인 중…")))
+      .child(this.heading("Claude 사용량", CLAUDE, t))
       .children(list.map((a) => this.account(a, now, t)))
-      .when(sessions.length > 0, e => e
-        .child(div().px(2).pt(4).text_size(10).text_color(t.muted).child("이 공간의 Claude"))
-        .children(sessions.map(s => this.sessionCard(s, t))))
       .child(div().h(1).mx(2).my(2).bg(t.border))
       .child(this.heading("Codex", CODEX, t))
       .child(this.codexCard(now, t))
-      .when(Boolean(this.error || this.refreshError), (e) => e.child(div().px(2).text_size(9.5).text_color(t.ansi1 ?? t.blocked).child(this.error ?? this.refreshError)));
+      .when(Boolean(this.refreshError), (e) => e.child(div().px(2).text_size(9.5).text_color(t.ansi1 ?? t.blocked).child(this.refreshError)));
   }
 }
