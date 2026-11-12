@@ -6,6 +6,7 @@ const { hash, verify } = createRequire(import.meta.url)('../adapters/runtime.cjs
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const modFiles = ['attention.js', 'contract.js', 'decisions.js', 'git-data.js', 'git-tree.js', 'logic.js', 'main.js', 'mod.json'];
 export const autoFiles = ['main.js', 'mod.json'];
+export const accountFiles = ['main.js', 'mod.json'];
 export function build() {
   // mod 산출물만 복사한다. 순수 계약의 정본은 core/이며 생성본은 Git에서 제외한다.
   // 같은 내용이면 다시 쓰지 않는다. 동시에 build하는 다른 프로세스가 쓰는 중인 파일을 읽지 않게 한다.
@@ -14,7 +15,7 @@ export function build() {
     if (!existsSync(to) || !readFileSync(to).equals(readFileSync(from))) copyFileSync(from, to);
   }
   const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'bin/claude-account.mjs', 'core/claude-accounts.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
-    ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`)];
+    ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`), ...accountFiles.map((n) => `mod/claude-accounts/${n}`)];
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };
   const raw = `${JSON.stringify(manifest, null, 2)}\n`, digest = hash(raw);
