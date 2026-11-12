@@ -1,6 +1,6 @@
 // Claude 로그인 계정 전환. 계정마다 설정 폴더(CLAUDE_CONFIG_DIR)를 두고, 사용자 환경변수로 새 실행의 계정을 고른다.
 // herdr-core는 실행할 때마다 사용자 환경을 새로 읽으므로 Lead·에이전트의 실행 명령은 바꾸지 않는다.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -206,6 +206,37 @@ export function switchLead(address, { force = false, note, allowSame = false } =
   for (let i = 0; i < 60 && !next; i++) { sleep(500); next = childClaude(t.pid); }
   if (!next) fail(`${address}에서 새 Claude가 뜨지 않았다. 화면을 확인한다.`);
   return { address, from: session.account, to: key, sessionId: session.sessionId, pid: next };
+}
+
+// ---- Codex 사용량(보기 전용) ----
+// Codex는 세션 기록(~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl)의 token_count 사건에 rate_limits를 남긴다.
+// 가장 최근 기록 하나의 마지막 값을 읽는다. 창 길이(window_minutes)로 주간·5시간을 가른다.
+export function codexUsage(root = join(homedir(), '.codex', 'sessions')) {
+  const newest = (dir, depth) => {
+    let names;
+    try { names = readdirSync(dir).sort().reverse(); } catch { return []; }
+    if (depth === 0) return names.filter((n) => n.endsWith('.jsonl')).map((n) => join(dir, n));
+    for (const n of names) { const found = newest(join(dir, n), depth - 1); if (found.length) return found; }
+    return [];
+  };
+  const files = newest(root, 3).map((f) => ({ f, t: statSync(f).mtimeMs })).sort((a, b) => b.t - a.t);
+  for (const { f } of files.slice(0, 5)) {
+    const text = readFileSync(f, 'utf8'), lines = text.slice(Math.max(0, text.length - 400000)).split('\n').reverse();
+    for (const line of lines) {
+      if (!line.includes('"rate_limits"')) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+      const rl = ev.payload?.rate_limits;
+      if (!rl) continue;
+      const out = { updated: Math.floor(Date.parse(ev.timestamp) / 1000) || null, plan: rl.plan_type ?? null, five_hour: null, seven_day: null };
+      for (const w of [rl.primary, rl.secondary]) {
+        if (!w || typeof w.used_percent !== 'number') continue;
+        out[w.window_minutes >= 1440 ? 'seven_day' : 'five_hour'] = { used: w.used_percent, reset: w.resets_at ?? null };
+      }
+      return out;
+    }
+  }
+  return null;
 }
 
 // 살아 있는 Claude 터미널 중 작업 중이 아닌 것의 화면을 읽어 한도로 멈춘 것을 고른다.
