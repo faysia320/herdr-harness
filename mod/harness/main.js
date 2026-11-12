@@ -62,6 +62,7 @@ function normalize(t) {
   return {
     ...t,
     id: t.id, title: t.title, state: t.state, stage: t.current?.stage ?? t.pending ?? run?.stage ?? null,
+    ticket: typeof t.x_slug === "string" && /^ITSM-\d{4}-\d+$/.test(t.x_slug) ? t.x_slug : null,
     round: run?.round ?? null, rework: t.rework ?? 0, reason: t.blocked_reason ?? null, awaiting: t.awaiting ?? null,
     resume: t.resume_state ?? null, branch: t.branch ?? null, updated: time(t.updated), archived: Boolean(t.archived),
     run: run && { address: run.address, cli: run.cli, model: run.model, outcome: run.outcome ?? null, live: run.status === "running", started: time(run.started) },
@@ -278,8 +279,10 @@ export default class Harness extends View {
       .when(ended && !opened, (e) => e.opacity(0.7))
       .on_click((_e, cx) => { this.open = opened ? null : key; cx.notify(); })
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().font_medium().text_size(12.5).child(task.title ?? task.id))
+        .child(div().flex_1().min_w(0).truncate().font_medium().text_size(12.5).tooltip(task.title ?? task.id).child(task.title ?? task.id))
         .child(this.badge(task, color, t)))
+      .when(Boolean(task.ticket), (e) => e.child(div().text_size(11).text_color(t.muted)
+        .font_family("JetBrainsMono Nerd Font Mono").child(task.ticket)))
       .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
         .child(div().flex_none().text_color(t.muted).font_family("JetBrainsMono Nerd Font Mono").child(task.id))
         .children(step.map((s) => div().flex_none().child(`· ${s}`)))
