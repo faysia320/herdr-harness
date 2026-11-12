@@ -24,6 +24,14 @@ Herdr 패널은 모든 로컬 저장소 공간에 표시한다. `projects.json`�
                 공통 결정함 검증기 → Herdr mod
 ```
 
+## 확장 로그인 없이 사용하는 E2E 브라우저
+
+`bin/herdr-browser.mjs mcp`는 Chrome DevTools MCP를 프로젝트 전용 Chrome 프로필에 연결한다. Claude 브라우저 확장을 거치지 않으므로 CLI 계정과 확장 로그인 계정을 맞출 필요가 없다. 테스트 사이트에는 전용 브라우저에서 별도로 로그인한다. 프로필은 `%LOCALAPPDATA%/HerdrBrowser/profiles/<프로젝트 키>`에 남고, 같은 Git 저장소의 worktree는 같은 브라우저를 사용한다. 병렬 에이전트는 각자 생성한 탭 ID를 사용해야 한다.
+
+Windows에서 Chrome과 Node.js가 필요하다. MCP 패키지는 `npm install --prefix "$env:LOCALAPPDATA/HerdrBrowser/tools" --save-exact chrome-devtools-mcp@1.13.0`으로 설치한다. Claude의 `herdr-browser` MCP는 `node <설치 release>/bin/herdr-browser.mjs mcp`를 실행하도록 등록한다. 브라우저만 열려면 `node <설치 release>/bin/herdr-browser.mjs open`을 사용한다. 두 명령의 마지막 인자로 프로젝트 키를 명시할 수도 있다.
+
+브라우저는 개인 Chrome과 별도 프로필로 실행하며 확장을 비활성화한다. CDP는 로컬 주소에서만 연결하고, 프로필에 기록된 브라우저 식별자가 일치할 때만 재사용한다. MCP 클라이언트가 종료돼도 브라우저와 사이트 로그인은 유지한다. 현재 구현은 별도 창과 MCP 연결이며 Herdr 내부 브라우저 패널은 포함하지 않는다.
+
 ## 준비와 검증
 
 Node.js 22 이상, Git, Herdr App이 필요하다. Python 프로젝트 CLI에는 기존 Python 환경도 필요하다. npm 외부 의존성은 없다. mod 아이콘은 Herdr가 제공하는 `workspace-chrome` mod를 사용한다.
