@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, rmdirSy
 import { join, resolve, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 
 export const browserRoot = () => join(process.env.LOCALAPPDATA, 'HerdrBrowser');
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -17,6 +18,34 @@ export function projectId(cwd = process.cwd()) {
 export function profileFor(key, root = browserRoot()) {
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(key)) throw new Error('Invalid browser project key');
   return join(root, 'profiles', key);
+}
+
+// Puppeteer resolves /json/version again whenever its browser disconnects.
+// Keep discovery stable while Chrome's port and browser ID change on restart.
+export async function browserDiscovery(key, ensure = ensureBrowser) {
+  let pending;
+  const server = createServer(async (req, res) => {
+    if (req.method !== 'GET' || req.url !== '/json/version' || req.headers.origin) {
+      res.writeHead(404).end(); return;
+    }
+    try {
+      pending ??= ensure(key).finally(() => { pending = null; });
+      const browser = await pending;
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ Browser: browser.browser, webSocketDebuggerUrl: browser.wsEndpoint }));
+    } catch (error) {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end(`Dedicated Chrome could not start: ${error.message}`);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+    server.closeIdleConnections();
+  }) };
 }
 
 // Only attach to the browser endpoint recorded by this dedicated profile.
