@@ -9,8 +9,9 @@ export const BASE = join(homedir(), '.claude');
 export const STORE = join(homedir(), '.config', 'herdr-harness', 'claude-accounts.json');
 // 계정과 무관하게 같이 써야 하는 폴더. 대화 기록(projects)을 공유해야 다른 계정에서 --resume으로 이어 갈 수 있다.
 export const SHARED_DIRS = ['projects', 'skills', 'plugins', 'hooks', 'file-history', 'transcripts', 'tasks', 'teams', 'dev-mods', 'plans', 'todos'];
-// 계정 정보·계정별 캐시는 새 계정 폴더로 옮기지 않는다.
-const ACCOUNT_KEYS = /^(oauthAccount|userID)$|[Cc]ache|^cached/;
+// 계정 정보·기기 식별자·계정별 캐시는 새 계정 폴더로 옮기지 않는다.
+// 식별자는 각 계정의 Claude Code가 직접 생성하도록 비워 둔다.
+const ACCOUNT_KEYS = /^(oauthAccount|userID|machineID|anonymousId)$|[Cc]ache|^cached/;
 // 한도 도달 화면 문구. 실제 문구가 바뀌면 여기만 고친다.
 export const LIMIT_PATTERN = /usage limit (?:reached|hit)|you['’]ve (?:hit|reached) your (?:\w+ )?limit|(?:weekly|5-hour|session) limit (?:reached|hit)|limit will reset|resets? (?:at )?\d{1,2}(?::\d\d)?\s*(?:am|pm)/i;
 
@@ -26,6 +27,13 @@ export function loadStore() {
 }
 const saveStore = (s) => { mkdirSync(join(STORE, '..'), { recursive: true }); atomic(STORE, `${JSON.stringify(s, null, 2)}\n`); };
 const dirOf = (a) => a.dir ?? BASE;
+export const hasLogin = (dir) => {
+  const oauth = json(join(dir, '.credentials.json'), {}).claudeAiOauth;
+  return Boolean(oauth?.accessToken || oauth?.refreshToken);
+};
+const requireLogin = (key, a) => {
+  if (!hasLogin(dirOf(a))) fail(`${a.label ?? key} 계정은 로그인이 필요하다. 해당 계정의 Claude에서 /login 후 다시 시도한다.`);
+};
 
 // 사용자 환경변수(HKCU\Environment)를 읽고 쓴다. 이 프로세스의 env는 실행 당시 값이라 쓰지 않는다.
 function userEnv(value) {
@@ -39,7 +47,7 @@ export function status() {
   const s = loadStore(), current = norm(userEnv());
   const accounts = Object.entries(s.accounts).map(([key, a]) => {
     const dir = dirOf(a), info = json(join(a.dir ? dir : homedir(), '.claude.json'), {}).oauthAccount ?? {};
-    return { key, label: a.label, dir, active: norm(a.dir) === current, loggedIn: existsSync(join(dir, '.credentials.json')), email: info.emailAddress ?? null, plan: info.planDisplayName ?? null };
+    return { key, label: a.label, dir, active: norm(a.dir) === current, loggedIn: hasLogin(dir), email: info.emailAddress ?? null, plan: info.planDisplayName ?? null };
   });
   if (!accounts.some((a) => a.active)) accounts.find((a) => a.key === 'a').active = current === null;
   return { store: STORE, unknownDir: accounts.some((a) => a.active) ? null : current, accounts };
@@ -68,19 +76,26 @@ export function setup(key, dir, label) {
   const s = loadStore();
   s.accounts[key] = { label: label ?? key.toUpperCase(), dir };
   saveStore(s);
-  return { key, dir, linked, loggedIn: existsSync(join(dir, '.credentials.json')) };
+  return { key, dir, linked, loggedIn: hasLogin(dir) };
 }
 
-// 기본 계정의 settings.json을 다른 계정 폴더에 맞춘다(한 방향). 계정마다 설정이 갈라지지 않게 한다.
+// 공통 설정은 기본 계정에서 맞추되, 기존 계정의 원격 제어 자동 연결 선택은 보존한다.
 export function syncSettings(dir) {
   const from = join(BASE, 'settings.json'), to = join(dir, 'settings.json');
-  if (existsSync(from) && (!existsSync(to) || !readFileSync(to).equals(readFileSync(from)))) copyFileSync(from, to);
+  if (!existsSync(from)) return;
+  const existing = json(to, {});
+  if (typeof existing.remoteControlAtStartup === 'boolean') {
+    const settings = JSON.parse(readFileSync(from, 'utf8'));
+    settings.remoteControlAtStartup = existing.remoteControlAtStartup;
+    const text = `${JSON.stringify(settings, null, 2)}\n`;
+    if (!existsSync(to) || readFileSync(to, 'utf8') !== text) atomic(to, text);
+  } else if (!existsSync(to) || !readFileSync(to).equals(readFileSync(from))) copyFileSync(from, to);
 }
 
 export function use(key) {
   const s = loadStore(), a = s.accounts[key] ?? fail(`등록되지 않은 계정이다: ${key}`);
+  requireLogin(key, a);
   if (a.dir) {
-    if (!existsSync(join(a.dir, '.credentials.json'))) fail(`${key} 계정은 아직 로그인하지 않았다. 먼저 그 계정 폴더로 claude를 띄워 /login 한다.`);
     syncSettings(a.dir);
   }
   userEnv(a.dir ?? null);
@@ -92,15 +107,23 @@ const HC_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/
 const hc = (args) => {
   const r = spawnSync('hc', args, { encoding: 'utf8', windowsHide: true, env: HC_ENV });
   if (r.status !== 0) fail(`hc ${args[0]} 실패: ${(r.stderr || r.stdout).trim()}`);
-  try { return JSON.parse(r.stdout); } catch { return r.stdout; }
+  let value;
+  try { value = JSON.parse(r.stdout); } catch { return r.stdout; }
+  if (value?.error) fail(`hc ${args[0]} 실패: ${value.error.message ?? JSON.stringify(value.error)}`);
+  return value;
 };
 
 // 한도로 멈춘 Claude 터미널을 같은 이름·위치·라벨로 다시 띄워 같은 대화를 현재 계정으로 이어 간다.
 export function resumeTerminal(address, note) {
   const t = hc(['get', address]);
   if (t.state !== 'live') fail(`${address}는 살아 있는 터미널이 아니다.`);
-  if (!t.name) fail(`${address}에 이름이 없어 같은 대화를 찾을 수 없다.`);
   if (!/claude/i.test(`${t.argv?.[0] ?? ''} ${t.title ?? ''} ${t.status?.app ?? ''}`)) fail(`${address}는 Claude 터미널이 아니다.`);
+  // Herdr 탭은 이름 없는 PowerShell인 경우가 많다. 셸과 주소를 보존하고 실제 세션 ID로 재개한다.
+  if (shellTerminal(t)) return switchLead(address, { note, allowSame: true });
+  if (t.status?.state === 'working') fail(`${address}는 작업 중이다. 이번 턴이 끝난 뒤 다시 시도한다.`);
+  if (!t.name) fail(`${address}에 이름이 없어 같은 대화를 찾을 수 없다.`);
+  const key = activeKey() ?? fail('현재 계정을 알 수 없다. 등록된 계정으로 먼저 전환한다.');
+  requireLogin(key, loadStore().accounts[key]);
   const keep = [];
   for (let i = 1; i < (t.argv ?? []).length; i++) {
     const a = t.argv[i];
@@ -120,6 +143,7 @@ export function resumeTerminal(address, note) {
 // `claude --resume <세션>`으로 다시 띄운다. 터미널 주소가 그대로라 하네스 대장의 Lead 기록도 바뀌지 않는다.
 const HARNESS_PROJECTS = join(homedir(), '.config', 'herdr-app', 'mods', 'harness', 'projects.json');
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const shellTerminal = (t) => /(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(t.argv?.[0] ?? '');
 
 function childClaude(pid) {
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
@@ -159,22 +183,25 @@ export function leads() {
   return out;
 }
 
-export function switchLead(address, { force = false } = {}) {
+export function switchLead(address, { force = false, note, allowSame = false } = {}) {
   const key = activeKey() ?? fail('현재 계정을 알 수 없다. 등록된 계정으로 먼저 전환한다.');
   const a = loadStore().accounts[key];
   const t = hc(['get', address]);
   if (t.state !== 'live') fail(`${address}는 살아 있는 터미널이 아니다.`);
-  if (!/pwsh|powershell/i.test(`${t.argv?.[0] ?? ''} ${t.foreground?.name ?? ''}`)) fail(`${address}는 셸 안에서 뜬 Claude가 아니라 교체하지 않는다.`);
+  if (!shellTerminal(t)) fail(`${address}는 셸 안에서 뜬 Claude가 아니라 교체하지 않는다.`);
   if (t.status?.state === 'working' && !force) fail(`${address} Lead가 작업 중이다. 이번 턴이 끝난 뒤 교체한다.`);
   const pid = childClaude(t.pid) ?? fail(`${address}에서 실행 중인 Claude를 찾지 못했다.`);
   const session = sessionOf(pid) ?? fail(`${address} Claude의 세션 기록을 찾지 못했다.`);
-  if (session.account === key) fail(`${address} Lead는 이미 현재 계정(${a.label})을 쓴다.`);
+  if (session.account === key && !allowSame) fail(`${address} Lead는 이미 현재 계정(${a.label})을 쓴다.`);
+  requireLogin(key, a);
+  if (a.dir) syncSettings(a.dir);
   hc(['send', address, '/exit']);
   for (let i = 0; i < 60 && childClaude(t.pid); i++) sleep(500);
   if (childClaude(t.pid)) fail(`${address} Claude가 30초 안에 끝나지 않았다. 화면을 확인한다.`);
   const env = a.dir ? `$env:CLAUDE_CONFIG_DIR='${a.dir.replaceAll("'", "''")}'` : 'Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue';
-  const prompt = `계정 전환으로 이 Lead 세션을 ${a.label} 계정에서 이어 간다. 하던 Lead 역할과 진행 중인 업무를 그대로 계속하라.`;
-  hc(['send', address, `${env}; claude --resume ${session.sessionId} '${prompt}'`]);
+  // 버튼은 세션만 재개한다. 멈추기 직전 지시를 자동 재전송해 이미 끝난 작업을 반복하지 않는다.
+  const prompt = note ?? (allowSame ? null : `계정 전환으로 이 Lead 세션을 ${a.label} 계정에서 이어 간다. 하던 Lead 역할과 진행 중인 업무를 그대로 계속하라.`);
+  hc(['send', address, `${env}; claude --resume '${session.sessionId.replaceAll("'", "''")}'${prompt ? ` '${prompt.replaceAll("'", "''")}'` : ''}`]);
   let next = null;
   for (let i = 0; i < 60 && !next; i++) { sleep(500); next = childClaude(t.pid); }
   if (!next) fail(`${address}에서 새 Claude가 뜨지 않았다. 화면을 확인한다.`);

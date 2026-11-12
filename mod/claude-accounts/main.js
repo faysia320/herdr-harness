@@ -29,7 +29,7 @@ function ago(sec, now) {
 
 export default class ClaudeAccounts extends View {
   init(_props, cx) {
-    this.status = null; this.usage = new Map(); this.stopped = []; this.busy = null; this.error = null;
+    this.status = null; this.usage = new Map(); this.stopped = []; this.busy = null; this.error = null; this.refreshError = null;
     this.refresh(cx, true);
     cx.timer.every(15000, (cx) => this.refresh(cx, false));
     cx.timer.every(60000, (cx) => this.refresh(cx, true));
@@ -52,8 +52,8 @@ export default class ClaudeAccounts extends View {
           this.stopped = await this.command(["scan"]);
         }
         for (const a of this.status.accounts) this.usage.set(a.key, parse(await readTextFile(`${slash(a.dir)}/usage-cache.json`)));
-        this.error = null;
-      } catch (e) { this.error = e?.message ?? String(e); }
+        this.refreshError = null;
+      } catch (e) { this.refreshError = e?.message ?? String(e); }
       cx.notify();
     });
   }
@@ -93,7 +93,7 @@ export default class ClaudeAccounts extends View {
     return v_flex().gap(3).px(8).py(6).rounded(6).bg(a.active ? t.selected : t.background)
       .child(h_flex().gap(6).items_center()
         .child(div().text_size(11.5).font_semibold().text_color(a.active ? t.foreground : t.muted).child(`${a.active ? "●" : "○"} ${a.label}`))
-        .child(div().flex_1().min_w(0).text_size(10).text_color(t.dim).child(a.email ?? (a.loggedIn ? "" : "로그인 필요")))
+        .child(div().flex_1().min_w(0).text_size(10).text_color(t.dim).child(`${a.email ?? ""}${a.loggedIn ? "" : " · 로그인 필요"}`))
         .when(!a.active && a.loggedIn, (e) => e.child(this.button(`acct-use-${a.key}`, "전환", (cx) => this.act(`${a.label} 전환`, ["use", a.key], cx), t)
           .tooltip("새로 뜨는 Lead·에이전트가 이 계정을 씁니다. 실행 중인 세션은 그대로입니다."))))
       .child(h_flex().gap(8).items_center()
@@ -114,8 +114,8 @@ export default class ClaudeAccounts extends View {
       .children(narrow() ? [] : this.stopped.map((s) => v_flex().gap(3).px(8).py(5).rounded(6).border_1().border_color(t.blocked ?? t.ansi1)
         .child(div().text_size(10.5).text_color(t.blocked ?? t.ansi1).child(`한도로 멈춤 · ${s.name ?? s.address}`))
         .child(h_flex().child(this.button(`acct-resume-${s.address}`, "현재 계정으로 이어서 실행", (cx) => this.act(`${s.name ?? s.address} 이어서 실행`, ["resume", s.address], cx), t)
-          .tooltip("같은 이름·위치로 다시 띄워 같은 대화를 지금 계정으로 이어 갑니다.")))))
+          .tooltip("현재 계정으로 같은 대화를 엽니다. 셸 안의 Claude는 같은 터미널에서 재시작합니다.")))))
       .when(Boolean(this.busy), (e) => e.child(div().px(2).text_size(10).text_color(t.muted).child(`${this.busy} 중…`)))
-      .when(Boolean(this.error), (e) => e.child(div().px(2).text_size(10).text_color(t.blocked ?? t.ansi1).child(this.error)));
+      .when(Boolean(this.error || this.refreshError), (e) => e.child(div().px(2).text_size(10).text_color(t.blocked ?? t.ansi1).child(this.error ?? this.refreshError)));
   }
 }
