@@ -4,7 +4,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc, exec, home } from "herdr";
 import { GitTree } from "./git-tree.js";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage } from "./logic.js";
-import { decisions, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, leadReportKey, decisionInbox, openRequests } from "./attention.js";
+import { decisions, importantRecords, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests } from "./attention.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
 // 세 저장소 공통 계약 v1(.agents/harness/CONTRACT.md): <root>/<config project.state_dir>/{ledger.json,events.jsonl}
@@ -106,10 +106,13 @@ async function load(project) {
     const events = lines(text).filter((e) => e.event === "state" && e.project === id)
       .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", project: project.name }));
     const inbox = decisionInbox(await readTextFile(`${dir}/decisions.json`).catch(() => undefined), id);
-    return { ...project, projectId: id, dir, tasks, events, lead: ledger.lead?.terminal ?? null, note: null, stale: false, observedAt,
+    const loaded = { ...project, projectId: id, dir, tasks, events, lead: ledger.lead?.terminal ?? null, note: null, stale: false, observedAt,
       capacityNote: ledgerCapacityNote(ledgerText),
       requests: inbox.requests, decisionStatus: inbox.status, decisionNote: inbox.note,
       historyNote: partial ? "사건 이력 일부를 읽지 못해 업무별 이력으로 보완했습니다." : null };
+    // 전체 이력 병합·정렬은 파일 갱신 시 한 번만 하고 렌더·읽음 처리에서 재사용한다.
+    loaded.attentionRecords = importantRecords(loaded);
+    return loaded;
   } catch (e) { return { ...empty, note: String(e.message ?? e) }; }
 }
 
@@ -117,7 +120,7 @@ export default class Harness extends View {
   init(_props, cx) {
     this.page = "brief"; this.git = new GitTree();
     this.projects = []; this.open = null; this.showEnded = false; this.seen = null; this.error = null;
-    this.allProjects = false; this.expanded = new Set(); this.showChanges = false; this.showTransitions = false;
+    this.expanded = new Set(); this.showChanges = false; this.showTransitions = false;
     this.answers = new Map(); this.typing = null;
     this.answerInput = InputState.new({ placeholder: "직접 입력 후 Enter" });
     this.answerInput.on("submit", (_e, cx) => this.submitTyped(cx));
@@ -347,7 +350,7 @@ export default class Harness extends View {
     const tasks = this.visible(p), counts = {};
     for (const task of p.tasks) if (!task.archived) counts[task.state] = (counts[task.state] ?? 0) + 1;
     const lead = p.lead ? live.get(p.lead) : null;
-    const fill = this.mark(p, i);
+    const fill = this.mark(p, i), report = leadReport(p, live);
     return v_flex().flex_none().gap(4).p(6).rounded(10).bg(t.raised)
       .child(h_flex().h(28).px(4).gap(8).items_center()
         .child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff")
@@ -358,6 +361,10 @@ export default class Harness extends View {
         .when(Boolean(p.lead), (e) => e.child(div().size(7).flex_none().rounded_full()
           .bg(lead ? (lead.status === "working" ? t.working : t.done) : t.border)
           .tooltip(lead ? `Lead ${p.lead} · ${lead.status ?? "실행 중"}` : `Lead ${p.lead} · 꺼짐`))))
+      .when(report.available, (e) => e.child(h_flex().id(`lead-status-${p.name}`).px(6).pb(4).gap(6).items_center().cursor_pointer()
+        .tooltip(report.text).on_click(() => run("agent.focus", { terminal: report.address }))
+        .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`Lead · ${report.activity}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(report.text))))
       .when(Boolean(p.note), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.dim).child(p.note)))
       .when(Boolean(p.capacityNote), (e) => e.child(div().px(6).pb(4).text_size(11).text_color(t.blocked).child(p.capacityNote)))
       .when(!p.note && !tasks.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
@@ -386,7 +393,6 @@ export default class Harness extends View {
   shown() {
     const current = this.currentProject();
     if (!current) return [];
-    if (this.allProjects && !current.gitOnly) return this.projects;
     return [current];
   }
 
@@ -407,19 +413,6 @@ export default class Harness extends View {
     return h_flex().gap(6).items_center().pt(4).pb(2)
       .child(div().font_semibold().text_size(12).child(title))
       .child(div().text_size(11).text_color(color ?? t.dim).child(String(count)));
-  }
-
-  leadReportCard(p, report, t) {
-    return v_flex().flex_none().min_w(0).p(12).gap(7).rounded(8).bg(t.raised).border_1().border_color(t.accent)
-      .child(h_flex().gap(6).items_center()
-        .child(div().font_medium().text_size(11).text_color(t.accent).child("Lead 응답 확인"))
-        .child(div().flex_1())
-        .child(div().text_size(10.5).text_color(t.dim).child(report.activity)))
-      .child(div().text_size(12).child(report.text))
-      .child(div().text_size(10.5).text_color(t.dim).child(`${p.name} · ${report.address}${report.retained ? " · 마지막 수신 응답" : ""}`))
-      .when(Boolean(report.progress), (e) => e.child(div().text_size(11).text_color(t.muted).child(`진행 상태: ${report.progress}`)))
-      .child(div().text_size(10.5).text_color(t.muted).child("질문별 답변·해소 여부는 대화에서 확인하세요."))
-      .child(h_flex().child(this.button(`lead-report-${p.name}`, "Lead에서 확인하기 ↗", () => run("agent.focus", { terminal: report.address }), t)));
   }
 
   requestCard(p, request, live, t) {
@@ -519,17 +512,16 @@ export default class Harness extends View {
         .child(div().flex_1())
         .child(div().text_size(10.5).text_color(t.dim).child(`${clock(r.at)}  ${expanded ? "▾" : "▸"}`)))
       .child(div().min_w(0).truncate().font_medium().text_size(12).tooltip(r.task.title ?? r.task.id).child(r.task.title ?? r.task.id))
-      .child(div().text_size(10.5).text_color(t.dim).child(this.allProjects ? `${p.name} · ${r.task.id}` : r.task.id))
+      .child(div().text_size(10.5).text_color(t.dim).child(r.task.id))
       .when(expanded, (e) => e
         .child(div().text_size(11).text_color(t.muted).child(body))
         .when(r.kind === "qa", (e) => e.child(div().text_size(10.5).text_color(t.dim).child("커밋·PR·병합·배포는 별도 확인")))
         .child(this.detail(r.task, t)));
   }
 
-  changeReadTools(p, t) {
-    const seen = validSeen(shared(seenKey(p))), records = changes(p, seen);
+  changeReadTools(p, t, records) {
+    const seen = validSeen(shared(seenKey(p)));
     return h_flex().flex_wrap().gap(6).items_center()
-      .when(this.allProjects, (e) => e.child(div().text_size(11).text_color(t.muted).child(p.name)))
       .child(div().text_size(10.5).text_color(t.dim).child(p.stale ? "갱신 실패 · 확인 기준 유지" : seen ? `${ago(seen.at)} 확인` : "최근 24시간"))
       .when(!p.stale && !this.error, (e) => e.child(this.button(`read-${p.name}`, records.length ? `변화 ${records.length}건 모두 읽음` : "현재까지 확인", () => {
         // 화면에 적재된 변화만 읽음 처리하며 결정함과 업무 상태는 바꾸지 않는다.
@@ -541,28 +533,19 @@ export default class Harness extends View {
     const requests = shown.flatMap((p) => openRequests(p).map((request) => ({ p, request })));
     const inbox = shown.flatMap((p) => decisions(p).map((d) => ({ p, d })))
       .sort((a, b) => b.d.affected.length - a.d.affected.length || (b.d.task.priority ?? 0) - (a.d.task.priority ?? 0) || a.d.since - b.d.since);
-    const updates = shown.flatMap((p) => changes(p, shared(seenKey(p))).map((r) => ({ p, r }))).sort((a, b) => b.r.at - a.r.at);
-    const reports = shown.map((p) => {
-      const key = leadReportKey(p), previous = shared(key), report = leadReport(p, live, previous);
-      // 다른 작업이 시작돼도 직전 응답을 참고할 수 있다. 읽음·승인·미해결 상태로 저장하지 않는다.
-      if (report.remember && JSON.stringify(report.remember) !== JSON.stringify(previous)) setShared(key, report.remember);
-      return { p, report };
-    });
-    const reportCount = reports.filter(({ report }) => report.available).length;
+    const byProject = new Map(shown.map((p) => [p, changes(p, shared(seenKey(p)))]));
+    const updates = shown.flatMap((p) => byProject.get(p).map((r) => ({ p, r }))).sort((a, b) => b.r.at - a.r.at);
     return v_flex().flex_none().gap(8)
-      .child(this.section("내 결정·확인", `질문 ${requests.length} · 막힘 ${inbox.length} · 보고 ${reportCount}`, t.blocked, t))
+      .child(this.section("내 결정·확인", `질문 ${requests.length} · 막힘 ${inbox.length}`, t.blocked, t))
       .children(shown.filter((p) => p.note || p.historyNote).map((p) => div().px(2).text_size(11).text_color(t.blocked).child(`${p.name} · ${p.note ?? p.historyNote}`)))
       .children(requests.map(({ p, request }) => this.requestCard(p, request, live, t)))
       .children(shown.filter((p) => p.decisionNote).map((p) => div().px(2).text_size(11).text_color(t.muted).child(`${p.name} · ${p.decisionNote}`)))
-      .children(reports.map(({ p, report }) => report.available ? this.leadReportCard(p, report, t)
-        : div().px(2).text_size(11).text_color(t.dim).child(`${p.name} · ${report.reason}`)))
       .when(!inbox.length && !requests.length, (e) => e.child(div().px(2).text_size(11).text_color(t.muted).child(shown.some((p) => p.stale) ? "최신 결정 대장을 확인할 수 없습니다." : "작업 대장에 등록된 막힘은 없습니다.")))
       .children(inbox.map(({ p, d }) => this.decisionCard(p, d, live, t)))
       .child(h_flex().flex_wrap().gap(6).items_center()
         .child(this.section("알아둘 변화", updates.length, t.muted, t))
         .child(div().flex_1())
-        .when(shown.length === 1, (e) => e.child(this.changeReadTools(shown[0], t))))
-      .when(shown.length > 1, (e) => e.children(shown.map((p) => this.changeReadTools(p, t))))
+        .when(shown.length === 1, (e) => e.child(this.changeReadTools(shown[0], t, byProject.get(shown[0])))))
       .when(!updates.length, (e) => e.child(div().p(10).text_size(11).text_color(t.dim).child("새로운 중요한 변화가 없습니다.")))
       .children((this.showChanges ? updates : updates.slice(0, 3)).map(({ p, r }) => this.changeCard(p, r, t)))
       .when(updates.length > 3, (e) => e.child(h_flex().child(this.button("harness-more-changes", this.showChanges ? "최근 3건만 보기" : `나머지 ${updates.length - 3}건 보기`, (cx) => {
@@ -586,7 +569,6 @@ export default class Harness extends View {
         .when(full, (e) => e.child(div().text_size(11).text_color(blocked ? t.blocked : t.dim).child(summary)))
         .child(div().flex_1())
         .when(this.loading, (e) => e.child(svg(ICON("spinner")).size(12).flex_none().text_color(t.dim)))
-        .when(full, (e) => e.child(this.button("harness-scope", this.allProjects ? "전체 저장소" : "현재 저장소", (cx) => { this.allProjects = !this.allProjects; cx.notify(); }, t)))
         .when(Boolean(overlay), (e) => e.child(div().id("harness-close").px(6).cursor_pointer().text_color(t.dim).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click(() => closeOverlay(overlay)).child("✕"))))
       .child(h_flex().flex_none().px(8).py(7).gap(4).border_b(1).border_color(t.border)

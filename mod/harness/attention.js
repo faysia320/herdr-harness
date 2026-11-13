@@ -73,7 +73,7 @@ export function validSeen(value) {
 
 export function changes(p, value, now = Date.now()) {
   const seen = validSeen(value), ids = new Set(seen?.ids ?? []);
-  const records = importantRecords(p);
+  const records = p.attentionRecords ?? importantRecords(p);
   return records.filter((r) => {
     // 첫 화면은 최근 하루만. 과거 전체를 새 소식으로 쏟아내지 않는다.
     if (!seen && r.at < now - 86400000) return false;
@@ -91,7 +91,7 @@ export function snapshot(p, now = Date.now(), previous = null) {
   const seen = validSeen(previous), observedAt = p.observedAt ?? 0;
   // 다른 화면에서 더 새 자료를 이미 읽었으면 오래된 화면의 클릭으로 기준을 되돌리지 않는다.
   if (seen && observedAt < (seen.observedAt ?? 0)) return seen;
-  return { version: 1, at: now, observedAt, ids: [...new Set([...(seen?.ids ?? []), ...importantRecords(p).map((r) => r.id)])],
+  return { version: 1, at: now, observedAt, ids: [...new Set([...(seen?.ids ?? []), ...(p.attentionRecords ?? importantRecords(p)).map((r) => r.id)])],
     decisions: Object.fromEntries(decisions(p).map((d) => [d.task.id, d.signature])) };
 }
 
