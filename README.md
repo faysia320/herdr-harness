@@ -92,7 +92,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 | QA | gpt-6.1-sol | xhigh | 끔 |
 | 설계 검토 | claude-fable-5-2 | high | 끔 |
 
-`simple`과 `normal`은 기본값, `complex`는 구현 xhigh(조사는 모든 프로필 high, QA는 모든 프로필 xhigh), `high-risk`는 complex에 설계 검토와 단독 구현을 추가한다. 옛 이름은 모든 저장소에서 같은 별칭으로 지원한다: ui-simple→simple, feature→normal, shared-component→complex, token/architecture/high→high-risk. 재작업마다 구현 effort를 한 단계 올려 max에서 멈춘다. 프로젝트별 동시 실행 4, 재작업 최대 2, 자동 실행 재시도 0이다.
+`simple`과 `normal`은 기본값, `complex`는 구현 xhigh(조사는 모든 프로필 high, QA는 모든 프로필 xhigh), `high-risk`는 complex에 설계 검토와 단독 구현을 추가한다. 옛 이름은 모든 저장소에서 같은 별칭으로 지원한다: ui-simple→simple, feature→normal, shared-component→complex, token/architecture/high→high-risk. 재작업마다 구현 effort를 한 단계 올려 max에서 멈춘다. 프로젝트별 동시 실행 6, 재작업 최대 2, 자동 실행 재시도 0이다.
 
 사용자 지정 배치는 조사 Astra/high, 설계 Fable 5.2/high, 구현 Opus 5.5/high, QA Sol/xhigh다. 모든 단계에서 Fast를 끈다. 모델의 CLI가 바뀌면 표준 `.agents/skills`·`.claude/skills` 경로와 `$`·`/` 호출도 공통 resolver가 함께 맞춘다. 저장소별 스킬 이름·인자와 사용자 지정 경로는 유지한다. Codex danger-full-access, Claude auto를 실행 인자로 지정한다. Windows의 Codex sandbox(workspace-write)에서는 하네스 단계를 수행할 수 없다. elevated는 별도 계정이라 사용자 프로필의 python·node·hc를 읽지 못한다. unelevated는 Node의 자식 프로세스(git, node --test worker)가 EPERM으로 실패하고, pnpm 저장소 잠금과 hc의 Herdr pipe에도 접근하지 못한다. 그래서 Claude 단계와 같이 OS sandbox 없이 실행한다. 쓰기 범위는 worktree와 작업 지시서 규칙으로 제한한다. Codex 셸로 쓰는 PowerShell 7은 MSI판(`C:\Program Files\PowerShell\7`)을 설치한다. Codex 승인·네트워크 등 지정하지 않은 사용자 설정은 계속 상속하며 전역 설정을 쓰지 않는다. Fast 비활성화는 Codex의 `service_tier="default"`와 Claude의 `fastMode:false`로 명시한다([Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude Fast 설정](https://code.claude.com/docs/en/fast-mode)).
 

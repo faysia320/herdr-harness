@@ -15,5 +15,5 @@
   },
   "aliases": { "ui-simple": "simple", "feature": "normal", "shared-component": "complex", "token": "high-risk", "architecture": "high-risk", "high": "high-risk" },
   "escalation": { "effort_ladder": ["low", "medium", "high", "xhigh", "max"], "implement_step_per_rework": 1 },
-  "limits": { "max_parallel": 4, "max_rework": 2, "max_retries": 0 }
+  "limits": { "max_parallel": 6, "max_rework": 2, "max_retries": 0 }
 }
