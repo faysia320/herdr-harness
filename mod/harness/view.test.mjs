@@ -156,6 +156,25 @@ test('시각 타이머는 파일을 읽지 않고 60초 재조회는 누락된 �
   intervals.get(60000)(s.cx); await settle(); assert.equal(s.reads.length, 11);
 });
 
+test('끝나지 않는 읽기가 있어도 30초 뒤 주기 조회가 새로 읽고 늦게 끝난 이전 조회는 버린다', async () => {
+  const s = refreshFixture(); s.v.refresh(s.cx); await s.drain();
+  const raw = s.files.get(ledgerPath); let release;
+  s.files.set(ledgerPath, new Promise((resolve) => { release = resolve; }));
+  s.v.refresh(s.cx); const hung = s.jobs.splice(0);
+  await Promise.resolve(); await Promise.resolve();
+  s.v.refresh(s.cx); assert.equal(s.jobs.length, 0, '30초 전에는 진행 중 조회를 기다린다');
+  s.v.loadingSince -= 30000;
+  const fresh = JSON.stringify({ version: 1, project: 'fixture', tasks: { a: { ...task, state: 'DONE' } } });
+  s.files.set(ledgerPath, fresh);
+  s.v.refresh(s.cx); assert.match(s.v.error, /30초/);
+  await s.drain();
+  assert.equal(s.v.loading, false); assert.equal(s.v.error, null);
+  assert.equal(s.v.projects[0].tasks[0].state, 'DONE');
+  release(raw); await Promise.all(hung);
+  assert.equal(s.v.projects[0].tasks[0].state, 'DONE', '늦게 끝난 이전 조회가 새 자료를 덮어쓰지 않는다');
+  assert.equal(s.v.loading, false);
+});
+
 test('상태·설정 감시는 프로젝트를 좁히고 제거된 경로와 실패한 감시는 정리한다', async () => {
   const waiting = new Map();
   const s = setup({ watchFolder: (dir) => new Promise((resolve, reject) => waiting.set(dir, { resolve, reject })) });

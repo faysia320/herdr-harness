@@ -13,6 +13,8 @@ const ACTIVE = ["RESEARCHING", "IMPLEMENTING", "QA"];
 const ENDED = ["DONE", "FAILED"];
 const ORDER = ["BLOCKED", "QA", "IMPLEMENTING", "RESEARCHING", "READY_TO_IMPLEMENT", "QUEUED", "FAILED", "DONE"];
 const DAY = 24 * 3600 * 1000;
+// 조회가 이보다 오래 끝나지 않으면 멈춘 것으로 보고 다음 주기에 다시 읽는다.
+const STUCK = 30000;
 const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
 
 // 화면에만 쓰는 한국어 이름. 대장 값(계약 코드값)은 그대로 둔다.
@@ -178,16 +180,25 @@ export default class Harness extends View {
   }
 
   refresh(cx, roots = null) {
-    if (this.loading) { this.scheduleRefresh(cx, roots); return; }
+    if (this.loading) {
+      if (Date.now() - this.loadingSince < STUCK) { this.scheduleRefresh(cx, roots); return; }
+      // 호스트 읽기 하나가 끝나지 않으면 이후 갱신이 모두 막힌다. 그 조회는 버리고 전체를 다시 읽는다.
+      this.error = "이전 조회가 30초 넘게 끝나지 않아 다시 읽는 중입니다. 표시 자료가 최신이 아닐 수 있습니다.";
+      roots = null;
+    }
     const targets = roots === null ? null : new Set(roots.map(norm));
     if (targets === null) { this.pendingFull = false; this.pendingRoots?.clear(); }
-    this.loading = true;
+    const generation = this.generation = (this.generation ?? 0) + 1;
+    this.loading = true; this.loadingSince = Date.now();
     cx.spawn(async (cx) => {
+      // 버린 조회가 늦게 끝나도 새 자료를 덮어쓰거나 진행 표시를 끄지 않는다.
+      const current = () => generation === this.generation;
       try {
         const list = targets === null ? parse(await readTextFile(`${appHome()}/mods/harness/projects.json`).catch(() => null)) : null;
         if (targets === null && !Array.isArray(list?.projects)) throw new Error("mods/harness/projects.json을 읽지 못했습니다");
         const loaded = await Promise.all((targets === null ? list.projects : this.projects).map((p) =>
           targets !== null && !targets.has(norm(p.root)) ? p : load({ name: p.name, root: p.root })));
+        if (!current()) return;
         const projects = loaded.map((p) => {
           if (targets !== null && !targets.has(norm(p.root))) return p;
           // 설정 자체를 못 읽으면 동일 폴더의 마지막 자료를 stale로 보존한다. 확인된 다른 ID는 섞지 않는다.
@@ -204,8 +215,9 @@ export default class Harness extends View {
           this.watch(`${p.root}/.agents/harness`, cx);
           if (p.dir) this.watch(p.dir, cx);
         }
-      } catch (e) { this.error = String(e); }
+      } catch (e) { if (current()) this.error = String(e); }
       finally {
+        if (!current()) return;
         this.loading = false; cx.notify();
         if (this.pendingFull || this.pendingRoots?.size) this.scheduleRefresh(cx, []);
       }
