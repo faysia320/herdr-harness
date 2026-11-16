@@ -17,8 +17,8 @@ test('프로젝트가 달라도 같은 단계·프로필·재작업 회차의 �
   for (const profile of Object.keys(configure(a).routing)) for (const stage of Object.keys(a.roles)) for (const rework of [0, 1, 2, 7]) {
     const x = resolve(a, { profile, rework }, stage), y = resolve(b, { profile, rework }, stage);
     assert.deepEqual(x.argv, y.argv); assert.deepEqual(x.policy, y.policy);
-    assert.equal(x.fast, false);
-    assert.ok(x.argv.includes(x.cli === 'codex' ? 'service_tier="default"' : '{"fastMode":false,"statusLine":{"type":"command","command":""}}'));
+    assert.equal(x.fast, stage === 'qa');
+    assert.ok(x.argv.includes(x.cli === 'codex' ? `service_tier="${x.fast ? 'fast' : 'default'}"` : '{"fastMode":false,"statusLine":{"type":"command","command":""}}'));
   }
   assert.deepEqual(configure(a).limits, configure(b).limits);
 });
@@ -28,7 +28,7 @@ test('실행 Fast·권한은 상속에 맡기지 않고 명시하며 QA도 별�
   assert.equal(impl.model, 'claude-opus-5-5'); assert.ok(impl.argv.includes('{"fastMode":false,"statusLine":{"type":"command","command":""}}'));
   assert.ok(research.argv.includes('service_tier="default"'));
   assert.equal(qa.model, 'gpt-6.1-sol'); assert.ok(qa.argv.includes('model_reasoning_effort="xhigh"'));
-  assert.ok(qa.argv.includes('service_tier="default"'));
+  assert.ok(qa.argv.includes('service_tier="fast"'));
   assert.ok(qa.argv.includes('danger-full-access') && research.argv.includes('danger-full-access')); assert.ok(impl.argv.includes('auto'));
   assert.equal(qa.argv.includes('bypassPermissions'), false);
 });
