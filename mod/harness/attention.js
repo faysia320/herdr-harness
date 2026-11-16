@@ -14,13 +14,28 @@ export function decisionSignature(t) {
   return JSON.stringify([t.state, t.awaiting ?? null, t.reason ?? null, str(t.x_pending_decision), at(entry?.at)]);
 }
 
+// Lead가 다른 업무를 기다리려고 멈춘 막힘은 stop 사유를 «선행 대기 ID[,ID]: …»로 시작한다. 사유의 뜻은 추측하지 않고 이 표식만 읽는다.
+const WAIT_MARK = /^(?:(?:사용자 )?중단:\s*)?선행 대기\s+([A-Z][A-Z0-9]*-\d+(?:\s*,\s*[A-Z][A-Z0-9]*-\d+)*)\s*:/;
+export const waitMark = (why) => WAIT_MARK.exec(str(why))?.[1].split(",").map((id) => id.trim()) ?? null;
+
+// 아직 끝나지 않은 선행 업무를 돌려준다. 선행 업무가 없거나 실패했거나 모두 끝났으면 null이며 사람이 확인할 막힘으로 남긴다.
+export function waitingOn(task, p) {
+  const ids = task.state === "BLOCKED" ? waitMark(task.reason) : null;
+  if (!ids) return null;
+  const byId = new Map(p.tasks.map((t) => [t.id, t]));
+  if (ids.some((id) => !byId.has(id) || byId.get(id).state === "FAILED")) return null;
+  const pending = ids.filter((id) => byId.get(id).state !== "DONE");
+  return pending.length ? pending : null;
+}
+
 export function decisions(p) {
   const tasks = active(p);
-  return tasks.filter((t) => t.state === "BLOCKED").map((task) => {
+  return tasks.filter((t) => t.state === "BLOCKED" && !waitingOn(t, p)).map((task) => {
     const entry = [...task.history].reverse().find((h) => h.to === "BLOCKED");
     const affected = tasks.filter((t) => t.id !== task.id && t.state !== "DONE" && (t.depends ?? []).includes(task.id));
     return { task, affected, since: at(entry?.at) || task.updated,
-      kind: ({ "ac-approval": "완료 기준 승인", decision: "방향 결정", permission: "권한 결정" })[task.awaiting] ?? "확인 필요",
+      kind: ({ "ac-approval": "완료 기준 승인", decision: "방향 결정", permission: "권한 결정" })[task.awaiting]
+        ?? (waitMark(task.reason)?.every((id) => p.tasks.find((t) => t.id === id)?.state === "DONE") ? "선행 업무 끝남 · 재개 필요" : "확인 필요"),
       reason: str(task.reason) || str(entry?.why) || "대장에 사유가 기록되지 않았습니다.",
       question: str(task.x_pending_decision),
       signature: decisionSignature(task) };
@@ -30,12 +45,12 @@ export function decisions(p) {
 function kindOf(e) {
   if (e.to === "DONE") return "qa";
   if (e.to === "FAILED") return "failed";
-  if (e.to === "BLOCKED") return "blocked";
+  if (e.to === "BLOCKED") return waitMark(e.why) ? "waiting" : "blocked";
   if (e.from === "BLOCKED") return "resolved";
   if (e.from === "QA" && e.to === "READY_TO_IMPLEMENT") return "rework";
   return null;
 }
-const TITLE = { qa: "로컬 QA 통과", failed: "실행 실패", blocked: "사람 확인 필요", resolved: "막힘 해소", rework: "QA 재작업", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
+const TITLE = { qa: "로컬 QA 통과", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
 
 // 사건 파일과 업무 history의 같은 전이는 한 번만 표시한다. 시각이 같아도 내용이 다르면 보존한다.
 export function importantRecords(p) {

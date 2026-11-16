@@ -4,7 +4,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc, exec, home } from "herdr";
 import { GitTree } from "./git-tree.js";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage } from "./logic.js";
-import { decisions, importantRecords, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests } from "./attention.js";
+import { decisions, importantRecords, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
 // 세 저장소 공통 계약 v1(.agents/harness/CONTRACT.md): <root>/<config project.state_dir>/{ledger.json,events.jsonl}
@@ -226,12 +226,12 @@ export default class Harness extends View {
 
   // 처음 읽은 상태는 기준으로만 삼고, 그 뒤 바뀐 업무만 알린다.
   alert(projects) {
-    const now = new Map(projects.filter((p) => !p.stale).flatMap((p) => p.tasks.filter((t) => !t.archived).map((t) => [`${p.root}/${t.id}`, t])));
+    const now = new Map(projects.filter((p) => !p.stale).flatMap((p) => p.tasks.filter((t) => !t.archived).map((t) => [`${p.root}/${t.id}`, { ...t, waiting: waitingOn(t, p) }])));
     if (this.seen) for (const [key, t] of now) {
       const before = this.seen.get(key);
-      if (!before || (before.state === t.state && before.signature === decisionSignature(t))) continue;
+      if (!before || (before.state === t.state && before.signature === decisionSignature(t) && before.waiting === Boolean(t.waiting))) continue;
       // 정상 완료·복구·QA 재작업은 화면에서 묶어 본다. 알림은 새 사람 개입에만 쓴다.
-      const level = t.state === "FAILED" ? "error" : t.state === "BLOCKED" ? "warning" : null;
+      const level = t.state === "FAILED" ? "error" : t.state === "BLOCKED" && !t.waiting ? "warning" : null;
       if (!level) continue;
       const alertKey = `harness.attention.alert.${key}`, signature = decisionSignature(t);
       if (shared(alertKey) === signature) continue;
@@ -239,13 +239,18 @@ export default class Harness extends View {
       notify({ title: `${t.id} ${LABEL[t.state] ?? t.state}`, body: `${t.project} · ${t.title ?? ""}${t.reason ? `\n${t.reason}` : ""}`, level, timeout: 8000 });
       playSound("blocked");
     }
-    this.seen = new Map([...now].map(([k, t]) => [k, { state: t.state, signature: decisionSignature(t) }]));
+    this.seen = new Map([...now].map(([k, t]) => [k, { state: t.state, signature: decisionSignature(t), waiting: Boolean(t.waiting) }]));
   }
 
   visible(p) {
     return p.tasks
-      .filter((t) => !t.archived && t.state !== "BLOCKED" && (this.showEnded || !ENDED.includes(t.state)))
-      .sort((a, b) => ORDER.indexOf(a.state) - ORDER.indexOf(b.state) || b.updated - a.updated);
+      .filter((t) => !t.archived && (t.state !== "BLOCKED" || waitingOn(t, p)) && (this.showEnded || !ENDED.includes(t.state)))
+      .sort((a, b) => this.rank(a, p) - this.rank(b, p) || b.updated - a.updated);
+  }
+
+  // 선행 업무를 기다리는 막힘은 위임 대기 업무와 같은 자리에 둔다.
+  rank(task, p) {
+    return ORDER.indexOf(waitingOn(task, p) ? "READY_TO_IMPLEMENT" : task.state);
   }
 
   color(state, t) {
@@ -262,9 +267,9 @@ export default class Harness extends View {
     return key.startsWith("#") ? key : MARK[key] ?? theme()[key];
   }
 
-  badge(task, color, t) {
+  badge(task, color, t, label = LABEL[task.state] ?? task.state) {
     return div().px(7).py(1).flex_none().rounded(5).bg(tint(color, 0.16)).text_size(10.5).font_medium().text_color(color)
-      .tooltip(task.state).child(LABEL[task.state] ?? task.state);
+      .tooltip(task.state).child(label);
   }
 
   // 조사 → 구현 → QA → 완료. 막힘·실패는 멈춘 칸을 그 색으로 칠한다.
@@ -276,7 +281,9 @@ export default class Harness extends View {
   }
 
   task(p, task, live, t) {
-    const key = `${p.name}/${task.id}`, opened = this.open === key, color = this.color(task.state, t);
+    // 다른 업무를 기다리는 막힘은 사람 확인 대상이 아니므로 진행 목록에 대기로 둔다.
+    const on = waitingOn(task, p), waits = on ? [{ text: `선행 업무 대기: ${on.join(", ")}` }] : task.waits;
+    const key = `${p.name}/${task.id}`, opened = this.open === key, color = on ? t.dim : this.color(task.state, t);
     const term = task.run?.address ? live.get(task.run.address) : null;
     const step = [STAGE[task.stage] ?? task.stage, task.round ? `${task.round}회차` : null, task.rework ? `재작업 ${task.rework}` : null].filter(Boolean);
     const waiting = task.awaiting ? AWAIT[task.awaiting] ?? task.awaiting : null;
@@ -292,7 +299,7 @@ export default class Harness extends View {
       .on_click((_e, cx) => { this.open = opened ? null : key; cx.notify(); })
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().font_medium().text_size(12.5).tooltip(task.title ?? task.id).child(task.title ?? task.id))
-        .child(this.badge(task, color, t)))
+        .child(this.badge(task, color, t, on ? "선행 대기" : undefined)))
       .when(Boolean(task.ticket), (e) => e.child(div().text_size(11).text_color(t.muted)
         .font_family("JetBrainsMono Nerd Font Mono").child(task.ticket)))
       .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
@@ -310,13 +317,13 @@ export default class Harness extends View {
       .when(Boolean(waiting || task.reason), (e) => e.child(v_flex().gap(2).pl(8).py(2).border_l(2).border_color(t.blocked).text_size(11)
         .when(Boolean(waiting), (e) => e.child(div().font_medium().text_color(t.blocked).child(waiting)))
         .when(Boolean(task.reason), (e) => e.child(div().text_color(t.muted).child(task.reason)))))
-      .when(Boolean(task.waits), (e) => e.child(this.waits(task, t)))
+      .when(Boolean(waits), (e) => e.child(this.waits(waits, t)))
       .when(opened, (e) => e.child(this.detail(task, t)));
   }
 
   // 왜 기다리는지 보여 준다. 사람 결정이 필요한 막힘과 구분되게 강조하지 않는다.
-  waits(task, t) {
-    const rows = task.waits.length ? task.waits : [{ text: "막는 조건 없음 · Lead 위임 차례" }];
+  waits(waits, t) {
+    const rows = waits.length ? waits : [{ text: "막는 조건 없음 · Lead 위임 차례" }];
     return v_flex().gap(2).pl(8).py(2).border_l(2).border_color(t.border).text_size(11).text_color(t.muted)
       .children(rows.map((w) => div().truncate().when(Boolean(w.tip), (e) => e.tooltip(w.tip)).child(w.text)));
   }
@@ -360,7 +367,7 @@ export default class Harness extends View {
 
   project(p, i, live, t) {
     const tasks = this.visible(p), counts = {};
-    for (const task of p.tasks) if (!task.archived) counts[task.state] = (counts[task.state] ?? 0) + 1;
+    for (const task of p.tasks) if (!task.archived) { const s = waitingOn(task, p) ? "WAITING" : task.state; counts[s] = (counts[s] ?? 0) + 1; }
     const lead = p.lead ? live.get(p.lead) : null;
     const fill = this.mark(p, i), report = leadReport(p, live);
     return v_flex().flex_none().gap(4).p(6).rounded(10).bg(t.raised)
@@ -368,8 +375,8 @@ export default class Harness extends View {
         .child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff")
           .child([...p.name][0]?.toUpperCase() ?? "?"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12.5).child(p.name))
-        .children(["BLOCKED", ...ACTIVE, "READY_TO_IMPLEMENT", "QUEUED"].filter((s) => counts[s]).map((s) =>
-          div().flex_none().px(6).rounded(5).bg(tint(this.color(s, t), 0.14)).text_size(10.5).text_color(this.color(s, t)).child(`${LABEL[s]} ${counts[s]}`)))
+        .children(["BLOCKED", ...ACTIVE, "READY_TO_IMPLEMENT", "WAITING", "QUEUED"].filter((s) => counts[s]).map((s) =>
+          div().flex_none().px(6).rounded(5).bg(tint(this.color(s, t), 0.14)).text_size(10.5).text_color(this.color(s, t)).child(`${s === "WAITING" ? "선행 대기" : LABEL[s]} ${counts[s]}`)))
         .when(Boolean(p.lead), (e) => e.child(div().size(7).flex_none().rounded_full()
           .bg(lead ? (lead.status === "working" ? t.working : t.done) : t.border)
           .tooltip(lead ? `Lead ${p.lead} · ${lead.status ?? "실행 중"}` : `Lead ${p.lead} · 꺼짐`))))
@@ -571,8 +578,8 @@ export default class Harness extends View {
     const live = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
     const shown = this.shown();
     const recent = shown.flatMap((p) => p.events).sort((a, b) => b.at - a.at).slice(0, 5);
-    const all = shown.flatMap((p) => p.tasks.filter((x) => !x.archived));
-    const active = all.filter((x) => ACTIVE.includes(x.state)).length, blocked = all.filter((x) => x.state === "BLOCKED").length;
+    const all = shown.flatMap((p) => p.tasks.filter((x) => !x.archived).map((x) => ({ ...x, waiting: Boolean(waitingOn(x, p)) })));
+    const active = all.filter((x) => ACTIVE.includes(x.state)).length, blocked = all.filter((x) => x.state === "BLOCKED" && !x.waiting).length;
     const summary = [active && `진행 ${active}`, blocked && `막힘 ${blocked}`].filter(Boolean).join(" · ") || "대기 중";
     return v_flex().id("harness").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(12)
       .child(h_flex().h(44).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -596,7 +603,7 @@ export default class Harness extends View {
         .when(!this.error && this.projects.length > 0 && !shown.length, (e) => e.child(div().px(8).text_size(11).text_color(t.dim).child("이 공간에 연결된 하네스 저장소가 없습니다")))
         .when(shown.length > 0, (e) => e
           .child(h_flex().items_center().gap(6)
-            .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && x.state !== "BLOCKED").length, t.working, t))
+            .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && (x.state !== "BLOCKED" || x.waiting)).length, t.working, t))
             .child(div().flex_1())
             .child(this.button("harness-ended", this.showEnded ? "종료 숨기기" : "종료 포함", (cx) => { this.showEnded = !this.showEnded; cx.notify(); }, t)))
           .children(shown.map((p) => this.project(p, this.projects.indexOf(p), live, t)))

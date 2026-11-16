@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decisions, importantRecords, changes, snapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests } from './attention.js';
+import { decisions, importantRecords, changes, snapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
 
 const now = Date.parse('2026-11-09T02:00:00Z');
 const task = (id, state, patch = {}) => ({ id, state, title: id, reason: '', awaiting: null, updated: now - 1000, runs: [], history: [], depends: [], ...patch });
@@ -168,4 +168,21 @@ test('질문 파일 누락·잘못된 프로젝트·버전·입력은 정상 빈
     assert.equal(decisionInbox(text, 'fixture').status, 'error');
   }
   assert.equal(decisionInbox(JSON.stringify({ version: 1, project: 'fixture', requests: {} }), 'fixture').status, 'ready');
+});
+
+test('«선행 대기 ID:» 표식으로 멈춘 업무는 선행 업무가 진행 중일 때만 결정함에서 빠진다', () => {
+  const blocked = (why) => task('a', 'BLOCKED', { reason: `중단: 선행 대기 B-2, C-3: ${why}`, history: [transition('a', 'QA', 'BLOCKED', `중단: 선행 대기 B-2, C-3: ${why}`)] });
+  const p = project([blocked('시험 수정 후 QA'), task('B-2', 'IMPLEMENTING'), task('C-3', 'DONE'), task('d', 'BLOCKED', { reason: '중단: B-2와 충돌, 순서 결정 필요' })]);
+  assert.deepEqual(waitingOn(p.tasks[0], p), ['B-2']);
+  assert.deepEqual(decisions(p).map((d) => d.task.id), ['d']);
+  assert.equal(importantRecords(p).find((r) => r.task.id === 'a' && r.kind !== 'decision').title, '선행 업무 대기');
+  p.tasks[1].state = 'DONE';
+  assert.equal(waitingOn(p.tasks[0], p), null);
+  assert.equal(decisions(p).find((d) => d.task.id === 'a').kind, '선행 업무 끝남 · 재개 필요');
+  p.tasks[1].state = 'FAILED';
+  assert.equal(decisions(p).find((d) => d.task.id === 'a').kind, '확인 필요');
+  for (const reason of ['사용자 중단: 선행 대기 Z-9: 없음', '중단: SW-0108 병합 후 QA']) {
+    const q = project([task('a', 'BLOCKED', { reason })]);
+    assert.equal(waitingOn(q.tasks[0], q), null); assert.equal(decisions(q).length, 1);
+  }
 });
