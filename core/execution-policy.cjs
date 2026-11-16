@@ -76,9 +76,10 @@ function resolve(local, task, stage) {
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
+  // 하위 에이전트 화면은 사람이 보지 않는다. 사용자 statusline(Git Bash)이 짧은 실행이 끝날 때 고아로 남아 쌓이므로 빈 명령으로 끈다.
   const argv = role.cli === 'codex'
     ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-s', role.sandbox]
-    : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast })];
+    : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode, '--settings', JSON.stringify({ fastMode: role.fast, statusLine: { type: 'command', command: '' } })];
   return { ...role, argv, policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }
 
