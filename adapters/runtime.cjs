@@ -77,7 +77,18 @@ function decisionClosure(file, input) {
   }
   throw new Error('지원하지 않는 결정 종결 동작이다.');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, decisionClosure };
+function workflow(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('workflow 연결 경계가 다르다.');
+  const api = require(path.join(b.release, 'core/workflow.cjs'));
+  if (input.action === 'create') return api.create(input.kind, input.authorization);
+  if (input.action === 'collect') return api.collect(input.flow, input.report, input.candidate);
+  if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate);
+  if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base);
+  if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
+  throw new Error('지원하지 않는 workflow 동작');
+}
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, decisionClosure, workflow };
 if (require.main === module) {
   const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, closure: decisionClosure }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }

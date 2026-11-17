@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+const {candidateTree,verifyReceipt}=createRequire(import.meta.url)('../core/verification-receipt.cjs');
+test('QA runner 증거는 같은 후보·시각·완료 결과만 통과시키고 index를 보존한다',t=>{
+ const cwd=mkdtempSync(join(tmpdir(),'herdr-receipt-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+ const git=(...args)=>execFileSync('git',args,{cwd,windowsHide:true,stdio:'pipe'});
+ git('init','-q');writeFileSync(join(cwd,'.gitignore'),'target/\n');writeFileSync(join(cwd,'a.txt'),'one\n');git('add','.gitignore','a.txt');
+ const index=readFileSync(join(cwd,'.git/index')),tree=candidateTree(cwd);assert.deepEqual(readFileSync(join(cwd,'.git/index')),index);
+ const dir=join(cwd,'target/sw-verify');mkdirSync(dir,{recursive:true});
+ const receipt={version:1,role:'qa',stable:true,tree,base:'base',scope:'changed-paths',completedAt:'2026-11-17T01:00:00Z',checks:[{id:'test',state:'passed'}]};
+ const save=r=>writeFileSync(join(dir,'latest-qa.json'),JSON.stringify(r));save(receipt);
+ assert.equal(verifyReceipt(cwd,'2026-11-17T00:00:00Z','base').tree,tree);
+ assert.throws(()=>verifyReceipt(cwd,'2026-11-17T02:00:00Z','base'),/불완전/);
+ save({...receipt,checks:[{id:'test',state:'skipped'}]});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
+ save({...receipt,base:'wrong'});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
+ save(receipt);writeFileSync(join(cwd,'a.txt'),'two\n');assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
+});

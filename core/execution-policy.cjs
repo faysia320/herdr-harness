@@ -68,7 +68,11 @@ function resolve(local, task, stage) {
   if (!object(override) || Object.keys(override).some((k) => !['model', 'effort', 'reason'].includes(k))) fail('업무별 예외 형식이 올바르지 않다.');
   if ((override.model != null || override.effort != null) && (typeof override.reason !== 'string' || !override.reason.trim())) fail('업무별 모델·effort 변경에는 사유가 필요하다.');
   const role = { ...config.roles[stage], effort: route.effort[stage] ?? config.roles[stage].effort };
-  if (stage === 'implement') {
+  if (task.x_flow?.version === 2) {
+    const selected = require('../policy/workflow.json').roles[stage];
+    role.model = selected.model;
+    role.effort = route.canonical === 'high-risk' && stage === 'implement' ? 'xhigh' : selected.effort;
+  } else if (stage === 'implement') {
     const ladder = config.escalation.effort_ladder;
     role.effort = ladder[Math.min(ladder.indexOf(role.effort) + (task.rework ?? 0) * config.escalation.implement_step_per_rework, ladder.length - 1)];
   }
