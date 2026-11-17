@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "playbooks": {
+    "bug-fix": "같은 사용 경로로 재현 → 원인 가설 확인 → 최소 수정 → 원래 재현과 관련 회귀 확인",
+    "feature": "완료 기준 → 데이터·계약 설계 → 독립 범위 구현 → 사용자 동작·회귀 확인",
+    "ui": "현재 화면·조작 확인 → 기대 동작 확정 → 구현 → 동일 화면·조작 검증",
+    "performance": "측정 조건·무효 조건·기준선 확정 → 가설별 변경 → 같은 조건 재측정",
+    "refactor": "보존할 동작·경계 확정 → 작은 변경 → 동작 동등성·소비처 검증"
+  },
+  "roles": {
+    "research": { "model": "gpt-6-astra", "effort": "high", "minutes": 30 },
+    "architect": { "model": "claude-fable-5-2", "effort": "high", "minutes": 30 },
+    "implement": { "model": "claude-opus-5-5", "effort": "high", "minutes": 60 },
+    "qa": { "model": "gpt-6.1-sol", "effort": "high", "minutes": 45 }
+  },
+  "max_same_failure": 2,
+  "max_repairs": 3,
+  "delivery": { "strategy": "squash", "base": "main", "poll_seconds": 30 }
+}
