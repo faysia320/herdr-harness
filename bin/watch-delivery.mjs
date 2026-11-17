@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 const { binding } = createRequire(import.meta.url)('../adapters/runtime.cjs');
 const [file, id, minutes='120'] = process.argv.slice(2);
-if (!file || !/^SW-\d+$/.test(id ?? '') || !/^\d+$/.test(minutes) || +minutes<1 || +minutes>1440) throw new Error('사용법: watch-delivery.mjs <binding> <SW-ID> [최대 대기 분 1..1440]');
+if (!file || !/^[A-Z][A-Z0-9]*-\d+$/.test(id ?? '') || !/^\d+$/.test(minutes) || +minutes<1 || +minutes>1440) throw new Error('사용법: watch-delivery.mjs <binding> <업무-ID> [최대 대기 분 1..1440]');
 const b=binding(file), end=Date.now()+Number(minutes)*60000;
 let finished=false;
 while (Date.now()<end) {

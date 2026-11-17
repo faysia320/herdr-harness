@@ -84,7 +84,7 @@ function workflow(file, input) {
   if (input.action === 'create') return api.create(input.kind, input.authorization);
   if (input.action === 'collect') return api.collect(input.flow, input.report, input.candidate);
   if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate);
-  if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base);
+  if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base,input.receipt);
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
   throw new Error('지원하지 않는 workflow 동작');
 }
