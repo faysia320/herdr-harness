@@ -173,6 +173,29 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 
 진입점은 `node .agents/harness/runtime.cjs <binding> ledger`이고, 동작은 `plan`·`archive`·`restore`다. `archived: true`는 목록에서 숨기는 표시일 뿐이라 JSON 크기를 줄이지 않는다.
 
+## 사용자 결정 게시·종결
+
+QA가 FAIL·CONDITIONAL PASS·BLOCKED로 끝나 BLOCKED가 된 업무를 사용자 결정으로 게시·병합하는 경로다. 규칙은 `core/decision-closure.cjs`가 정하고, 대장 잠금·저장·사건 append는 프로젝트 CLI가 맡는다. 진입점은 `node .agents/harness/runtime.cjs <binding> closure`이고 동작은 셋이다.
+
+| 동작 | 입력 | 결과 |
+|---|---|---|
+| `authorize` | `task`, `evidence: {quote, source, qa_round, qa_reason}` | 상태는 그대로 두고 `x_decision_publish`를 기록한 업무와 `x_decision_publish` 사건 |
+| `gate` | `task` | publish-check 판정 `{allowed, kind, reason?}` |
+| `close` | `task`, `cwd`(저장소 절대 경로), `evidence: {pr, merge_sha, quote?, source?, qa_round?, qa_reason?}` | BLOCKED→DONE 업무(`x_closure`)와 `state` 사건 |
+
+- **근거**: 사용자 결정 원문 `quote`와 출처 `source`, 예외 처리한 QA 회차 `qa_round`와 사유 `qa_reason`이 필요하다. 회차는 끝난 QA 실행이어야 하고 PASS 회차는 거부한다. `close`는 지금 막힘에서 남긴 `x_decision_publish`가 있으면 결정 근거를 이어받는다.
+- **병합 확인**: `close`는 release 쪽에서 `gh pr view <pr> --json number,state,mergeCommit,mergedAt,url,headRefName`을 직접 실행한다. `MERGED`가 아니거나 merge SHA·업무 브랜치가 다르면 종결하지 않는다. 호출자가 조회 결과를 넘겨 근거를 대신할 수 없다. 시험에서는 `HERDR_HARNESS_GH`(JSON 배열)로 gh 대신 실행할 명령을 준다.
+- **게시 판정**: BLOCKED 업무는 지금 막힘(마지막 →BLOCKED 전이) 이후 남긴 사용자 결정 기록이 있을 때만 `gate`가 허용한다. 이전 막힘의 결정은 인정하지 않는다. DONE과 다른 상태는 이 규칙의 판정 대상이 아니다.
+- **표지**: 종결한 업무는 `x_closure: {kind: "user-decision", at, by, quote, source, qa_round, qa_outcome, qa_reason, decided_at, pr, url, merge_sha, merged_at}`를 갖고, 마지막 history와 사건에 `x_closure`를 붙인다. QA PASS DONE에는 `x_closure`가 없다. 보관 요약도 `x_closure`를 남긴다.
+- **화면**: mod는 이 업무를 «결정 종결»로 표시하고 결정함에서 뺀다. 중요한 변화에는 «사용자 결정 종결»로, 상세에는 QA 회차·PR·merge SHA와 결정 원문을 보인다.
+- **보관·의존**: 상태가 DONE이라 `archive-tasks` 대상이고, 이 업무를 `depends`로 가진 업무는 선행 조건을 충족한 것으로 본다.
+
+### 계약 v1 호환
+
+- 상태·전이표를 바꾸지 않는다. 공통 전이표(`core/contract.js`)는 이미 BLOCKED→DONE을 허용한다. 계약 문서 표의 BLOCKED 행 «`resume_state` 또는 사람이 지정한 상태»에도 들어간다. 프로젝트 CLI 전이표가 더 좁으면 이 경로에서만 BLOCKED→DONE을 허용한다.
+- 새 값은 계약 §4가 허용한 `x_` 필드와 `x_` 사건 이름으로만 추가한다. 대장 `version`은 1 그대로이며 `x_`를 모르는 화면·CLI도 읽을 수 있다.
+- 알려진 한계: `x_closure`를 모르는 화면은 이 업무를 QA 통과 DONE으로 보인다. 계약 §1 «DONE은 로컬 독립 QA 통과다»의 예외이므로 각 저장소 GATES.md에 이 경로를 적는다. 다음 계약 버전에서 DONE 의미 문장을 함께 고친다.
+
 ## 다음 계약 버전 후보
 
 `CONTRACT.md`(계약 v1)는 세 저장소가 바이트 단위로 같고 대장 버전과 묶여 있다. 아래는 바로 바꾸지 않고, 다음 계약 버전을 올릴 때 함께 반영할 후보다.
@@ -191,6 +214,4 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
     - DONE으로 보내되 `approval`처럼 `{by: "user", quote, report}` 근거를 남긴다.
     - DONE과 구분되는 종료 상태를 따로 둔다.
   - 의존 업무의 `depends` 판정이 위 종료 상태를 충족으로 볼지 여부. 이미 등록된 업무의 `depends`를 사람이 사유와 함께 바꾸는 명령이 필요한지도 함께 정한다.
-- **지금 처리 기준**(계약 v1):
-  - 사람이 받아들인 업무는 `fail --why`로 닫는다. 사유에는 QA 경위, 사용자 수용, PR·보고서 경로를 남긴다.
-  - 의존 업무는 같은 방식으로 닫고 새 ID로 다시 등록한다. 새 업무 설명의 첫 줄에 원래 ID를 적는다.
+- **지금 처리 기준**(계약 v1): 사람이 받아들여 병합한 업무는 [사용자 결정 게시·종결](#사용자-결정-게시종결) 경로로 DONE(`x_closure`)으로 닫는다. 의존 업무는 그대로 진행한다. 남은 후보는 실행 환경 차단 결과 코드, 대체 QA 기록 방식, 계약 §1 DONE 의미 문장이다.

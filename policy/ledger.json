@@ -4,6 +4,6 @@
   "keep_recent": 5,
   "archive": "archive/tasks/{id}.json",
   "summary": ["id", "project", "title", "itsm", "profile", "priority", "depends", "dir", "branch", "state", "pending", "awaiting",
-    "rework", "retries", "resume_state", "blocked_reason", "current", "approval", "overrides", "created", "updated", "archived", "x_slug", "x_pending_decision"],
+    "rework", "retries", "resume_state", "blocked_reason", "current", "approval", "overrides", "created", "updated", "archived", "x_slug", "x_pending_decision", "x_closure"],
   "run_summary": ["stage", "round", "cli", "model", "effort", "status", "outcome", "started", "ended"]
 }

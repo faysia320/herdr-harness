@@ -62,9 +62,24 @@ function ledgerArchive(file, input) {
   if (input.action === 'restore') return api.restore(input.ledger.tasks[input.id], input.stateDir);
   throw new Error('지원하지 않는 대장 보관 동작이다.');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive };
+// 사용자 결정으로 QA 게이트를 예외 처리한 업무의 게시 허가·종결. 호출자는 대장 잠금 안에서 부르고 돌려받은 업무·사건을 저장한다.
+// 병합 확인은 release 쪽에서 gh로 직접 한다. 호출자가 PR 조회 결과를 넘겨 근거를 대신할 수 없다.
+function decisionClosure(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('결정 종결 연결의 프로젝트·상태 경계가 다르다.');
+  if (input.task?.project !== input.project) throw new Error('업무 프로젝트가 연결과 다르다.');
+  const api = require(path.join(b.release, 'core/decision-closure.cjs'));
+  if (input.action === 'authorize') return api.authorize(input.task, input.evidence, { now: input.now });
+  if (input.action === 'gate') return api.gate(input.task);
+  if (input.action === 'close') {
+    if (!path.isAbsolute(input.cwd ?? '')) throw new Error('PR 조회 위치(cwd)는 절대 경로여야 한다.');
+    return api.close(input.task, input.evidence, api.viewPr(input.cwd, Number(input.evidence?.pr)), { now: input.now });
+  }
+  throw new Error('지원하지 않는 결정 종결 동작이다.');
+}
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, decisionClosure };
 if (require.main === module) {
-  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive }[process.argv[3]] ?? bridge;
+  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, closure: decisionClosure }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

@@ -5,6 +5,8 @@ const str = (value) => typeof value === "string" ? value.trim() : "";
 const active = (p) => p.tasks.filter((t) => !t.archived);
 export const projectKey = (p) => JSON.stringify([p.root.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase(), p.projectId]);
 export const seenKey = (p) => `harness.attention.v1.${projectKey(p)}`;
+// 사용자 결정으로 QA 게이트를 예외 처리해 병합·종결한 업무. DONE이지만 로컬 QA 통과가 아니다.
+export const closedByDecision = (t) => t?.state === "DONE" && t.x_closure?.kind === "user-decision";
 export const stateLabel = (s) => ({ DONE: "로컬 QA 통과", FAILED: "실패", BLOCKED: "막힘", QA: "QA", IMPLEMENTING: "구현", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", QUEUED: "대기" }[s] ?? s);
 
 export const openRequests = (p) => (p.requests ?? []).filter((r) => r.status === "open").sort((a, b) => at(a.created) - at(b.created) || a.id.localeCompare(b.id));
@@ -43,14 +45,14 @@ export function decisions(p) {
 }
 
 function kindOf(e) {
-  if (e.to === "DONE") return "qa";
+  if (e.to === "DONE") return e.x_closure ? "closed" : "qa";
   if (e.to === "FAILED") return "failed";
   if (e.to === "BLOCKED") return waitMark(e.why) ? "waiting" : "blocked";
   if (e.from === "BLOCKED") return "resolved";
   if (e.from === "QA" && e.to === "READY_TO_IMPLEMENT") return "rework";
   return null;
 }
-const TITLE = { qa: "로컬 QA 통과", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
+const TITLE = { qa: "로컬 QA 통과", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", closed: "사용자 결정 종결", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
 
 // 사건 파일과 업무 history의 같은 전이는 한 번만 표시한다. 시각이 같아도 내용이 다르면 보존한다.
 export function importantRecords(p) {
@@ -112,7 +114,7 @@ export function snapshot(p, now = Date.now(), previous = null) {
 
 export function digest(records) {
   const count = (kind) => new Set(records.filter((r) => r.kind === kind).map((r) => r.task.id)).size;
-  return [{ kind: "qa", label: "QA 통과", count: count("qa") }, { kind: "rework", label: "재작업", count: count("rework") },
+  return [{ kind: "qa", label: "QA 통과", count: count("qa") }, { kind: "closed", label: "결정 종결", count: count("closed") }, { kind: "rework", label: "재작업", count: count("rework") },
     { kind: "failed", label: "실패", count: count("failed") }, { kind: "resolved", label: "막힘 해소", count: count("resolved") }].filter((x) => x.count);
 }
 

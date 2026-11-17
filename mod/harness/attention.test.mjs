@@ -186,3 +186,16 @@ test('«선행 대기 ID:» 표식으로 멈춘 업무는 선행 업무가 진�
     assert.equal(waitingOn(q.tasks[0], q), null); assert.equal(decisions(q).length, 1);
   }
 });
+
+test('사용자 결정 종결 DONE은 결정함에서 빠지고 QA 통과와 다른 변화로 보인다', async () => {
+  const { closedByDecision } = await import('./attention.js');
+  const closure = { kind: 'user-decision', qa_round: 3, qa_outcome: 'FAIL', pr: 1013, merge_sha: 'abc', quote: 'AC-4 정정하고 PR 게시해' };
+  const closed = task('a', 'DONE', { x_closure: closure, history: [transition('a', 'BLOCKED', 'DONE', '사용자 결정 종결', 500)].map((h) => ({ ...h, x_closure: 'user-decision' })) });
+  const passed = task('b', 'DONE', { history: [transition('b', 'QA', 'DONE', 'PASS', 400)] });
+  const p = project([closed, passed, task('c', 'QUEUED', { depends: ['a'] })], [{ ...transition('a', 'BLOCKED', 'DONE', '사용자 결정 종결', 500), x_closure: closure }]);
+  assert.equal(decisions(p).length, 0);
+  assert.deepEqual([closedByDecision(closed), closedByDecision(passed), closedByDecision(task('x', 'BLOCKED', { x_closure: closure }))], [true, false, false]);
+  const records = importantRecords(p);
+  assert.deepEqual(records.map((r) => [r.task.id, r.kind, r.title]), [['b', 'qa', '로컬 QA 통과'], ['a', 'closed', '사용자 결정 종결']]);
+  assert.deepEqual(digest(records), [{ kind: 'qa', label: 'QA 통과', count: 1 }, { kind: 'closed', label: '결정 종결', count: 1 }]);
+});

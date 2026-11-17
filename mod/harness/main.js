@@ -4,7 +4,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, readTextFile, watchFolder, terminals, spaces, panes, shared, setShared, theme, run, notify, playSound, props, closeOverlay, nextCommand, hc, exec, home } from "herdr";
 import { GitTree } from "./git-tree.js";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage } from "./logic.js";
-import { decisions, importantRecords, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
+import { closedByDecision, decisions, importantRecords, changes, snapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
 // 세 저장소 공통 계약 v1(.agents/harness/CONTRACT.md): <root>/<config project.state_dir>/{ledger.json,events.jsonl}
@@ -68,7 +68,7 @@ function normalize(t) {
     round: run?.round ?? null, rework: t.rework ?? 0, reason: t.blocked_reason ?? null, awaiting: t.awaiting ?? null,
     resume: t.resume_state ?? null, branch: t.branch ?? null, updated: time(t.updated), archived: Boolean(t.archived),
     run: run && { address: run.address, cli: run.cli, model: run.model, outcome: run.outcome ?? null, live: run.status === "running", started: time(run.started) },
-    runs, history: (t.history ?? []).map((h) => ({ at: time(h.at), from: h.from, to: h.to, why: h.why ?? "" })),
+    runs, history: (t.history ?? []).map((h) => ({ at: time(h.at), from: h.from, to: h.to, why: h.why ?? "", x_closure: h.x_closure ?? null })),
   };
 }
 
@@ -267,7 +267,7 @@ export default class Harness extends View {
     return key.startsWith("#") ? key : MARK[key] ?? theme()[key];
   }
 
-  badge(task, color, t, label = LABEL[task.state] ?? task.state) {
+  badge(task, color, t, label = closedByDecision(task) ? "결정 종결" : LABEL[task.state] ?? task.state) {
     return div().px(7).py(1).flex_none().rounded(5).bg(tint(color, 0.16)).text_size(10.5).font_medium().text_color(color)
       .tooltip(task.state).child(label);
   }
@@ -348,7 +348,9 @@ export default class Harness extends View {
       task.run?.outcome && ["circle-check", `최근 판정 ${task.run.outcome}`],
     ].filter(Boolean);
     return v_flex().gap(6).pt(6).border_t(1).border_color(t.border).text_size(11)
-      .when(task.state === "DONE", (e) => e.child(div().text_color(t.muted).child("로컬 독립 QA 통과 · 커밋·PR·병합·배포는 별도 확인")))
+      .when(task.state === "DONE" && !closedByDecision(task), (e) => e.child(div().text_color(t.muted).child("로컬 독립 QA 통과 · 커밋·PR·병합·배포는 별도 확인")))
+      .when(closedByDecision(task), (e) => e.child(div().text_color(t.muted).child(`사용자 결정으로 QA r${task.x_closure.qa_round} ${task.x_closure.qa_outcome} 예외 · PR #${task.x_closure.pr} 병합 ${String(task.x_closure.merge_sha ?? "").slice(0, 12)}`))
+        .child(div().text_color(t.dim).child(`결정 원문: ${task.x_closure.quote}`)))
       .children(meta.map(([icon, text]) => h_flex().gap(6).items_center().text_color(t.muted)
         .child(svg(ICON(icon)).size(12).flex_none().text_color(t.dim))
         .child(div().min_w(0).truncate().child(text))))
@@ -361,7 +363,7 @@ export default class Harness extends View {
           .child(v_flex().flex_1().min_w(0).pb(4)
             .child(h_flex().gap(6)
               .child(div().flex_none().text_color(t.dim).child(clock(h.at)))
-              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${LABEL[h.from] ?? h.from ?? "—"} → ${LABEL[h.to] ?? h.to}`)))
+              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${LABEL[h.from] ?? h.from ?? "—"} → ${h.x_closure ? "결정 종결" : LABEL[h.to] ?? h.to}`)))
             .when(Boolean(h.why), (e) => e.child(div().text_color(t.dim).truncate().child(h.why))))))));
   }
 
@@ -520,7 +522,7 @@ export default class Harness extends View {
 
   changeCard(p, r, t) {
     const key = `change-${p.name}-${r.id}`, expanded = this.expanded.has(key);
-    const color = r.kind === "qa" ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
+    const color = ["qa", "closed"].includes(r.kind) ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
     const body = r.body || `${stateLabel(r.from) ?? "—"} → ${stateLabel(r.to)}`;
     return v_flex().id(`more-${key}`).flex_none().min_w(0).px(10).py(7).gap(3).rounded(8).bg(t.raised)
       .cursor_pointer().hover((s) => s.bg(t.hover))
@@ -616,7 +618,7 @@ export default class Harness extends View {
           .child(div().flex_none().text_color(t.muted).font_family("JetBrainsMono Nerd Font Mono").child(ev.task ?? ""))
           .child(div().flex_none().text_color(t.dim).child(LABEL[ev.from] ?? ev.from ?? "—"))
           .child(div().flex_none().text_color(t.dim).child("→"))
-          .child(div().flex_none().font_medium().text_color(this.color(ev.to, t)).child(LABEL[ev.to] ?? ev.to))
+          .child(div().flex_none().font_medium().text_color(this.color(ev.to, t)).child(ev.x_closure ? "결정 종결" : LABEL[ev.to] ?? ev.to))
           .child(div().flex_1().min_w(0).truncate().text_color(t.dim).tooltip(ev.why).child(ev.why)))))))));
   }
 }
