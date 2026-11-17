@@ -240,7 +240,7 @@ export default class Harness extends View {
   color(state, t) {
     return { RESEARCHING: t.ansi6, IMPLEMENTING: t.ansi4, QA: t.ansi5,
       READY_TO_IMPLEMENT: t.ansi3, QUEUED: t.muted, BLOCKED: t.ansi3,
-      DONE: t.done, FAILED: t.ansi1 }[state] ?? t.dim;
+      DONE: t.ansi2, FAILED: t.ansi1 }[state] ?? t.dim;
   }
 
   badge(task, color, t, label = closedByDecision(task) ? "결정 종결" : LABEL[task.state] ?? task.state) {
@@ -269,8 +269,8 @@ export default class Harness extends View {
     const timing = task.run?.live && task.run.started ? elapsed(task.run.started)
       : ended || task.run?.live ? ago(task.updated)
       : `대기 ${elapsed(task.history.at(-1)?.at || task.updated)}`;
-    return v_flex().id(`task-${key}`).flex_none().min_w(0).px(2).py(10).gap(6).cursor_pointer()
-      .bg(opened ? t.selected : t.background).border_t(1).border_color(t.border)
+    return v_flex().id(`task-${key}`).flex_none().min_w(0).p(10).gap(6).rounded(8).cursor_pointer()
+      .bg(opened ? t.selected : t.raised).border_1().border_color(opened ? t.accent : t.border)
       .hover((s) => s.bg(opened ? t.selected : t.hover))
       .when(ended && !opened, (e) => e.opacity(0.7))
       .on_click((_e, cx) => { this.open = opened ? null : key; cx.notify(); })
@@ -344,7 +344,7 @@ export default class Harness extends View {
 
   project(p, i, live, t) {
     const tasks = this.visible(p);
-    return v_flex().flex_none().min_w(0).gap(3)
+    return v_flex().flex_none().min_w(0).gap(8)
       .when(!p.note && !tasks.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
         .child(svg(ICON("check")).size(12).flex_none()).child("진행 중인 업무 없음")))
       .children(tasks.map((task) => this.task(p, task, live, t)));
@@ -597,11 +597,13 @@ export default class Harness extends View {
 
   basicAgent(agent, t) {
     const key = `basic-${agent.address}`, opened = this.expanded.has(key), attention = needsTerminal(agent);
-    return v_flex().flex_none().min_w(0).py(10).gap(5).border_t(1).border_color(t.border)
+    const color = this.color(({ working: "IMPLEMENTING", blocked: "BLOCKED", error: "FAILED", done: "DONE", idle: "QUEUED" })[agent.status], t);
+    return v_flex().flex_none().min_w(0).p(10).gap(6).rounded(8)
+      .bg(opened ? t.selected : t.raised).border_1().border_color(opened ? t.accent : t.border)
       .child(h_flex().gap(8).items_start()
         .child(div().id(`activity-${agent.address}`).flex_1().min_w(0).font_medium().text_size(13).whitespace_normal().cursor_pointer()
           .on_click((_e, cx) => { opened ? this.expanded.delete(key) : this.expanded.add(key); cx.notify(); }).child(agent.title))
-        .child(div().flex_none().px(6).py(1).rounded(4).text_size(11).text_color(attention ? t.blocked : t.muted).bg(attention ? tint(t.blocked, .12) : t.raised).child(agent.label)))
+        .child(this.badge({ state: agent.status }, color, t, agent.label)))
       .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(agent.message || "상태 보고에 작업 내용이 없습니다."))
       .when(attention, (e) => e.child(div().text_size(11).text_color(t.dim).child("질문·선택지 또는 오류 내용은 터미널에서 확인합니다.")))
       .child(h_flex().gap(6).items_center()
