@@ -11,11 +11,15 @@ function candidateTree(cwd) {
     if(fs.existsSync(real))fs.copyFileSync(real,index);else git(['read-tree','HEAD'],env);
     git(['add','-A'],env);
     git(['rm','-r','--cached','-q','--ignore-unmatch','--','docs/tasks','docs/projects'],env);
-    return git(['write-tree'],env);
-  } finally { fs.rmSync(scratch,{recursive:true,force:true}); }
+    // add가 작업 바이트를 기록한 index의 지문이다. 큰 저장소의 기존 blob 존재 여부를 다시 읽지 않는다.
+    // 실제 게시·병합 때는 커밋 blob/tree를 별도로 검증한다.
+    return git(['write-tree','--missing-ok'],env);
+  } finally { fs.rmSync(scratch,{recursive:true,force:true,maxRetries:5,retryDelay:100}); }
 }
-function verifyReceipt(cwd, since, base) {
-  const file=path.join(cwd,'target/sw-verify/latest-qa.json');
+function verifyReceipt(cwd, since, base, receipt = 'target/sw-verify/latest-qa.json') {
+  // 어댑터가 지정한 저장소 내부 runner 경로만 읽는다. 기존 SW 호출의 기본 경로는 유지한다.
+  if (typeof receipt !== 'string' || !/^target\/[a-z0-9-]+\/latest-qa\.json$/.test(receipt)) throw new Error('QA runner 영수증 경로가 올바르지 않다.');
+  const file=path.join(cwd,receipt);
   const r=JSON.parse(fs.readFileSync(file,'utf8'));
   if(r.version!==1 || r.role!=='qa' || !r.stable || !base || r.base!==base || r.scope!=='changed-paths' || !Number.isFinite(Date.parse(since)) || !Number.isFinite(Date.parse(r.completedAt)) || Date.parse(r.completedAt)<Date.parse(since)
     || !Array.isArray(r.checks) || !r.checks.length || r.checks.some(c=>!['passed','reused','unneeded'].includes(c.state))

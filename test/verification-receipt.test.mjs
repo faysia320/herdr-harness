@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,writeFileSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,mkdirSync,rmSync,readFileSync,renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
@@ -15,6 +15,11 @@ test('QA runner 증거는 같은 후보·시각·완료 결과만 통과시키�
  const receipt={version:1,role:'qa',stable:true,tree,base:'base',scope:'changed-paths',completedAt:'2026-11-17T01:00:00Z',checks:[{id:'test',state:'passed'}]};
  const save=r=>writeFileSync(join(dir,'latest-qa.json'),JSON.stringify(r));save(receipt);
  assert.equal(verifyReceipt(cwd,'2026-11-17T00:00:00Z','base').tree,tree);
+ renameSync(dir,join(cwd,'target/vdp-verify'));
+ assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/ENOENT/);
+ assert.equal(verifyReceipt(cwd,'2026-11-17T00:00:00Z','base','target/vdp-verify/latest-qa.json').tree,tree);
+ assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base','../latest-qa.json'),/경로/);
+ renameSync(join(cwd,'target/vdp-verify'),dir);
  assert.throws(()=>verifyReceipt(cwd,'2026-11-17T02:00:00Z','base'),/불완전/);
  save({...receipt,checks:[{id:'test',state:'skipped'}]});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
  save({...receipt,base:'wrong'});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
