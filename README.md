@@ -88,7 +88,7 @@ node --test test/adapters.integration.mjs
 3. staging native check → 소스·binding 백업 → 설치 → native check를 통과하면 active 기록을 바꾼다. `node scripts/verify-install.mjs <store>`로 실제 설치 파일 지문을 검증한다.
 4. 기존 Lead가 새 CLI와 프로젝트의 `COMMON.md` 지침을 사용하는지 별도로 확인한다. 설치는 Lead에 메시지를 보내거나 현재 업무를 재시작하지 않는다.
 
-각 상태 폴더의 `harness-binding.json`은 release 경로·manifest 지문·project ID·CLI command/cwd·adapterConfig만 담는다. 화면도 이 설정과 release의 공통 한도를 읽어 오래된 main 설정을 표시하지 않는다. 업무 내용·인증 정보는 넣지 않는다. 설치 프로그램은 프로젝트의 추적 파일을 수정하지 않으므로 회사 adapter 변경은 별도 브랜치로 검토·게시한다.
+각 상태 폴더의 `harness-binding.json`은 release 경로·manifest 지문·project ID·CLI command/cwd·adapterConfig와 선택 실행 한도 `timeout`(1~2147483647 범위의 정수 ms)을 담는다. 화면도 이 설정과 release의 공통 한도를 읽어 오래된 main 설정을 표시하지 않는다. 업무 내용·인증 정보는 넣지 않는다. 설치 프로그램은 프로젝트의 추적 파일을 수정하지 않으므로 회사 adapter 변경은 별도 브랜치로 검토·게시한다.
 
 기존 `projects.json`은 보존하고 처음 설치에만 빈 설정을 만든다. 예시는 `examples/projects.example.json`이다. 업무 대장·결정 기록·Herdr 읽음 상태는 설치와 복구가 건드리지 않는다. 소스를 수정해도 설치본은 자동으로 바뀌지 않는다. 검증 후 명시적으로 재설치한다.
 
@@ -99,6 +99,16 @@ node scripts/rollback.mjs <store>
 ```
 
 rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경이 있으면 덮어쓰지 않고 거부한다. 새 질문이나 사용자 설정은 되돌리지 않는다. 로컬 백업에는 이전 개인 파일 내용이 있으므로 store를 Git에 넣지 않는다.
+
+### 작업 폴더 준비와 실행 한도
+
+`prepare`, `dispatch`, `next --go`는 공통 런처에서 PC 전체의 준비 슬롯 하나를 사용한다. 여러 저장소의 `git worktree add`가 동시에 디스크를 점유해 준비 중 시간 초과가 나는 일을 줄이기 위한 장치다. 현재는 worktree 생성·의존성 설치·위임을 포함한 CLI 한 호출을 직렬화하며, 이미 실행 중인 에이전트는 영향을 받지 않는다. `whoami`, `show`, `next`의 안내, 질문·결정 조회 등은 슬롯을 잡지 않는다. 전체 시험·빌드의 `heavy` 2개 슬롯과 별도다.
+
+- 순서 대기 후에 실행 한도(binding `timeout`, 기본 600000ms)를 시작한다. 느린 저장소는 설치 계획에 `timeout: 1800000`처럼 지정한다. stderr에 대기 시간·준비 시작·실행 시간이 따로 나오며, stdout의 기존 JSON은 유지한다.
+- 한도를 넘기면 하위 프로세스까지 종료하고 124, 취소하면 하위 프로세스 종료 확인 뒤 130을 반환한다. 종료 전에는 슬롯을 반환하지 않는다. 대기 중 binding이 바뀌면 실행하지 않고 새 launcher 사용을 요구한다.
+- `node <release>/bin/harness.mjs --binding <file> preparation-status`로 점유 PID·프로젝트·시각을 읽는다. 기본 잠금은 `%LOCALAPPDATA%/HerdrHarness/preparation/active.json`이며 시험 격리에만 `HERDR_PREPARATION_DIR`를 쓴다.
+- 강제 종료로 남은 잠금은 시간만 보고 지우지 않는다. 죽은 소유자면 실패로 알리며, 소유 프로세스와 하위 Git까지 종료됐음을 확인한 뒤 해당 잠금만 복구한다. 부분 worktree·브랜치는 자동 삭제하지 않는다.
+- 구 release로 이미 시작한 준비나 직접 Git/프로젝트 CLI를 실행한 작업은 이 슬롯에 참여하지 않는다. 최초 전환 시 기존 checkout을 끝내고 새 binding의 launcher를 사용한다. 원시 디스크 성능 문제가 해결됐거나 기존 대장의 잠금 문제가 수정됐다는 뜻은 아니다.
 
 ## 위임 정책
 

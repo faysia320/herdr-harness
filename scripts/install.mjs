@@ -24,6 +24,7 @@ export function nativeCheck(path, executable = 'herdr-app') {
 export function install(plan, { check = nativeCheck } = {}) {
   if (!isAbsolute(plan.store) || !isAbsolute(plan.modPath) || !Array.isArray(plan.bindings)) throw new Error('store, modPath 절대 경로와 bindings 배열이 필요하다.');
   for (const b of plan.bindings) if (!isAbsolute(b.file) || !isAbsolute(b.cwd) || !Array.isArray(b.command) || !b.command.length || !b.project) throw new Error('프로젝트 연결 설정이 올바르지 않다.');
+  for (const b of plan.bindings) if (b.timeout !== undefined && !(Number.isInteger(b.timeout) && b.timeout > 0 && b.timeout <= 2147483647)) throw new Error('연결 timeout은 1~2147483647 범위의 정수(ms)여야 한다.');
   plan = { ...plan, store: resolve(plan.store), modPath: resolve(plan.modPath), bindings: plan.bindings.map((b) => ({ ...b, file: resolve(b.file), cwd: resolve(b.cwd) })) };
   // 로컬 계획 오타로 업무 대장·질문·개인 설정을 연결 파일로 덮어쓰지 않는다.
   for (const b of plan.bindings) if (basename(b.file) !== 'harness-binding.json') throw new Error('연결 파일 이름은 harness-binding.json이어야 한다. 업무 자료와 개인 설정은 설치 대상이 아니다.');
@@ -64,7 +65,7 @@ function installUnlocked(plan, check) {
       ...modFiles.map((name) => ({ file: join(plan.modPath, name), bytes: readFileSync(join(stage, name)) })),
       ...autoFiles.map((name) => ({ file: join(autoPath, name), bytes: readFileSync(join(autoStage, name)) })),
       ...accountFiles.map((name) => ({ file: join(accountPath, name), bytes: readFileSync(join(accountStage, name)) })),
-      ...plan.bindings.map((b) => ({ file: b.file, bytes: Buffer.from(`${JSON.stringify({ version: 1, project: b.project, release, manifestHash: built.manifestHash, command: b.command, cwd: b.cwd, ...(b.adapterConfig ? { adapterConfig: b.adapterConfig } : {}) }, null, 2)}\n`) })),
+      ...plan.bindings.map((b) => ({ file: b.file, bytes: Buffer.from(`${JSON.stringify({ version: 1, project: b.project, release, manifestHash: built.manifestHash, command: b.command, cwd: b.cwd, ...(b.timeout ? { timeout: b.timeout } : {}), ...(b.adapterConfig ? { adapterConfig: b.adapterConfig } : {}) }, null, 2)}\n`) })),
     ];
     // 사용자 설정은 처음 설치할 때만 만들며 업데이트·복구 대상에서 제외한다.
     if (!existsSync(configPath)) atomic(configPath, '{"projects":[]}\n');
