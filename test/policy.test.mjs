@@ -4,11 +4,14 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { build } from '../scripts/build.mjs';
 import { run } from '../core/process.js';
 const require = createRequire(import.meta.url);
 const { configure, resolve } = require('../core/execution-policy.cjs');
 const { executionPolicy } = require('../adapters/runtime.cjs');
+const root = fileURLToPath(new URL('..', import.meta.url));
+const claudeSettings = (role) => JSON.parse(role.argv[role.argv.indexOf('--settings') + 1]);
 const local = () => ({ roles: Object.fromEntries(['research', 'architect', 'implement', 'qa'].map((s) => [s, { skill: `skills/${s}`, invoke: s }])), execution_overrides: {} });
 
 test('프로젝트가 달라도 같은 단계·프로필·재작업 회차의 실제 실행 옵션이 같다', () => {
@@ -18,14 +21,16 @@ test('프로젝트가 달라도 같은 단계·프로필·재작업 회차의 �
     const x = resolve(a, { profile, rework }, stage), y = resolve(b, { profile, rework }, stage);
     assert.deepEqual(x.argv, y.argv); assert.deepEqual(x.policy, y.policy);
     assert.equal(x.fast, stage === 'qa');
-    assert.ok(x.argv.includes(x.cli === 'codex' ? `service_tier="${x.fast ? 'fast' : 'default'}"` : '{"fastMode":false,"statusLine":{"type":"command","command":""}}'));
+    if (x.cli === 'codex') assert.ok(x.argv.includes(`service_tier="${x.fast ? 'fast' : 'default'}"`));
+    else assert.equal(claudeSettings(x).fastMode, false);
   }
   assert.deepEqual(configure(a).limits, configure(b).limits);
 });
 
 test('실행 Fast·권한은 상속에 맡기지 않고 명시하며 QA도 별도 모델을 사용한다', () => {
   const impl = resolve(local(), {}, 'implement'), qa = resolve(local(), {}, 'qa'), research = resolve(local(), {}, 'research');
-  assert.equal(impl.model, 'claude-opus-5-5'); assert.ok(impl.argv.includes('{"fastMode":false,"statusLine":{"type":"command","command":""}}'));
+  assert.equal(impl.model, 'claude-opus-5-5');
+  assert.deepEqual({ ...claudeSettings(impl), env: undefined }, { fastMode: false, statusLine: { type: 'command', command: '' }, env: undefined });
   assert.ok(research.argv.includes('service_tier="default"'));
   assert.equal(qa.model, 'gpt-6.1-sol'); assert.ok(qa.argv.includes('model_reasoning_effort="xhigh"'));
   assert.ok(qa.argv.includes('service_tier="fast"'));
@@ -117,4 +122,20 @@ test('CLI 교체 시 스킬의 이름·인자를 보존하고 해당 제공자�
   assert.equal(resolve(config, {}, 'implement').invoke, '$implement --worker');
   config.roles.implement.skill = 'custom/skill.md';
   assert.equal(resolve(config, {}, 'implement').skill, 'custom/skill.md');
+});
+
+test('모든 단계에 병렬도 상한과 무거운 작업 슬롯 규칙을, QA에는 무관 실패·반복 금지·완료 보고 규칙을 CLI 자체 옵션으로 전달한다', () => {
+  const { resources } = JSON.parse(readFileSync(new URL('../policy/execution.json', import.meta.url)));
+  const heavy = join(root, 'bin/heavy.mjs').replaceAll('\\', '/');
+  for (const stage of ['research', 'architect', 'implement', 'qa']) {
+    const role = resolve(local(), {}, stage);
+    const rules = role.cli === 'codex'
+      ? JSON.parse(role.argv.find((a) => a.startsWith('developer_instructions=')).slice('developer_instructions='.length))
+      : role.argv[role.argv.indexOf('--append-system-prompt') + 1];
+    if (role.cli === 'codex') for (const [key, value] of Object.entries(resources.env)) assert.ok(role.argv.includes(`shell_environment_policy.set.${key}="${value}"`));
+    else assert.deepEqual(claudeSettings(role).env, resources.env);
+    assert.ok(rules.includes(`node ${heavy} -- <명령>`) && rules.includes(`동시 ${resources.heavy_slots}개`));
+    assert.doesNotMatch(rules, /\{(?:heavy|slots|env)\}|"/);
+    assert.equal(/후보와 무관한 실패/.test(rules) && /같은 조건 반복 금지/.test(rules) && /완료 보고\(hc send\)/.test(rules), stage === 'qa');
+  }
 });

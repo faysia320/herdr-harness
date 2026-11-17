@@ -98,6 +98,17 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 
 현재 세 저장소의 `execution_overrides`는 모두 `{}`다. 앞으로 의도적 예외가 필요하면 프로젝트 config에 `execution_overrides: {"reason":"구체적인 사유", "roles":{"implement":{"effort":"medium"}}, "limits":{"max_parallel":1}}`처럼 선언한다. roles에는 모델·effort·Fast·실행 모드만, limits에는 공통 한도만 허용한다. 예전 roles의 model/args나 별도 routing은 거부하므로 중복 설정이 조용히 살아남지 않는다. 적용 순서는 공통 역할 → 명시적 저장소 예외 → 프로필 effort → 재작업 상향 → 사유 있는 업무별 model/effort 예외다. run의 `x_execution_policy`에 정책 지문·release·예외·실제 요청 Fast를 남긴다. 이 기록은 요청값이며 실제 모델 사용 증거는 각 CLI의 evidence로 구분한다.
 
+## 공용 자원과 단계 공통 규칙
+
+한 PC에서 여러 저장소의 에이전트가 동시에 전체 시험·빌드를 돌리면 CPU가 포화된다. 그러면 무관한 시험이 불안정해지고 빌드가 타임아웃으로 실패한다. 이를 막기 위한 공통 설정은 [policy/execution.json](policy/execution.json)의 `resources`·`instructions`다. resolver는 이 설정을 각 CLI 자체 옵션으로 argv에 넣는다. 프로젝트 CLI는 argv를 그대로 실행하므로 회사 저장소는 바꾸지 않아도 된다. 이미 실행 중인 에이전트는 유지하고 다음 위임부터 적용된다. Lead 세션은 resolver로 실행하지 않으므로 이 설정이 적용되지 않는다.
+
+- **병렬도 상한**: `resources.env`(`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, `VITEST_MAX_THREADS`, `VITEST_MAX_FORKS`)를 에이전트가 실행하는 명령의 환경으로 준다. Codex는 `shell_environment_policy.set`, Claude는 `--settings`의 `env`로 전달한다. 명령에 명시한 옵션(예: `--maxWorkers=50%`)은 이 환경보다 우선한다.
+- **무거운 작업 슬롯**: 모든 저장소가 함께 쓰는 동시 `resources.heavy_slots`개 슬롯이다. 지시를 받은 에이전트는 전체 시험·빌드를 `node <release>/bin/heavy.mjs -- <명령>`으로 실행한다. 슬롯이 차 있으면 빌 때까지 기다린 뒤 시작한다. 점유 정보는 `%LOCALAPPDATA%/HerdrHarness/heavy-slots/slot-N.json`에 있다. 점유 프로세스가 사라진 슬롯은 다음 대기자가 회수한다. `node <release>/bin/heavy.mjs status`로 현재 점유를 본다.
+- **단계 규칙**: `instructions.all`은 모든 단계에, `instructions.<단계>`는 해당 단계에만 Codex `developer_instructions`, Claude `--append-system-prompt`로 전달한다. QA 규칙은 세 가지다.
+  - 후보와 무관한 실패는 단독 재실행으로 «불안정» 또는 «기존·환경 실패»로 분류하고 FAIL 사유로 쓰지 않는다.
+  - 환경 실패가 난 장시간 명령은 조건이 같으면 다시 실행하지 않고 «재위임 전 필요 조건»을 남긴다.
+  - 게이트가 실패하거나 멈춰도 BLOCKED로 완료 보고를 보낸다.
+
 ## 과정 산출물
 
 업무 진행 중에 쓰는 과정 문서(Project README·implementation·qa-report 등)는 기본으로 main에 커밋하지 않는다. 정본은 [policy/artifacts.json](policy/artifacts.json)이고 판정·보관은 `core/artifact-policy.cjs`가 맡는다. 업무 PR 뒤에 과정 문서만 지우는 정리 PR을 따로 만들지 않기 위해서다.
