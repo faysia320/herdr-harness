@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import * as attention from './attention.js';
 import * as logic from './logic.js';
+import * as context from './context.js';
 
 // 호스트 경계만 대역으로 바꾸고 실제 load/render/클릭 함수를 실행한다.
 const source = fs.readFileSync(new URL('./main.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export default class Harness', 'class Harness');
 function setup(overrides = {}) {
   const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [], reads = [];
   const terminalList = [{ address: 't7', state: 'live', status: 'working', created_ms: 10 }];
-  const spaceList = [{ name: 'fixture', active: true, machine: null }], paneList = [], gitRenders = [];
+  const spaceList = [{ name: 'fixture', active: true, machine: null }], paneList = [];
   const el = () => {
     let id;
     const element = new Proxy({}, { get: (_, name) => (...args) => {
@@ -22,18 +23,17 @@ function setup(overrides = {}) {
     return element;
   };
   const api = { CONTRACT: 1, View: class {}, div: el, svg: el, h_flex: el, v_flex: el,
-    ...attention, ...logic, appHome: () => 'fixture-home', readTextFile: async (p) => {
+    ...attention, ...logic, ...context, machines: () => [{ name: null, layout: 'ready' }], appHome: () => 'fixture-home', readTextFile: async (p) => {
       reads.push(p);
       const value = files.get(p); if (value instanceof Error) throw value; return value ?? null;
     }, watchFolder: () => new Promise(() => {}), terminals: () => terminalList,
     spaces: () => spaceList, panes: () => paneList, shared: (k) => store.get(k), setShared: (k, v) => store.set(k, v),
     theme: () => new Proxy({}, { get: () => '#808080' }), run: (...args) => commands.push(args), notify: () => {}, playSound: () => {}, props: () => ({}), closeOverlay: () => {},
-    GitTree: class {}, nextCommand: () => new Promise(() => {}),
     InputState: { new: () => { let value = ''; return { value: () => value, set_value: (v) => { value = v; }, focus() {}, on() {} }; } },
     Input: { new: () => el() }, exec: async () => ({ code: 1, stdout: '', stderr: '' }), home: () => 'C:/fixture-home', hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
-  return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList, gitRenders,
-    git: { render(projects) { gitRenders.push(projects); return el(); } }, cx: { notify() {}, stop_propagation() {} } };
+  return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList,
+    cx: { notify() {}, stop_propagation() {} } };
 }
 const project = { name: 'fixture', root: 'D:/fixture' };
 const configPath = project.root + '/.agents/harness/config.json';
@@ -193,34 +193,36 @@ test('상태·설정 감시는 프로젝트를 좁히고 제거된 경로와 실
   assert.equal(v.watched.has(config), true);
 });
 
-test('일반 저장소는 브리핑 선택 상태에서도 현재 Git Tree만 표시한다', async () => {
+test('일반 저장소는 기본 브리핑을 제공하고 하네스 대장·Git 화면을 만들지 않는다', async () => {
   const s = setup(); install(s);
   const v = new s.Harness();
-  Object.assign(v, { projects: [await s.load(project)], expanded: new Set(), page: 'brief', git: s.git });
+  Object.assign(v, { projects: [await s.load(project)], expanded: new Set() });
   Object.assign(s.spaceList[0], { name: 'herdr-harness', folder: 'D:/old', tabs: [{ id: 'tab' }] });
   s.paneList.push({ tab: 'unrelated', cwd: 'D:/unrelated' }, { tab: 'tab', cwd: 'D:/repositories/herdr-harness' });
   v.render(s.cx);
   assert.equal(s.clicks.has('harness-tab-brief'), false);
   assert.equal(s.clicks.has('harness-scope'), false);
-  assert.equal(s.clicks.has('harness-tab-git'), true);
+  assert.equal(s.clicks.has('harness-tab-git'), false);
   assert.equal(s.texts.includes('내 결정·확인'), false);
-  assert.deepEqual(s.gitRenders.at(-1).map((p) => p.root), ['D:/repositories/herdr-harness']);
+  assert.ok(s.texts.includes('기본 브리핑'));
+  assert.ok(s.texts.includes('아직 실행 중인 에이전트가 없습니다.'));
+  assert.deepEqual(v.shown(), []);
   // 공간 이름이 등록된 프로젝트와 같아도 다른 실제 경로에 브리핑을 노출하지 않는다.
   s.spaceList[0].name = 'fixture'; s.clicks.clear(); v.render(s.cx);
   assert.equal(s.clicks.has('harness-tab-brief'), false);
-  // 등록된 저장소로 복귀하면 기존 탭 선택을 복원한다. 경로 구분자·대소문자·하위 폴더도 허용한다.
+  // 등록된 저장소로 복귀하면 브리핑을 표시한다. 경로 구분자·대소문자·하위 폴더도 허용한다.
   s.paneList[1].cwd = 'd:\\FIXTURE\\src'; s.clicks.clear(); v.render(s.cx);
-  assert.equal(s.clicks.has('harness-tab-brief'), true);
+  assert.equal(s.clicks.has('harness-tab-brief'), false);
   assert.equal(s.clicks.has('harness-scope'), false);
   assert.ok(s.texts.includes('내 결정·확인'));
 });
 
-test('미등록 공간은 projects.json이 없어도 폴더로 Git Tree를 표시한다', () => {
+test('미등록 공간은 projects.json이 없어도 Git 화면을 만들지 않는다', () => {
   const s = setup(), v = new s.Harness();
-  Object.assign(v, { projects: [], error: '설정 없음', git: s.git });
+  Object.assign(v, { projects: [] });
   Object.assign(s.spaceList[0], { name: 'other', folder: 'D:/other' });
   v.render(s.cx);
-  assert.equal(s.gitRenders.at(-1)[0].root, 'D:/other');
+  assert.deepEqual(v.shown(), []);
   assert.equal(s.texts.includes('설정 없음'), false);
   assert.equal(s.clicks.has('harness-tab-brief'), false);
 });
@@ -241,22 +243,25 @@ test('사건 파일 실패는 업무 이력으로 보완하고 경고한다', as
   assert.equal(p.stale, false); assert.match(p.historyNote, /이력/); assert.equal(p.tasks.length, 1);
 });
 
-test('결정·변화·진행은 한 화면에 있고 읽음·Lead 이동·종료 필터는 독립적이다', async () => {
+test('결정·변화·진행은 한 화면에 있고 읽음·근거 보기·종료 필터는 독립적이다', async () => {
   const s = setup(); install(s); const p = await s.load(project);
   const v = new s.Harness();
   Object.assign(v, { projects: [p], expanded: new Set(), showEnded: false });
   v.render();
   assert.ok(s.texts.includes('내 결정·확인')); assert.ok(s.texts.includes(task.blocked_reason));
-  assert.ok(s.texts.includes('알아둘 변화')); assert.ok(s.texts.includes('진행 중'));
+  assert.ok(s.texts.includes('진행 중'));
+  assert.ok(s.texts.indexOf('내 결정·확인') < s.texts.indexOf('진행 중'));
   assert.equal(s.clicks.has('page-progress'), false); assert.equal(s.clicks.has('page-attention'), false);
   assert.equal(s.clicks.has('task-fixture/a'), false); // 결정함과 진행 목록에 중복 표시하지 않는다.
   s.clicks.get('read-fixture')({}, s.cx);
   assert.equal(s.commands.length, 0); assert.equal(attention.decisions(p).length, 1);
   assert.equal(attention.changes(p, s.store.get(attention.seenKey(p))).length, 0);
-  s.clicks.get('lead-decision-fixture-a')({}, s.cx);
-  assert.deepEqual(s.commands, [['agent.focus', { terminal: 't7' }]]);
+  assert.equal(s.clicks.has('lead-decision-fixture-a'), false);
+  s.clicks.get('more-decision-fixture-a')({}, s.cx);
+  assert.ok(v.expanded.has('decision-fixture-a')); assert.equal(s.commands.length, 0);
   s.clicks.get('harness-ended')({}, s.cx); assert.equal(v.showEnded, true);
-  s.clicks.get('harness-transitions')({}, s.cx); assert.equal(v.showTransitions, true);
+  assert.equal(s.clicks.has('harness-transitions'), false);
+  s.clicks.get('harness-change-toggle')({}, s.cx); assert.equal(v.changesCollapsed, true);
   assert.equal(s.clicks.has('harness-scope'), false);
 });
 
@@ -287,6 +292,10 @@ test('변화가 많아도 진행 업무가 함께 보이고 펼침·전체 읽�
   const draw = () => { s.clicks.clear(); s.texts.length = 0; v.render(); };
   const changeCount = () => [...s.clicks.keys()].filter((k) => k?.startsWith('more-change-')).length;
   draw(); assert.equal(changeCount(), 3);
+  assert.ok(s.texts.indexOf('진행 중') < s.texts.indexOf('알아둘 변화'));
+  s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 0);
+  assert.equal(attention.decisions(p).length, 1);
+  s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 3);
   assert.ok(s.texts.includes('현재 진행 업무')); assert.ok(s.texts.includes('나머지 1건 보기'));
   assert.ok(s.texts.includes('변화 4건 모두 읽음'));
   const card = [...s.clicks.keys()].find((k) => k?.startsWith('more-change-'));
@@ -309,7 +318,9 @@ test('실제 로더가 다른 project 사건을 섞지 않고 원문·승인·�
 });
 
 test('Lead 진행 보고는 프로젝트 상태에만 표시하고 결정함에 세거나 이전 응답을 유지하지 않는다', async () => {
-  const s = setup(); install(s); const p = await s.load(project);
+  const s = setup(); install(s);
+  s.files.set(project.root + '/state/decisions.json', JSON.stringify({ version: 1, project: 'fixture', requests: {} }));
+  const p = await s.load(project);
   p.tasks[0].state = 'DONE';
   const message = 'ITSM 5건 하네스 등록; 3건 조사 중, 2건 대기, 완료 보고 대기';
   Object.assign(s.terminalList[0], { status: 'done', report: { msg: message } });
@@ -324,7 +335,7 @@ test('Lead 진행 보고는 프로젝트 상태에만 표시하고 결정함에 
     s.terminalList[0].status = status;
     s.texts.length = 0; s.clicks.clear();
     v.attention([p], live, {});
-    assert.ok(s.texts.includes('질문 0 · 막힘 0'));
+    assert.ok(s.texts.includes('지금 내 답변을 기다리는 일은 없습니다.'));
     assert.equal(s.texts.includes(message), false);
     assert.equal(s.texts.includes('Lead 응답 확인'), false);
     assert.equal(s.clicks.has('lead-report-fixture'), false);
@@ -369,6 +380,8 @@ test('질문 카드의 선택지는 Lead 터미널에 답을 전하고 결정함
   const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
   const draw = () => { s.texts.length = 0; s.clicks.clear(); v.render(); };
   draw(); s.clicks.get('answer-fixture-tools-0')({}, cx);
+  assert.equal(sends.length, 0); // 선택만으로 보내지 않는다.
+  draw(); s.clicks.get('answer-fixture-tools-send')({}, cx);
   // 전송 중에는 다른 선택지를 다시 보내지 않는다.
   draw(); assert.equal(s.clicks.has('answer-fixture-tools-1'), false);
   await Promise.all(jobs);
@@ -388,7 +401,7 @@ test('질문 카드의 선택지는 Lead 터미널에 답을 전하고 결정함
   const f = setup({ hc: async () => ({ code: 1, stdout: '', stderr: 'no such terminal' }) }); install(f); f.files.set(path, body);
   const fv = new f.Harness(); Object.assign(fv, { projects: [await f.load(project)], expanded: new Set(), answers: new Map() });
   const fjobs = [], fcx = { ...f.cx, spawn(fn) { fjobs.push(fn(fcx)); } };
-  f.texts.length = 0; fv.render(); f.clicks.get('answer-fixture-tools-1')({}, fcx); await Promise.all(fjobs);
+  f.texts.length = 0; fv.render(); f.clicks.get('answer-fixture-tools-1')({}, fcx); fv.render(); f.clicks.get('answer-fixture-tools-send')({}, fcx); await Promise.all(fjobs);
   f.texts.length = 0; f.clicks.clear(); fv.render();
   assert.ok(f.texts.some((x) => x.includes('전달 실패: no such terminal')));
   assert.ok(f.clicks.has('answer-fixture-tools-0'));
@@ -452,7 +465,7 @@ test('전체 이력은 로드 때 계산하고 반복 렌더·읽음은 재순�
   assert.equal(p.attentionRecords.length, 2000);
   Object.defineProperty(p.tasks[0], 'history', { get() { throw new Error('렌더에서 전체 이력을 다시 읽음'); } });
   const v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set() });
-  for (let i = 0; i < 3; i++) v.attention([p], new Map(), {});
+  for (let i = 0; i < 3; i++) { v.attention([p], new Map(), {}); v.changesFooter([p], {}); }
   s.clicks.get('read-fixture')({}, s.cx);
   assert.equal(s.store.get(attention.seenKey(p)).ids.length, 2000);
   raw.tasks.a.history.push({ at: new Date().toISOString(), from: 'QA', to: 'DONE', why: '새 QA 결과' });
@@ -475,4 +488,128 @@ test('등록된 저장소 사이를 전환해도 현재 저장소의 업무와 �
   assert.deepEqual(s.v.shown().map((p) => p.name), ['other']);
   assert.equal(s.texts.includes(task.blocked_reason), false);
   assert.equal(s.clicks.has('harness-scope'), false);
+});
+
+test('일반 레포의 입력 필요·활동·터미널 이동은 현재 공간에 한정되고 결정함을 만들지 않는다', () => {
+  const s = setup(), v = new s.Harness(); Object.assign(v, { projects: [], expanded: new Set() });
+  Object.assign(s.spaceList[0], { id: 's1', name: 'ordinary', tabs: [{ id: 'tab' }] });
+  s.paneList.push({ tab: 'tab', terminal: 't7', cwd: 'D:/ordinary', title: 'Codex' });
+  Object.assign(s.terminalList[0], { status: 'blocked', report: { msg: '범위를 확인해 주세요.' } });
+  s.terminalList.push({ address: 'elsewhere', state: 'live', status: 'blocked', report: { msg: '다른 공간의 비공개 질문' } });
+  v.render();
+  assert.ok(s.texts.includes('터미널 확인')); assert.ok(s.texts.includes('범위를 확인해 주세요.'));
+  assert.equal(s.texts.includes('다른 공간의 비공개 질문'), false); assert.equal(s.texts.includes('내 결정·확인'), false);
+  s.clicks.get('terminal-t7')({}, s.cx); assert.deepEqual(s.commands, [['pane.focus', { terminal: 't7' }]]);
+  assert.equal(s.clicks.has('harness-capabilities'), false);
+  assert.equal(s.clicks.has('harness-transitions'), false);
+  s.spaceList[0].id = 's2'; s.spaceList[0].tabs = [];
+  s.clicks.get('terminal-t7')({}, s.cx); assert.equal(s.commands.length, 1);
+});
+
+test('연결을 확인할 수 없는 원격 공간은 빈 에이전트 목록이나 로컬 하네스로 표시하지 않는다', async () => {
+  const s = setup({ machines: () => [{ name: 'remote', layout: 'unavailable' }] }); install(s);
+  Object.assign(s.spaceList[0], { id: 'remote/s1', machine: 'remote' });
+  const v = new s.Harness(); Object.assign(v, { projects: [await s.load(project)], expanded: new Set() });
+  v.render(); assert.deepEqual(v.shown(), []);
+  assert.ok(s.texts.includes('현재 공간이 응답하지 않습니다.'));
+  assert.equal(s.texts.includes('아직 실행 중인 에이전트가 없습니다.'), false);
+  assert.equal(s.texts.includes('에이전트 0 · 터미널 확인 0'), false);
+});
+
+test('선택 후 질문 revision이나 공간이 바뀌면 오래된 카드의 답을 보내지 않는다', async () => {
+  const sends = [], s = setup({ hc: async (args) => { sends.push(args); return { code: 0 }; } }); install(s);
+  const request = { id: 'q', question: '범위를 선택하세요', task: null, source: 'fixture', status: 'open', revision: 1, options: [{ label: '좁게', impact: '현재 변경만' }] };
+  const file = project.root + '/state/decisions.json'; s.files.set(file, JSON.stringify({ version: 1, project: 'fixture', requests: { q: request } }));
+  const p = await s.load(project), v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set() });
+  v.render(); s.clicks.get('answer-fixture-q-0')({}, s.cx); v.render();
+  const send = s.clicks.get('answer-fixture-q-send');
+  v.projects = [{ ...p, requests: [{ ...p.requests[0], revision: 2 }] }]; send({}, s.cx); assert.equal(sends.length, 0);
+  v.projects = [p]; s.spaceList[0].name = 'other'; send({}, s.cx); assert.equal(sends.length, 0);
+});
+
+test('막힘에는 자유 입력 지시를 붙이고 사용자 중단은 별도 영역으로 분리한다', async () => {
+  const s = setup(); install(s);
+  const ledger = JSON.parse(s.files.get(ledgerPath));
+  ledger.tasks.paused = { ...task, id: 'paused', title: '중단한 업무', awaiting: null, blocked_reason: '중단: 사용자 요청' };
+  ledger.tasks.environment = { ...task, id: 'environment', awaiting: null, blocked_reason: '중단: 환경 오류 — 사용자 결정 대기' };
+  s.files.set(ledgerPath, JSON.stringify(ledger));
+  const p = await s.load(project), v = new s.Harness();
+  Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => '', set_value() {}, focus() {} } });
+  v.render();
+  assert.ok(s.texts.includes('질문 0 · 막힘 2'));
+  assert.ok(s.texts.includes('사용자 요청으로 중단'));
+  assert.ok(s.clicks.has('instruction-fixture-a-edit'));
+  assert.ok(s.clicks.has('instruction-fixture-environment-edit'));
+  assert.ok(s.clicks.has('instruction-fixture-paused-edit'));
+  assert.equal(s.clicks.has('lead-paused-fixture-paused'), false);
+  assert.equal(s.texts.includes('작업 브리핑'), false);
+  assert.equal(s.clicks.has('more-decision-fixture-paused'), false);
+  assert.ok(s.clicks.has('more-paused-fixture-paused'));
+});
+
+test('막힘·사용자 중단의 지시는 명시적 전송만 Lead에게 전달하고 업무 상태를 유지한다', async () => {
+  for (const paused of [false, true]) {
+  const sends = [], s = setup({ hc: async (args) => { sends.push(args); return { code: 0 }; } }); install(s);
+  if (paused) {
+    const ledger = JSON.parse(s.files.get(ledgerPath));
+    Object.assign(ledger.tasks.a, { awaiting: null, blocked_reason: '중단: 사용자 요청' });
+    s.files.set(ledgerPath, JSON.stringify(ledger));
+  }
+  const p = await s.load(project), original = JSON.stringify(p), v = new s.Harness(); let input = '';
+  Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => input, set_value(value) { input = value; }, focus() {} } });
+  const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  const draw = () => { s.texts.length = 0; s.clicks.clear(); v.render(); };
+  draw(); s.clicks.get('instruction-fixture-a-edit')({}, cx); input = '범위를 다시 확인해 줘'; draw();
+  assert.equal(sends.length, 0);
+  s.clicks.get('instruction-fixture-a-cancel')({}, cx); draw(); assert.equal(sends.length, 0);
+  s.clicks.get('instruction-fixture-a-edit')({}, cx); input = '  "좁은 범위"로 검토해 줘  '; draw();
+  s.clicks.get('instruction-fixture-a-send')({}, cx); draw();
+  assert.ok(s.texts.includes('Lead에게 지시 전달 중…'));
+  assert.equal(s.clicks.has('instruction-fixture-a-edit'), false);
+  await Promise.all(jobs); draw();
+  assert.equal(sends.length, 1); assert.deepEqual(sends[0].slice(0, 2), ['send', 't7']);
+  assert.match(sends[0][2], /업무 a/); assert.ok(sends[0][2].includes(JSON.stringify('"좁은 범위"로 검토해 줘')));
+  assert.equal(sends[0][2].includes('decision resolve'), false);
+  assert.ok(s.texts.some((text) => text.startsWith('전달됨 · Lead 처리 대기')));
+  assert.equal(JSON.stringify(p), original); assert.equal(attention.decisions(p).length, paused ? 0 : 1);
+  assert.equal(attention.pausedTasks(p).length, paused ? 1 : 0);
+  }
+});
+
+test('지시 입력 뒤 상태·사유·공간·Lead가 바뀌거나 자료가 오래되면 전송하지 않는다', async () => {
+  for (const paused of [false, true]) {
+  for (const change of ['state', 'reason', 'scope', 'lead', 'restarted', 'stale', 'archived']) {
+    const sends = [], s = setup({ hc: async (args) => { sends.push(args); return { code: 0 }; } }); install(s);
+    if (paused) {
+      const ledger = JSON.parse(s.files.get(ledgerPath));
+      Object.assign(ledger.tasks.a, { awaiting: null, blocked_reason: '중단: 사용자 요청' });
+      s.files.set(ledgerPath, JSON.stringify(ledger));
+    }
+    const p = await s.load(project), v = new s.Harness(); let input = '';
+    Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => input, set_value(value) { input = value; }, focus() {} } });
+    v.render(); s.clicks.get('instruction-fixture-a-edit')({}, s.cx); input = '다시 검토해';
+    const next = { ...p, tasks: p.tasks.map((t) => ({ ...t })) }; v.projects = [next];
+    if (change === 'state') next.tasks[0].state = 'DONE';
+    if (change === 'reason') next.tasks[0].reason = '다른 결정을 요청';
+    if (change === 'scope') s.spaceList[0].name = 'other';
+    if (change === 'lead') { next.lead = 't8'; s.terminalList.push({ ...s.terminalList[0], address: 't8' }); }
+    if (change === 'restarted') s.terminalList[0] = { ...s.terminalList[0], created_ms: 11 };
+    if (change === 'stale') next.stale = true;
+    if (change === 'archived') next.tasks[0].archived = true;
+    v.render(); v.submitTyped(s.cx);
+    assert.equal(sends.length, 0, change);
+  }
+  }
+});
+
+test('지시 전달 실패는 재입력할 원문을 보존한다', async () => {
+  const s = setup({ hc: async () => ({ code: 1, stderr: '연결 끊김' }) }); install(s);
+  const p = await s.load(project), v = new s.Harness(); let input = '';
+  Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => input, set_value(value) { input = value; }, focus() {} } });
+  const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  v.render(); s.clicks.get('instruction-fixture-a-edit')({}, cx); input = '원문을 보존해'; v.render();
+  v.submitTyped(cx); await Promise.all(jobs); s.texts.length = 0; v.render();
+  assert.ok(s.texts.includes('전달 실패: 연결 끊김'));
+  s.clicks.get('instruction-fixture-a-edit')({}, cx); assert.equal(input, '원문을 보존해');
+  assert.equal(p.tasks[0].state, 'BLOCKED');
 });

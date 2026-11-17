@@ -1,11 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decisions, importantRecords, changes, snapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
+import { decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
 
 const now = Date.parse('2026-11-09T02:00:00Z');
 const task = (id, state, patch = {}) => ({ id, state, title: id, reason: '', awaiting: null, updated: now - 1000, runs: [], history: [], depends: [], ...patch });
 const project = (tasks, events = []) => ({ name: 'fixture', projectId: 'fixture', root: 'D:/fixture', tasks, events, lead: 't7' });
 const transition = (id, from, to, why = '', delta = 1000) => ({ task: id, from, to, why, at: now - delta });
+
+test('명시적 사용자 중단은 결정에서 분리하며 결정 필드와 다른 막힘은 보존한다', () => {
+  const p = project([
+    task('paused', 'BLOCKED', { reason: '중단: 사용자 요청' }),
+    task('question', 'BLOCKED', { reason: '중단: 사용자 요청', awaiting: 'decision' }),
+    task('pending', 'BLOCKED', { reason: '중단: 사용자 요청', x_pending_decision: '범위를 골라 주세요' }),
+    task('environment', 'BLOCKED', { reason: '중단: 환경 오류 — 사용자 결정 대기' }),
+    task('archived', 'BLOCKED', { reason: '중단: 사용자 요청', archived: true }),
+    task('done', 'DONE', { reason: '중단: 사용자 요청' }),
+  ]);
+  assert.deepEqual(pausedTasks(p).map((t) => t.id), ['paused']);
+  assert.deepEqual(new Set(decisions(p).map((d) => d.task.id)), new Set(['question', 'pending', 'environment']));
+});
+
+test('한 변화 확인은 다른 미확인 결과·결정을 유지하고 오래된 화면은 최신 기준을 덮지 않는다', () => {
+  const p = project([task('a', 'DONE'), task('b', 'FAILED'), task('c', 'BLOCKED', { reason: '선택 필요' })],
+    [transition('a', 'QA', 'DONE', 'PASS'), transition('b', 'QA', 'FAILED', '실패')]);
+  p.observedAt = now; p.attentionRecords = importantRecords(p);
+  const before = JSON.stringify(p), qa = p.attentionRecords.find((r) => r.kind === 'qa');
+  const read = recordSnapshot(p, qa, now);
+  assert.equal(JSON.stringify(p), before); assert.equal(decisions(p).length, 1);
+  assert.deepEqual(changes(p, read, now).map((r) => r.kind), ['failed']);
+  const newer = { ...read, observedAt: now + 1, ids: [...read.ids, 'new-event'] };
+  assert.equal(recordSnapshot(p, qa, now + 2, newer), newer);
+  const restored = recordSnapshot({ ...p, observedAt: now + 3 }, qa, now + 4, newer);
+  assert.ok(restored.ids.includes('new-event'));
+});
 
 test('현재 막힘만 결정함에 남고 직접 후속 영향·우선순위 순으로 정렬한다', () => {
   const p = project([task('a', 'BLOCKED', { awaiting: 'decision' }), task('b', 'BLOCKED', { priority: 20 }),

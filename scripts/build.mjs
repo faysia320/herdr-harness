@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const { hash, verify } = createRequire(import.meta.url)('../adapters/runtime.cjs');
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const modFiles = ['attention.js', 'contract.js', 'decisions.js', 'git-data.js', 'git-tree.js', 'logic.js', 'main.js', 'mod.json'];
+export const modFiles = ['attention.js', 'context.js', 'contract.js', 'decisions.js', 'logic.js', 'main.js', 'mod.json'];
 export const autoFiles = ['main.js', 'mod.json'];
 export const accountFiles = ['main.js', 'mod.json'];
 export function build() {

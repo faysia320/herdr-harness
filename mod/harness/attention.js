@@ -11,6 +11,12 @@ export const stateLabel = (s) => ({ DONE: "로컬 QA 통과", FAILED: "실패", 
 
 export const openRequests = (p) => (p.requests ?? []).filter((r) => r.status === "open").sort((a, b) => at(a.created) - at(b.created) || a.id.localeCompare(b.id));
 
+// 명시적으로 사용자 중단만 기록된 업무를 답변 요청으로 세지 않는다.
+// 결정 필드가 함께 있으면 중단 문구보다 그 필드를 우선한다.
+export const userPaused = (task) => task.state === "BLOCKED" && !task.awaiting && !str(task.x_pending_decision)
+  && /^(?:사용자 )?중단:\s*사용자 요청[.!。]?\s*$/.test(str(task.reason));
+export const pausedTasks = (p) => active(p).filter(userPaused);
+
 export function decisionSignature(t) {
   const entry = [...(t.history ?? [])].reverse().find((h) => h.to === "BLOCKED");
   return JSON.stringify([t.state, t.awaiting ?? null, t.reason ?? null, str(t.x_pending_decision), at(entry?.at)]);
@@ -32,7 +38,7 @@ export function waitingOn(task, p) {
 
 export function decisions(p) {
   const tasks = active(p);
-  return tasks.filter((t) => t.state === "BLOCKED" && !waitingOn(t, p)).map((task) => {
+  return tasks.filter((t) => t.state === "BLOCKED" && !userPaused(t) && !waitingOn(t, p)).map((task) => {
     const entry = [...task.history].reverse().find((h) => h.to === "BLOCKED");
     const affected = tasks.filter((t) => t.id !== task.id && t.state !== "DONE" && (t.depends ?? []).includes(task.id));
     return { task, affected, since: at(entry?.at) || task.updated,
@@ -112,6 +118,18 @@ export function snapshot(p, now = Date.now(), previous = null) {
     decisions: Object.fromEntries(decisions(p).map((d) => [d.task.id, d.signature])) };
 }
 
+// 한 변화를 확인해도 나머지 변화와 미해결 결정은 그대로 남긴다.
+export function recordSnapshot(p, record, now = Date.now(), previous = null) {
+  const seen = validSeen(previous), records = p.attentionRecords ?? importantRecords(p);
+  if (seen && (p.observedAt ?? 0) < (seen.observedAt ?? 0)) return seen;
+  const currentIds = new Set(records.map((r) => r.id));
+  const ids = new Set(seen?.ids ?? []);
+  if (currentIds.has(record.id)) ids.add(record.id);
+  const decisions = { ...(seen?.decisions ?? {}) };
+  if (currentIds.has(record.id) && record.kind === 'decision') decisions[record.task.id] = record.signature;
+  return { version: 1, at: now, observedAt: p.observedAt ?? now, ids: [...ids], decisions };
+}
+
 export function digest(records) {
   const count = (kind) => new Set(records.filter((r) => r.kind === kind).map((r) => r.task.id)).size;
   return [{ kind: "qa", label: "QA 통과", count: count("qa") }, { kind: "closed", label: "결정 종결", count: count("closed") }, { kind: "rework", label: "재작업", count: count("rework") },
@@ -144,5 +162,5 @@ export function leadReport(p, live, previous = null) {
     progress: retained && text !== shown ? text : null,
     // status_ms는 메시지 시각이 아니므로 보고 시각으로 표시하지 않는다.
     remember: completed && text ? { address: terminal.address, created: terminal.created_ms, text } : null,
-    activity: ({ working: "작업 중", done: "응답 완료", idle: "입력 대기", blocked: "입력 필요", error: "오류" })[terminal.status] ?? "상태 미확인" };
+    activity: ({ working: "작업 중", done: "응답 완료", idle: "대기", blocked: "입력 필요", error: "오류" })[terminal.status] ?? "상태 미확인" };
 }

@@ -72,6 +72,15 @@ export function timeline(runs, now) {
 
 // 화면에서 고른 답을 Lead에게 전하는 문장. 결정함 기록은 Lead CLI만 하므로 해소 절차와 원문을 함께 보낸다.
 export const answerKey = (p, r) => `${p.name}\u0000${r.id}\u0000${r.revision}`;
+export function instructionMessage(task, instruction) {
+  const text = String(instruction ?? "").trim();
+  if (!text) return null;
+  return `[사용자 지시 · Herdr 하네스 모드] 업무 ${task.id} (${task.title ?? task.id}). `
+    + `화면에 표시된 막힘 사유: ${JSON.stringify(task.reason ?? "")}.\n`
+    + `사용자 지시 원문: ${JSON.stringify(text)}\n`
+    + `위 지시는 사용자가 업무 카드에서 직접 입력했다. 현재 업무 상태와 관련 결정 질문을 확인하고 기존 하네스 CLI 절차에 따라 처리하라. `
+    + `전달만으로 승인·결정 해소·업무 재개가 기록된 것은 아니다. 별도 질문의 답으로 기록하려면 해당 질문과 revision이 맞는지 확인하라.`;
+}
 export function answerMessage(r, answer) {
   const text = String(answer ?? "").replace(/\s+/g, " ").trim();
   if (!text) return null;
