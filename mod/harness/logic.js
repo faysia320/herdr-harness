@@ -9,6 +9,28 @@ const activeRun = (task) => (task.current ? task.runs?.[task.current.run] : null
 const running = (task) => activeRun(task)?.status === "running";
 const baseName = (path) => path.replace(/\/+$/, "").split("/").at(-1);
 
+// v2 writer는 QA 상태 안에서도 게시와 CI를 진행한다. v1은 기존 state만 사용한다.
+export const workflowPhase = (task) => task.x_flow?.version === 2 ? task.x_flow.phase || "unknown" : null;
+
+export function workflowLabel(task) {
+  const phase = workflowPhase(task);
+  if (!phase) return null;
+  if (task.state === "DONE") return phase === "merged" ? "병합 완료" : "종결 상태 확인 필요";
+  switch (phase) {
+    case "work": return null;
+    case "repair":
+      if (task.state === "READY_TO_IMPLEMENT") return "재작업 대기";
+      if (task.state === "IMPLEMENTING") return "재작업 중";
+      return task.state === "QA" ? "재작업 QA" : null;
+    case "blocked": return task.state === "BLOCKED" ? "검증 차단" : null;
+    case "diagnose": return task.state === "BLOCKED" ? "원인 진단 대기" : null;
+    case "delivery-blocked": return task.state === "BLOCKED" ? "병합 차단" : null;
+    case "publish": return task.state === "QA" ? "게시 대기" : null;
+    case "ci": return task.state === "QA" ? "CI 대기" : null;
+    default: return "v2 단계 확인 필요";
+  }
+}
+
 // Herdr readTextFile의 한도는 UTF-8 1 MiB다. 호스트에 Node의 Buffer를 요구하지 않는다.
 export function ledgerCapacityNote(raw) {
   let bytes = 0;
@@ -35,6 +57,7 @@ export const span = (ms) => {
 // 실행 중·막힘·끝난 업무는 기다리는 상태가 아니라 null, 막는 조건이 없으면 []를 돌려준다.
 export function waitReasons(task, ledger, maxParallel, exempt = []) {
   if (["DONE", "FAILED", "BLOCKED"].includes(task.state) || running(task)) return null;
+  if (["publish", "ci"].includes(workflowPhase(task))) return null;
   const tasks = ledger.tasks ?? {}, reasons = [];
   const pending = (task.depends ?? []).filter((id) => tasks[id]?.state !== "DONE");
   if (pending.length) reasons.push({ text: `선행 업무 대기: ${pending.join(", ")}` });

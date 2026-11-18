@@ -1,4 +1,5 @@
 export { decisionInbox } from './decisions.js';
+import { workflowLabel, workflowPhase } from './logic.js';
 // 사람의 확인에 필요한 정보만 계산한다. 대장 변경·자동 승인·문장 의미 추론은 하지 않는다.
 export const at = (value) => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
 const str = (value) => typeof value === "string" ? value.trim() : "";
@@ -7,7 +8,7 @@ export const projectKey = (p) => JSON.stringify([p.root.replaceAll("\\", "/").re
 export const seenKey = (p) => `harness.attention.v1.${projectKey(p)}`;
 // 사용자 결정으로 QA 게이트를 예외 처리해 병합·종결한 업무. DONE이지만 로컬 QA 통과가 아니다.
 export const closedByDecision = (t) => t?.state === "DONE" && t.x_closure?.kind === "user-decision";
-export const stateLabel = (s) => ({ DONE: "로컬 QA 통과", FAILED: "실패", BLOCKED: "막힘", QA: "QA", IMPLEMENTING: "구현", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", QUEUED: "대기" }[s] ?? s);
+export const stateLabel = (s, task) => ({ DONE: task && workflowPhase(task) ? "종결" : "로컬 QA 통과", FAILED: "실패", BLOCKED: "막힘", QA: "QA", IMPLEMENTING: "구현", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", QUEUED: "대기" }[s] ?? s);
 
 export const openRequests = (p) => (p.requests ?? []).filter((r) => r.status === "open").sort((a, b) => at(a.created) - at(b.created) || a.id.localeCompare(b.id));
 
@@ -43,6 +44,7 @@ export function decisions(p) {
     const affected = tasks.filter((t) => t.id !== task.id && t.state !== "DONE" && (t.depends ?? []).includes(task.id));
     return { task, affected, since: at(entry?.at) || task.updated,
       kind: ({ "ac-approval": "완료 기준 승인", decision: "방향 결정", permission: "권한 결정" })[task.awaiting]
+        ?? workflowLabel(task)
         ?? (waitMark(task.reason)?.every((id) => p.tasks.find((t) => t.id === id)?.state === "DONE") ? "선행 업무 끝남 · 재개 필요" : "확인 필요"),
       reason: str(task.reason) || str(entry?.why) || "대장에 사유가 기록되지 않았습니다.",
       question: str(task.x_pending_decision),
@@ -50,15 +52,19 @@ export function decisions(p) {
   }).sort((a, b) => b.affected.length - a.affected.length || (b.task.priority ?? 0) - (a.task.priority ?? 0) || a.since - b.since);
 }
 
-function kindOf(e) {
-  if (e.to === "DONE") return e.x_closure ? "closed" : "qa";
+function kindOf(e, task) {
+  if (e.to === "DONE") {
+    if (e.x_closure) return "closed";
+    if (!workflowPhase(task)) return "qa";
+    return workflowPhase(task) === "merged" ? "merged" : "ended";
+  }
   if (e.to === "FAILED") return "failed";
   if (e.to === "BLOCKED") return waitMark(e.why) ? "waiting" : "blocked";
   if (e.from === "BLOCKED") return "resolved";
   if (e.from === "QA" && e.to === "READY_TO_IMPLEMENT") return "rework";
   return null;
 }
-const TITLE = { qa: "로컬 QA 통과", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", closed: "사용자 결정 종결", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
+const TITLE = { qa: "로컬 QA 통과", merged: "병합 완료", ended: "업무 종결", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", closed: "사용자 결정 종결", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
 
 // 사건 파일과 업무 history의 같은 전이는 한 번만 표시한다. 시각이 같아도 내용이 다르면 보존한다.
 export function importantRecords(p) {
@@ -68,7 +74,7 @@ export function importantRecords(p) {
   const events = [...(p.events ?? []), ...[...tasks.values()].flatMap((t) => t.history.map((h) => ({ ...h, task: t.id })))];
   for (const e of events) {
     if (!tasks.has(e.task) || e.from === e.to || !at(e.at)) continue;
-    const kind = kindOf(e);
+    const kind = kindOf(e, tasks.get(e.task));
     if (!kind) continue;
     const id = JSON.stringify(["state", e.task, at(e.at), e.from ?? null, e.to, e.why ?? ""]);
     add({ id, task: tasks.get(e.task), kind, at: at(e.at), body: str(e.why), from: e.from, to: e.to });
@@ -132,7 +138,7 @@ export function recordSnapshot(p, record, now = Date.now(), previous = null) {
 
 export function digest(records) {
   const count = (kind) => new Set(records.filter((r) => r.kind === kind).map((r) => r.task.id)).size;
-  return [{ kind: "qa", label: "QA 통과", count: count("qa") }, { kind: "closed", label: "결정 종결", count: count("closed") }, { kind: "rework", label: "재작업", count: count("rework") },
+  return [{ kind: "qa", label: "QA 통과", count: count("qa") }, { kind: "merged", label: "병합 완료", count: count("merged") }, { kind: "closed", label: "결정 종결", count: count("closed") }, { kind: "rework", label: "재작업", count: count("rework") },
     { kind: "failed", label: "실패", count: count("failed") }, { kind: "resolved", label: "막힘 해소", count: count("resolved") }].filter((x) => x.count);
 }
 

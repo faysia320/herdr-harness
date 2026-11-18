@@ -99,6 +99,42 @@ const install = (s) => {
   s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: task }, lead: { terminal: 't7' } }));
 };
 
+test('v2 목록과 펼친 카드가 게시·CI·병합을 구분하고 완료 이력에 같은 이름을 쓴다', async () => {
+  for (const [phase, state, label] of [
+    ['publish', 'QA', '게시 대기'], ['ci', 'QA', 'CI 대기'], ['delivery-blocked', 'BLOCKED', '병합 차단'],
+    ['merged', 'DONE', '병합 완료'], ['blocked', 'BLOCKED', '검증 차단'], ['diagnose', 'BLOCKED', '원인 진단 대기'],
+    ['repair', 'READY_TO_IMPLEMENT', '재작업 대기'], ['repair', 'QA', '재작업 QA'], ['work', 'QA', 'QA'],
+    ['unknown', 'DONE', '종결 상태 확인 필요'],
+  ]) {
+    const s = setup(); install(s);
+    const delivery = ['ci', 'delivery-blocked', 'merged'].includes(phase) ? { pr: 12 } : null;
+    if (phase === 'merged') delivery.merge = 'ab'.repeat(20);
+    const record = { ...task, state, awaiting: null, blocked_reason: null,
+      x_flow: { version: 2, phase, delivery, verification: { verdict: 'PASS' } },
+      history: [{ from: 'QA', to: state, at: task.updated }] };
+    s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: record } }));
+    const p = await s.load(project), v = new s.Harness();
+    Object.assign(v, { projects: [p], expanded: new Set(), showEnded: true });
+    v.render();
+    assert.ok(s.texts.includes(label), phase);
+    if (phase === 'publish' || phase === 'ci') {
+      assert.equal(p.tasks[0].waits, null);
+      assert.ok(!s.texts.includes('막는 조건 없음 · Lead 위임 차례'));
+    }
+    const key = state === 'BLOCKED' ? 'more-decision-fixture-a' : 'task-fixture/a';
+    s.clicks.get(key)({}, s.cx); s.texts.length = 0; v.render();
+    const summary = s.texts.find(text => text.startsWith('v2 · '));
+    assert.ok(summary?.includes(label), phase);
+    assert.equal(summary.includes('PR #12'), Boolean(delivery));
+    assert.equal(summary.includes('병합 abababababab'), phase === 'merged');
+    if (state === 'DONE') {
+      assert.ok(s.texts.includes('QA → 종결'));
+      assert.ok(!s.texts.some(text => text.includes('로컬 QA 통과') || text.includes('병합·배포는 별도 확인')));
+      assert.equal(p.attentionRecords[0].kind, phase === 'merged' ? 'merged' : 'ended');
+    }
+  }
+});
+
 function refreshFixture() {
   const s = setup(); install(s);
   const other = { name: 'other', root: 'D:/other' };

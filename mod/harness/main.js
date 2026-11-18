@@ -2,7 +2,7 @@ import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, exec, readTextFile, watchFolder, terminals, spaces, panes, machines, shared, setShared, theme, run, notify, playSound, props, closeOverlay, hc } from "herdr";
-import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage } from "./logic.js";
+import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage, workflowPhase, workflowLabel } from "./logic.js";
 import { closedByDecision, decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 import { briefingContext, taskActivity, needsTerminal } from "./context.js";
 
@@ -23,8 +23,10 @@ const STAGE = { research: "조사", architect: "설계 검토", implement: "구�
 const AWAIT = { "ac-approval": "AC 승인 대기", decision: "결정 대기", permission: "권한 대기" };
 // 진행 막대 4칸: 조사 → 구현 → QA → 완료
 const PHASES = ["조사", "구현", "QA", "로컬 QA 통과"];
+const V2_PHASES = ["조사", "구현", "QA", "게시", "CI", "병합"];
 const PHASE_OF_STATE = { QUEUED: -1, RESEARCHING: 0, READY_TO_IMPLEMENT: 1, IMPLEMENTING: 1, QA: 2, DONE: 3 };
 const PHASE_OF_STAGE = { research: 0, architect: 0, implement: 1, qa: 2 };
+const taskLabel = (task) => closedByDecision(task) ? "결정 종결" : workflowLabel(task) ?? LABEL[task.state] ?? task.state;
 
 const parse = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
 const lines = (text) => (text ?? "").split("\n").map(parse).filter(Boolean);
@@ -99,7 +101,7 @@ async function load(project) {
     }
     const tasks = rawTasks.map((t) => ({ ...normalize(t), waits: waitReasons(t, ledger, maxParallel, config.git?.overlap_exempt_paths), project: project.name }));
     const events = lines(text).filter((e) => e.event === "state" && e.project === id)
-      .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", project: project.name }));
+      .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", x_closure: e.x_closure ?? null, project: project.name }));
     const inbox = decisionInbox(await readTextFile(`${dir}/decisions.json`).catch(() => undefined), id);
     const loaded = { ...project, projectId: id, dir, tasks, events, lead: ledger.lead?.terminal ?? null, note: null, stale: false, observedAt,
       capacityNote: ledgerCapacityNote(ledgerText),
@@ -221,7 +223,7 @@ export default class Harness extends View {
       const alertKey = `harness.attention.alert.${key}`, signature = decisionSignature(t);
       if (shared(alertKey) === signature) continue;
       setShared(alertKey, signature);
-      notify({ title: `${t.id} ${LABEL[t.state] ?? t.state}`, body: `${t.project} · ${t.title ?? ""}${t.reason ? `\n${t.reason}` : ""}`, level, timeout: 8000 });
+      notify({ title: `${t.id} ${taskLabel(t)}`, body: `${t.project} · ${t.title ?? ""}${t.reason ? `\n${t.reason}` : ""}`, level, timeout: 8000 });
       playSound("blocked");
     }
     this.seen = new Map([...now].map(([k, t]) => [k, { state: t.state, signature: decisionSignature(t), waiting: Boolean(t.waiting) }]));
@@ -244,17 +246,23 @@ export default class Harness extends View {
       DONE: t.ansi2, FAILED: t.ansi1 }[state] ?? t.dim;
   }
 
-  badge(task, color, t, label = closedByDecision(task) ? "결정 종결" : LABEL[task.state] ?? task.state) {
+  badge(task, color, t, label = taskLabel(task)) {
     return div().px(7).py(1).flex_none().rounded(5).bg(tint(color, 0.16)).text_size(10.5).font_medium().text_color(color)
       .tooltip(task.state).child(label);
   }
 
-  // 조사 → 구현 → QA → 완료. 막힘·실패는 멈춘 칸을 그 색으로 칠한다.
+  // v2에서는 QA 뒤의 게시·CI·병합도 대장에 기록한 단계까지 칠한다.
   phases(task, color, t) {
     const stopped = task.state === "BLOCKED" || task.state === "FAILED";
-    const at = stopped ? PHASE_OF_STATE[task.resume] ?? PHASE_OF_STAGE[task.stage] ?? 0 : PHASE_OF_STATE[task.state] ?? -1;
-    return h_flex().gap(3).children(PHASES.map((name, i) => div().flex_1().h(3).rounded(2).tooltip(name)
-      .bg(i < at || task.state === "DONE" ? tint(t.done, 0.7) : i === at ? color : t.border)));
+    const phase = workflowPhase(task);
+    let at = stopped ? PHASE_OF_STATE[task.resume] ?? PHASE_OF_STAGE[task.stage] ?? 0 : PHASE_OF_STATE[task.state] ?? -1;
+    if (phase && task.state === "DONE") at = phase === "merged" ? 5 : -1;
+    else if (phase === "publish") at = 3;
+    else if (phase === "ci" || phase === "delivery-blocked") at = 4;
+    else if (phase === "blocked" || phase === "diagnose") at = 2;
+    const steps = phase ? V2_PHASES : PHASES;
+    return h_flex().gap(3).children(steps.map((name, i) => div().flex_1().h(3).rounded(2).tooltip(name)
+      .bg(i < at || (task.state === "DONE" && at === steps.length - 1) ? tint(t.done, 0.7) : i === at ? color : t.border)));
   }
 
   task(p, task, live, t) {
@@ -316,7 +324,16 @@ export default class Harness extends View {
 
   detail(task, t) {
     const rows = task.history.slice(-8).reverse();
+    const phase = workflowPhase(task);
+    const delivery = phase && task.x_flow.delivery;
+    const historyLabel = (state) => phase ? stateLabel(state, task) : LABEL[state] ?? state;
     const meta = [
+      phase && ["file", [
+        `v2 · ${taskLabel(task)}`,
+        task.x_flow.verification?.verdict && `최근 검증 ${task.x_flow.verification.verdict}`,
+        Number.isInteger(delivery?.pr) && `PR #${delivery.pr}`,
+        phase === "merged" && typeof delivery?.merge === "string" && `병합 ${delivery.merge.slice(0, 12)}`,
+      ].filter(Boolean).join(" · ")],
       task.branch && ["git-branch", task.branch],
       task.ticket && ["file", task.ticket],
       task.run?.model && ["terminal", `${task.run.cli ?? ""} ${task.run.model}`.trim()],
@@ -324,12 +341,12 @@ export default class Harness extends View {
     ].filter(Boolean);
     return v_flex().gap(6).pt(6).border_t(1).border_color(t.border).text_size(11)
       .child(this.phases(task, this.color(task.state, t), t))
-      .when(task.state === "DONE" && !closedByDecision(task), (e) => e.child(div().text_color(t.muted).child("로컬 독립 QA 통과 · 커밋·PR·병합·배포는 별도 확인")))
+      .when(!phase && task.state === "DONE" && !closedByDecision(task), (e) => e.child(div().text_color(t.muted).child("로컬 독립 QA 통과 · 커밋·PR·병합·배포는 별도 확인")))
       .when(closedByDecision(task), (e) => e.child(div().text_color(t.muted).child(`사용자 결정으로 QA r${task.x_closure.qa_round} ${task.x_closure.qa_outcome} 예외 · PR #${task.x_closure.pr} 병합 ${String(task.x_closure.merge_sha ?? "").slice(0, 12)}`))
         .child(div().text_color(t.dim).child(`결정 원문: ${task.x_closure.quote}`)))
       .children(meta.map(([icon, text]) => h_flex().gap(6).items_center().text_color(t.muted)
         .child(svg(ICON(icon)).size(12).flex_none().text_color(t.dim))
-        .child(div().min_w(0).truncate().child(text))))
+        .child(div().min_w(0).truncate().tooltip(text).child(text))))
       .when(task.runs.length > 0, (e) => e.child(this.runs(task, t)))
       .when(rows.length > 0, (e) => e.child(v_flex().gap(0).pt(2)
         .children(rows.map((h, i) => h_flex().gap(8).items_start()
@@ -339,7 +356,7 @@ export default class Harness extends View {
           .child(v_flex().flex_1().min_w(0).pb(4)
             .child(h_flex().gap(6)
               .child(div().flex_none().text_color(t.dim).child(clock(h.at)))
-              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${LABEL[h.from] ?? h.from ?? "—"} → ${h.x_closure ? "결정 종결" : LABEL[h.to] ?? h.to}`)))
+              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${historyLabel(h.from) ?? "—"} → ${h.x_closure ? "결정 종결" : historyLabel(h.to)}`)))
             .when(Boolean(h.why), (e) => e.child(div().text_color(t.dim).truncate().child(h.why))))))));
   }
 
@@ -547,8 +564,8 @@ export default class Harness extends View {
 
   changeCard(p, r, t) {
     const key = `change-${p.name}-${r.id}`, expanded = this.expanded.has(key);
-    const color = ["qa", "closed"].includes(r.kind) ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
-    const body = r.body || `${stateLabel(r.from) ?? "—"} → ${stateLabel(r.to)}`;
+    const color = ["qa", "closed", "merged"].includes(r.kind) ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
+    const body = r.body || `${stateLabel(r.from, r.task) ?? "—"} → ${stateLabel(r.to, r.task)}`;
     return v_flex().id(`more-${key}`).flex_none().min_w(0).py(8).gap(3).border_t(1).border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
