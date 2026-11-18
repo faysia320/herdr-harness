@@ -18,7 +18,7 @@ export function build() {
     ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`), ...accountFiles.map((n) => `mod/claude-accounts/${n}`)];
   files.push('bin/herdr-browser.mjs', 'core/herdr-browser.mjs', 'bin/heavy.mjs', 'core/heavy-slots.mjs');
   files.push('core/workflow.cjs', 'core/delivery.cjs', 'policy/workflow.json', 'bin/watch-delivery.mjs');
-  files.push('core/verification-receipt.cjs', 'core/preparation.mjs');
+  files.push('core/verification-receipt.cjs', 'core/preparation.mjs', 'core/metrics.mjs', 'bin/metric.mjs');
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };
   const raw = `${JSON.stringify(manifest, null, 2)}\n`, digest = hash(raw);

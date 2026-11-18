@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import { runTree } from '../core/process.js';
 import { needsPreparation, preparationStatus, withPreparation } from '../core/preparation.mjs';
+import { tryRecordMetric } from '../core/metrics.mjs';
 const { binding } = createRequire(import.meta.url)('../adapters/runtime.cjs');
 const controller = new AbortController(), stop = () => controller.abort();
 const signals = process.platform === 'win32' ? ['SIGINT', 'SIGTERM', 'SIGBREAK'] : ['SIGINT', 'SIGTERM'];
@@ -19,9 +20,15 @@ try {
       // 순서 대기에는 실행 한도를 소비하지 않는다. 조회·결정 명령은 준비 슬롯을 잡지 않는다.
       return runTree(b.command[0], [...b.command.slice(1), ...args], { cwd: b.cwd, timeout: b.timeout ?? 600000, signal: controller.signal });
     };
-    const r = needsPreparation(args)
-      ? await withPreparation({ project: b.project, cwd: b.cwd, command: args[0] }, execute, { signal: controller.signal })
-      : await execute();
+    let r, timing;
+    try {
+      r = needsPreparation(args)
+        ? await withPreparation({ project: b.project, cwd: b.cwd, command: args[0] }, execute, { signal: controller.signal, onTiming: (t) => { timing = t; } })
+        : await execute();
+    } finally {
+      // 순서 대기와 슬롯 점유를 나눠 남긴다. 결과 없이 끝나면 취소는 130, 그 밖의 예외는 null이다.
+      if (timing) tryRecordMetric('preparation', { project: String(b.project ?? 'unknown'), command: args[0], ...timing, exit: r?.code ?? (controller.signal.aborted ? 130 : null) });
+    }
     process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exitCode = r.code;
   }
 } catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = e.name === 'AbortError' ? 130 : 2; }

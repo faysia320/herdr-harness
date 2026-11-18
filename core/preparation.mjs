@@ -16,11 +16,22 @@ export function preparationStatus(dir = preparationRoot()) {
   return { file, free: raw === null, holder, alive: Number.isInteger(holder?.pid) && holder.pid > 0 ? alive(holder.pid) : null };
 }
 
-export async function withPreparation(info, action, { dir = preparationRoot(), signal, poll = 1000, report = (message) => console.error(message) } = {}) {
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, 'active.json'), token = randomUUID(), queued = Date.now();
+export async function withPreparation(info, action, { onTiming, ...options } = {}) {
+  // 시각을 먼저 잡고 폴더 생성·대기·정리 전체를 가장 바깥 finally에서 한 번 계측한다.
+  // 기다리다 취소·실패한 호출, 정리 중 오류도 큐 통계에 남는다. 실행을 시작하지 못했으면 run_ms는 0이다.
+  const timing = { queued: Date.now(), started: undefined };
+  try { return await hold(info, action, options, timing); }
+  finally {
+    const { queued, started } = timing, end = Date.now();
+    onTiming?.({ acquired: started !== undefined, wait_ms: (started ?? end) - queued, run_ms: started === undefined ? 0 : end - started });
+  }
+}
+
+async function hold(info, action, { dir = preparationRoot(), signal, poll = 1000, report = (message) => console.error(message) }, timing) {
+  const { queued } = timing, file = join(dir, 'active.json'), token = randomUUID();
   let lastReport = -Infinity, owned = false;
   try {
+    mkdirSync(dir, { recursive: true });
     while (!owned) {
       signal?.throwIfAborted();
       let fd;
@@ -43,7 +54,7 @@ export async function withPreparation(info, action, { dir = preparationRoot(), s
       await delay(poll, undefined, { signal });
     }
     signal?.throwIfAborted();
-    const started = Date.now();
+    const started = timing.started = Date.now();
     report(`[prepare] 준비 시작: ${info.project} ${info.command}; 순서 대기 ${Math.round((started - queued) / 1000)}초`);
     try { return await action(); }
     finally { report(`[prepare] 준비 명령 종료: ${info.project}; 실행 ${Math.round((Date.now() - started) / 1000)}초`); }

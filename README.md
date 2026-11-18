@@ -110,6 +110,25 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 - 강제 종료로 남은 잠금은 시간만 보고 지우지 않는다. 죽은 소유자면 실패로 알리며, 소유 프로세스와 하위 Git까지 종료됐음을 확인한 뒤 해당 잠금만 복구한다. 부분 worktree·브랜치는 자동 삭제하지 않는다.
 - 구 release로 이미 시작한 준비나 직접 Git/프로젝트 CLI를 실행한 작업은 이 슬롯에 참여하지 않는다. 최초 전환 시 기존 checkout을 끝내고 새 binding의 launcher를 사용한다. 원시 디스크 성능 문제가 해결됐거나 기존 대장의 잠금 문제가 수정됐다는 뜻은 아니다.
 
+### 준비·설치 계측 규약
+
+준비 병목을 큐 대기·슬롯 점유·설치·첫 검사로 나눠 비교하기 위한 기록이다. 정의는 [core/metrics.mjs](core/metrics.mjs)의 `KINDS` 하나이며, 종류별로 `%LOCALAPPDATA%/HerdrHarness/metrics/<종류>.jsonl`에 한 줄씩 덧붙인다(시험 격리에만 `HERDR_METRICS_DIR`). 모든 줄에 `v`(1)·`kind`·`at`·`pid`가 붙고, 정의되지 않은 필드나 형식이 틀린 값은 기록하지 않는다.
+
+| 종류 | 기록 주체 | 필드 |
+|---|---|---|
+| `preparation` | 공통 런처 | `project`, `command`(CLI 하위 명령), `acquired`, `wait_ms`(순서 대기), `run_ms`(슬롯 점유), `exit` |
+| `heavy` | `bin/heavy.mjs` | `cwd`, `label`, `slot`(0부터), `wait_ms`, `run_ms`, `exit` |
+| `deps-install` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `trigger`(first-use·stamp-mismatch·forced), `install_ms`, `import_method`(hardlink·clone·copy·unknown), `store_dir`(선택), `result`(ok·failed·timeout) |
+| `first-check` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `label`, `run_ms`, `result` |
+
+- 준비 기록은 호출마다 한 번 남는다. 슬롯을 얻기 전에 취소·실패하면 `acquired: false`, `run_ms: 0`, `wait_ms`는 실제 대기다. 순서 대기에는 앞선 준비의 남은 실행과 폴링 간격이 들어간다. `exit`은 결과 코드이며, 결과 없이 끝나면 취소는 130, 그 밖의 예외는 null이다. 남의 잠금은 기록 여부와 무관하게 보존한다.
+- 명령 원문은 남기지 않는다. 인라인 환경변수나 인증 인자가 섞일 수 있어서다. 하위 명령과 인자 값은 모양으로 구별할 수 없으므로 `label`은 `KNOWN_LABELS`에 등록된 조합(예: `cargo test`, `pnpm verify`, `bun run docs:build`)이거나 실행 파일 이름(경로·확장자 제외)만이다. heavy는 원문에서 등록된 조합 중 가장 긴 것을 고르고 없으면 실행 파일 이름만 쓰며, 원문의 다른 단어는 복사하지 않는다. 단순 명령 문법만 해석하므로 공백·탭 외의 공백 문자, 값이 단순 문자(영숫자 `. _ : / -`, 빈 값)를 벗어나는 앞쪽 환경변수 할당(따옴표·이스케이프·치환·붙은 리디렉션), 실행 파일 자리의 리디렉션·셸 연산자가 있으면 `unknown`으로 둔다. 어댑터는 `first-check.label`에 원문을 조합하지 않은 정적 라벨을 넣는다. 새 조합이 필요하면 목록에 추가한다.
+- 어댑터는 실제 설치·첫 검사를 호출한 곳에서 `node <release>/bin/metric.mjs <종류> '<JSON>'`으로 남긴다. 정의된 종류·필드(상속 속성 제외)만 받고, 잘못된 입력은 파일을 만들지 않고 2로 끝난다. 이 CLI의 실패로 본 명령의 결과를 바꾸지 않는다.
+- `deps-install`은 설치를 실제로 수행한 호출에만 남긴다. 표식을 재사용했거나 다른 호출의 설치를 기다린 호출은 설치 횟수로 세지 않는다. `first-check.run_ms`에는 ensure 설치와 대기 시간을 넣지 않는다.
+- `import_method`는 pnpm 출력이나 파일 연결 확인으로 관측한 경우에만 적고, 모르면 `unknown`으로 둔다.
+- 공통 런처와 heavy 실행기의 기록 실패는 stderr 경고만 남기며 명령 결과를 바꾸지 않는다. 각 binding은 고정된 release를 쓰므로 기능을 켤 저장소는 재설치하고 실제 진입점으로 smoke를 확인한다.
+- 2026-11-18 참고값(E: ReFS, pnpm 9.7.0, SW 명세 23개, `--ignore-scripts`): 빈 store 6.6초, 찬 store 2.6초, store와 hardlink 확인. 설치 스크립트를 포함한 실제 worktree 값은 이 규약으로 다시 잰다.
+
 2026-11-17 vms-design-platform에서는 예전 런처의 시간 초과 뒤에도 `git worktree add`가 띄운 Git 프로세스가 남아 worktree가 `locked initializing` 상태로 멈췄다. 현재 런처는 Windows에서 `taskkill /T /F`로, 그 밖의 환경에서는 프로세스 그룹 단위로 하위 프로세스를 종료한다. 중단된 worktree는 하위 Git 프로세스의 종료를 확인한 뒤 해당 저장소 CLI에서 정리한다.
 
 ## 위임 정책

@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { slotRoot, acquire, release, status } from '../core/heavy-slots.mjs';
+import { tryRecordMetric, commandLabel } from '../core/metrics.mjs';
 
 // 사용법: node heavy.mjs -- <명령>  (전체 시험·빌드를 공용 슬롯 안에서 실행)
 //         node heavy.mjs status
@@ -15,6 +16,7 @@ else {
   const command = (args[0] === '--' ? args.slice(1) : args).join(' ').trim();
   if (!command) { console.error('사용법: node heavy.mjs -- <명령> | node heavy.mjs status'); process.exit(2); }
   const info = { pid: process.pid, cwd: process.cwd(), command, started: new Date().toISOString() };
+  const queued = Date.now();
   const slot = await acquire(dir, slots, info, {
     onWait: (waited, holders) => {
       if (waited % 60000) return;
@@ -23,10 +25,16 @@ else {
     },
   });
   console.error(`[heavy] 슬롯 ${slot.index + 1}/${slots}에서 실행: ${command}`);
+  const started = Date.now();
   const child = spawn(command, { shell: true, stdio: 'inherit', windowsHide: true });
   const stop = () => child.kill();
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(signal, stop);
-  const finish = (code) => { release(slot); process.exit(code); };
+  const finish = (code) => {
+    release(slot);
+    // 명령 원문(인라인 환경변수·인증 인자 포함 가능)은 남기지 않고 작업 이름만 기록한다.
+    tryRecordMetric('heavy', { cwd: info.cwd, label: commandLabel(command), slot: slot.index, wait_ms: started - queued, run_ms: Date.now() - started, exit: code });
+    process.exit(code);
+  };
   child.on('error', (error) => { console.error(error.message); finish(1); });
   child.on('exit', (code, signal) => finish(code ?? (signal ? 1 : 0)));
 }

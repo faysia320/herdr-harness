@@ -43,8 +43,10 @@ test('설치 계획의 연결 timeout을 binding에 쓰고 런처가 그 한도�
   const done = install(plan, { check: () => {} });
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).timeout, 1500);
   const started = Date.now();
-  const r = run(process.execPath, [join(done.release, 'bin/harness.mjs'), '--binding', file, 'dispatch'], { timeout: 60000, env: { ...process.env, HERDR_PREPARATION_DIR: join(f.dir, 'prepare') } });
+  const r = run(process.execPath, [join(done.release, 'bin/harness.mjs'), '--binding', file, 'dispatch'], { timeout: 60000, env: { ...process.env, HERDR_PREPARATION_DIR: join(f.dir, 'prepare'), HERDR_METRICS_DIR: join(f.dir, 'metrics') } });
   assert.equal(r.code, 124, r.stderr); assert.ok(Date.now() - started < 30000);
+  const metric = JSON.parse(readFileSync(join(f.dir, 'metrics', 'preparation.jsonl'), 'utf8'));
+  assert.deepEqual([metric.project, metric.command, metric.acquired, metric.exit], ['fixture', 'dispatch', true, 124]);
   const pid = Number(readFileSync(f.pidFile, 'utf8'));
   assert.ok(await until(() => !alive(pid)), `손자 프로세스 ${pid}가 남았다`);
   assert.equal(run(process.execPath, [join(done.release, 'bin/harness.mjs'), '--binding', file, 'quick']).stdout, '{"ok":true}');
