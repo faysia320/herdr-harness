@@ -39,6 +39,7 @@ test('지표에는 명령 원문 대신 인자·값을 뺀 작업 이름만 남�
     'pnpm verify': 'pnpm verify',
     'cargo test --workspace': 'cargo test',
     'bun run docs:build --filter x': 'bun run docs:build',
+    'bun install --frozen-lockfile': 'bun install',
     'npx vitest run src/a.test.ts': 'npx vitest run',
     'node -e "process.exit(3)"': 'node',
     'TOKEN=secret API_KEY=x pnpm publish --otp 123': 'pnpm',

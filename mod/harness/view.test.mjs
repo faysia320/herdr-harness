@@ -70,6 +70,23 @@ test('준비·자원 카드는 펼쳤을 때만 읽고, 진행 중인 조회를 
   s.clicks.get('harness-resource-toggle')({}, cx); v.refreshResources(cx); assert.equal(calls.length, 2);
 });
 const configPath = project.root + '/.agents/harness/config.json';
+test('로컬 기본 화면도 자원 카드를 열어 조회하며 원격 공간에는 이 PC의 카드가 없다', async () => {
+  let calls = 0;
+  const s = setup({ machines: () => [{ name: 'remote', layout: 'ready' }], exec: async () => {
+    calls++;
+    return { code: 0, stdout: JSON.stringify({ preparation: { state: 'free' }, heavy: [], projects: [], limit: 200 }) };
+  } });
+  s.files.set('fixture-home/mods/harness/release.json', JSON.stringify({ release: 'C:/fixture-release' }));
+  const v = new s.Harness(), jobs = [];
+  Object.assign(v, { projects: [], expanded: new Set() });
+  const cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  v.render(); assert.equal(calls, 0);
+  s.clicks.get('harness-resource-toggle')({}, cx); await Promise.all(jobs); v.render();
+  assert.ok(s.texts.includes('준비 슬롯 · 비어 있음')); assert.equal(calls, 1);
+  s.spaceList[0].machine = 'remote'; s.clicks.clear(); v.render(); v.refreshResources(cx);
+  assert.equal(s.clicks.has('harness-resource-toggle'), false);
+  assert.equal(jobs.length, 1);
+});
 const ledgerPath = project.root + '/state/ledger.json';
 const task = { id: 'a', title: '권한을 결정해 주세요', state: 'BLOCKED', awaiting: 'permission', blocked_reason: '권한 범위를 선택해야 합니다.', runs: [], history: [], updated: new Date().toISOString() };
 const install = (s) => {

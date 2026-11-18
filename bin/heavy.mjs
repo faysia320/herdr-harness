@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { slotRoot, acquire, release, status } from '../core/heavy-slots.mjs';
+import { slotRoot, acquire, release, status, holderLabel } from '../core/heavy-slots.mjs';
 import { tryRecordMetric, commandLabel } from '../core/metrics.mjs';
 
 // 사용법: node heavy.mjs -- <명령>  (전체 시험·빌드를 공용 슬롯 안에서 실행)
@@ -20,7 +20,7 @@ else {
   const slot = await acquire(dir, slots, info, {
     onWait: (waited, holders) => {
       if (waited % 60000) return;
-      const busy = holders.filter((h) => !h.free).map((h) => `pid ${h.pid} ${h.cwd} «${h.command}» ${h.started}부터`).join(' / ');
+      const busy = holders.filter((h) => !h.free).map(holderLabel).join(' / ');
       console.error(`[heavy] 슬롯 ${slots}개가 모두 사용 중이라 대기한다(${waited / 1000}초 경과): ${busy}`);
     },
   });

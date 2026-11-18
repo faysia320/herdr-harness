@@ -58,6 +58,11 @@ export function status(dir, slots) {
   });
 }
 
+export function holderLabel(slot) {
+  if (slot.alive === null) return `슬롯 ${slot.index + 1} · 잠금 정보 확인 필요`;
+  return [`pid ${slot.pid}`, slot.cwd, slot.command && `«${slot.command}»`, slot.started && `${slot.started}부터`].filter(Boolean).join(' ');
+}
+
 export async function acquire(dir, slots, info, { poll = 2000, onWait = () => {} } = {}) {
   for (let waited = 0; ; waited += poll) {
     const slot = tryAcquire(dir, slots, info);

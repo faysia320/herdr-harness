@@ -12,6 +12,7 @@ import { briefingContext, taskActivity, needsTerminal } from "./context.js";
 const ENDED = ["DONE", "FAILED"];
 const ORDER = ["BLOCKED", "QA", "IMPLEMENTING", "RESEARCHING", "READY_TO_IMPLEMENT", "QUEUED", "FAILED", "DONE"];
 const DAY = 24 * 3600 * 1000;
+const showsLocalResources = context => !context.machine && (context.kind === "basic" || context.kind === "harness");
 // 조회가 이보다 오래 끝나지 않으면 멈춘 것으로 보고 다음 주기에 다시 읽는다.
 const STUCK = 30000;
 const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
@@ -596,7 +597,7 @@ export default class Harness extends View {
   }
 
   refreshResources(cx) {
-    if (!this.resourcesOpen || !this.context().project) return;
+    if (!this.resourcesOpen || !showsLocalResources(this.context())) return;
     const started = Date.now();
     if (this.resourceReadAt != null && started - this.resourceReadAt < STUCK) return;
     this.resourceReadAt = started;
@@ -744,11 +745,11 @@ export default class Harness extends View {
     const all = shown.flatMap((p) => p.tasks.filter((x) => !x.archived).map((x) => ({ ...x, waiting: Boolean(waitingOn(x, p)) })));
     const body = v_flex().id("harness-list").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(8).gap(8);
     if (this.error) body.child(div().text_size(11).text_color(t.ansi1).child(this.error));
+    if (shown.length) body.child(this.attention(shown, live, t));
+    if (showsLocalResources(context)) body.child(this.resourceCard(t));
     if (!shown.length) body.child(this.basic(context, t));
     else {
-      body.child(this.attention(shown, live, t))
-        .child(this.resourceCard(t))
-        .child(h_flex().items_center().gap(6)
+      body.child(h_flex().items_center().gap(6)
           .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && (x.state !== "BLOCKED" || x.waiting)).length, t.muted, t))
           .child(div().flex_1())
           .child(this.button("harness-ended", this.showEnded ? "종료 숨기기" : "종료 포함", (cx) => { this.showEnded = !this.showEnded; cx.notify(); }, t)))

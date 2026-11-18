@@ -17,7 +17,7 @@ export const KNOWN_LABELS = new Set([
   'pnpm verify', 'pnpm test', 'pnpm build', 'pnpm lint', 'pnpm typecheck', 'pnpm install', 'pnpm run build', 'pnpm run test',
   'npm test', 'npm run build', 'npm run test', 'npx vitest', 'npx vitest run', 'vitest run',
   'cargo test', 'cargo clippy', 'cargo build', 'cargo check', 'cargo nextest run',
-  'bun test', 'bun run build', 'bun run docs:build', 'next build',
+  'bun install', 'bun test', 'bun run build', 'bun run docs:build', 'next build',
 ]);
 const PROGRAM = /^[A-Za-z0-9._-]+$/;
 const label = (v) => typeof v === 'string' && (KNOWN_LABELS.has(v) || PROGRAM.test(v));

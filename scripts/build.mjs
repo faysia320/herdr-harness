@@ -7,6 +7,14 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const modFiles = ['attention.js', 'context.js', 'contract.js', 'decisions.js', 'logic.js', 'main.js', 'mod.json'];
 export const autoFiles = ['main.js', 'mod.json'];
 export const accountFiles = ['main.js', 'mod.json'];
+
+function releaseBytes(name) {
+  const bytes = readFileSync(join(root, name));
+  if (!/\.(?:[cm]?js|json)$/.test(name) || !bytes.includes('\r\n')) return bytes;
+  // CRLF만 LF로 바꾼다. BOM과 나머지 바이트는 그대로 보존한다.
+  return bytes.filter((byte, i) => byte !== 13 || bytes[i + 1] !== 10);
+}
+
 export function build() {
   // mod 산출물만 복사한다. 순수 계약의 정본은 core/이며 생성본은 Git에서 제외한다.
   // 같은 내용이면 다시 쓰지 않는다. 동시에 build하는 다른 프로세스가 쓰는 중인 파일을 읽지 않게 한다.
@@ -20,8 +28,9 @@ export function build() {
   files.push('core/workflow.cjs', 'core/delivery.cjs', 'policy/workflow.json', 'bin/watch-delivery.mjs');
   files.push('core/verification-receipt.cjs', 'core/preparation.mjs', 'core/metrics.mjs', 'bin/metric.mjs');
   files.push('bin/resource-status.mjs');
-  const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
-  const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };
+  const contents = new Map(files.sort().map(name => [name, releaseBytes(name)]));
+  const version = JSON.parse(contents.get('package.json')).version;
+  const manifest = { format: 1, version, files: Object.fromEntries(Array.from(contents, ([name, bytes]) => [name, hash(bytes)])) };
   const raw = `${JSON.stringify(manifest, null, 2)}\n`, digest = hash(raw);
   const release = join(root, 'dist', digest);
   if (!existsSync(release)) {
@@ -29,7 +38,11 @@ export function build() {
     mkdirSync(join(root, 'dist'), { recursive: true });
     const stage = mkdtempSync(join(root, 'dist', '.stage-'));
     try {
-      for (const file of files) { mkdirSync(dirname(join(stage, file)), { recursive: true }); copyFileSync(join(root, file), join(stage, file)); }
+      for (const [file, bytes] of contents) {
+        const out = join(stage, file);
+        mkdirSync(dirname(out), { recursive: true });
+        writeFileSync(out, bytes);
+      }
       writeFileSync(join(stage, 'manifest.json'), raw);
       try { renameSync(stage, release); } catch (e) { if (!existsSync(release)) throw e; }
     } finally { rmSync(stage, { recursive: true, force: true }); }

@@ -68,6 +68,8 @@ node scripts/build.mjs
 
 build는 명시한 파일만 `dist/<manifest SHA-256>/`에 묶는다. `mod/harness/decisions.js`와 `contract.js`는 `core/`에서 생성하는 Git 제외 산출물이다. 직접 수정하지 않는다. manifest 내용은 파일명·버전·SHA-256이며 개인 경로나 실행 기록을 포함하지 않는다. 커밋 전 후보도 내용 해시로 고정할 수 있지만, 그것을 커밋·릴리스 게시라고 부르지 않는다.
 
+Git은 JS·JSON 소스를 LF로 체크아웃한다. 편집기가 CRLF로 저장해도 build는 이 파일들의 CRLF를 LF로 통일한 바이트로 해시와 패키지를 함께 만든다. 미커밋 소스 수정도 다음 후보에 포함된다.
+
 프로젝트 adapter 통합 시험은 회사 소스를 이 저장소에 넣지 않고 로컬 checkout에서 임시 Git fixture로 읽는다. 아래 목록 파일도 `.local/`에 둔다.
 
 ```json
@@ -121,7 +123,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 | `deps-install` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `trigger`(first-use·stamp-mismatch·forced), `install_ms`, `import_method`(hardlink·clone·copy·unknown), `store_dir`(선택), `result`(ok·failed·timeout) |
 | `first-check` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `label`, `run_ms`, `result` |
 
-하네스 패널에서 **준비·자원** 카드를 펼치면 이 PC의 준비 슬롯과 시험·빌드 슬롯을 15초마다 조회한다. 카드는 설치 프로그램이 mod 폴더에 기록한 `release.json`에서 해당 버전의 조회 명령을 찾는다. 준비 슬롯에는 프로젝트·소유 PID·시작 후 경과 시간이 나온다. 종료된 소유자와 형식을 확인할 수 없는 잠금은 별도로 표시한다.
+로컬 공간의 하네스 패널이나 기본 브리핑에서 **준비·자원** 카드를 펼치면 이 PC의 준비 슬롯과 시험·빌드 슬롯을 15초마다 조회한다. 카드는 설치 프로그램이 mod 폴더에 기록한 `release.json`에서 해당 버전의 조회 명령을 찾는다. 준비 슬롯에는 프로젝트·소유 PID·시작 후 경과 시간이 나온다. 종료된 소유자와 형식을 확인할 수 없는 잠금은 별도로 표시한다.
 
 프로젝트별 요약은 `preparation.jsonl`과 `deps-install.jsonl` 각각의 마지막 200행을 대상으로 하며, 파일당 뒤에서 최대 256 KiB까지 읽는다. 대기 시간은 모든 준비 호출, 점유 시간은 슬롯을 얻은 호출의 p50·p95다. 정렬한 측정값에서 해당 백분위 순위를 올림해 선택한다. 미획득·0 이외 종료 코드·종료 코드 없음은 각각 집계한다. 설치 시간은 기록된 실제 설치 전체의 산술평균이며, import 방식별 건수를 함께 표시한다. 카드 조회는 잠금과 계측 파일을 읽기만 한다.
 

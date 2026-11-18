@@ -1,17 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tryAcquire, release, status } from '../core/heavy-slots.mjs';
+import { tryAcquire, release, status, holderLabel } from '../core/heavy-slots.mjs';
 import { run } from '../core/process.js';
 
 const heavy = fileURLToPath(new URL('../bin/heavy.mjs', import.meta.url));
 const temp = (t) => { const dir = mkdtempSync(join(tmpdir(), 'herdr-heavy-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const info = (pid = process.pid) => ({ pid, cwd: 'x', command: 'test', started: new Date().toISOString() });
 const deadPid = () => { const r = spawn(process.execPath, ['-e', '0']); return new Promise((resolve) => r.on('exit', () => resolve(r.pid))); };
+
+test('대기 안내는 불완전한 슬롯과 형식이 올바른 슬롯을 구분한다', t => {
+  const dir = temp(t);
+  writeFileSync(join(dir, 'slot-0.json'), '{');
+  writeFileSync(join(dir, 'slot-1.json'), JSON.stringify({ pid: process.pid }));
+  assert.deepEqual(status(dir, 2).map(holderLabel), ['슬롯 1 · 잠금 정보 확인 필요', `pid ${process.pid}`]);
+});
 
 test('슬롯 수만큼만 점유하고 해제한 슬롯은 다시 쓴다', (t) => {
   const dir = temp(t);
