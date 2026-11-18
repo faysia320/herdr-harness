@@ -655,8 +655,14 @@ export default class Harness extends View {
           .child(line(`점유 ${p.acquired}건 · p50 / p95   ${pair(p.run)}`))
           .child(line(`미획득 ${p.missed}건 · 0 이외 종료 코드 ${p.nonzero}건 · 종료 코드 없음 ${p.noExit}건`));
       }
-      if (p.installs) card.child(line(`의존성 설치 ${p.installs}건 · 평균 ${p.installMean} ms`))
-        .child(line(Object.entries(p.methods).map(([method, count]) => `${method} ${count}건`).join(" · ")));
+      if (p.installs) {
+        card.child(line(`의존성 설치 ${p.installs}건 · 전체 시도 평균 ${p.installMean} ms`));
+        if (Number.isInteger(p.successfulInstalls)) {
+          const mean = p.successfulInstallMean === null ? "—" : `${p.successfulInstallMean} ms`;
+          card.child(line(`성공 ${p.successfulInstalls}건 · 성공 평균 ${mean}`));
+        }
+        card.child(line(Object.entries(p.methods).map(([method, count]) => `${method} ${count}건`).join(" · ")));
+      }
       if (p.failedInstalls || p.timedOutInstalls) {
         card.child(line(`설치 실패 ${p.failedInstalls}건 · 시간 초과 ${p.timedOutInstalls}건`));
         const codes = Object.entries(p.errorCodes);

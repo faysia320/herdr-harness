@@ -56,7 +56,7 @@ function projectMetrics(dir) {
       } catch { continue; }
       if (!projects.has(row.project)) projects.set(row.project, {
         project: row.project, waits: [], runs: [], missed: 0, nonzero: 0, noExit: 0, installs: 0, totalMs: 0, methods: {},
-        failedInstalls: 0, timedOutInstalls: 0, errorCodes: {},
+        successfulInstalls: 0, successfulMs: 0, failedInstalls: 0, timedOutInstalls: 0, errorCodes: {},
       });
       const group = projects.get(row.project);
       if (expected === 'preparation') {
@@ -69,6 +69,10 @@ function projectMetrics(dir) {
         group.installs++;
         group.totalMs += row.install_ms;
         group.methods[row.import_method] = (group.methods[row.import_method] ?? 0) + 1;
+        if (row.result === 'ok') {
+          group.successfulInstalls++;
+          group.successfulMs += row.install_ms;
+        }
         if (row.result === 'failed') group.failedInstalls++;
         if (row.result === 'timeout') group.timedOutInstalls++;
         if (row.error_code !== undefined) group.errorCodes[row.error_code] = (group.errorCodes[row.error_code] ?? 0) + 1;
@@ -79,6 +83,7 @@ function projectMetrics(dir) {
     project: g.project, preparations: g.waits.length, acquired: g.runs.length,
     wait: percentiles(g.waits), run: percentiles(g.runs), missed: g.missed, nonzero: g.nonzero, noExit: g.noExit,
     installs: g.installs, installMean: g.installs ? Math.round(g.totalMs / g.installs) : null, methods: g.methods,
+    successfulInstalls: g.successfulInstalls, successfulInstallMean: g.successfulInstalls ? Math.round(g.successfulMs / g.successfulInstalls) : null,
     failedInstalls: g.failedInstalls, timedOutInstalls: g.timedOutInstalls, errorCodes: g.errorCodes,
   }));
 }

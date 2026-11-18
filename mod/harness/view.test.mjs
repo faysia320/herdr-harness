@@ -58,12 +58,15 @@ test('준비·자원 카드는 펼쳤을 때만 읽고, 진행 중인 조회를 
   const data = { limit: 200, preparation: { state: 'busy', project: 'fixture', pid: 42, started: new Date().toISOString() },
     heavy: [{ state: 'unknown' }, { state: 'free' }], projects: [{ project: 'fixture', preparations: 2, acquired: 1,
       wait: [10, 50], run: [100, 100], missed: 1, nonzero: 0, noExit: 1, installs: 3, installMean: 2500, methods: { hardlink: 1, unknown: 2 },
-      failedInstalls: 1, timedOutInstalls: 1, errorCodes: { ENAMETOOLONG: 1 } }] };
+      successfulInstalls: 1, successfulInstallMean: 0, failedInstalls: 1, timedOutInstalls: 1, errorCodes: { ENAMETOOLONG: 1 } },
+    { project: 'VDP', installs: 1, installMean: 75, methods: { unknown: 1 }, successfulInstalls: 0, successfulInstallMean: null,
+      failedInstalls: 1, timedOutInstalls: 0, errorCodes: {} }] };
   finish({ code: 0, stdout: JSON.stringify(data) });
   await Promise.all(jobs); v.render();
   assert.ok(s.texts.some(l => l.includes('fixture · PID 42 · 시작 후')));
   for (const part of ['시험·빌드 슬롯 1 · 잠금 정보 확인 필요', '시험·빌드 슬롯 2 · 비어 있음', '10 ms / 50 ms', '100 ms / 100 ms',
-    '미획득 1건', '종료 코드 없음 1건', '평균 2500 ms', 'hardlink 1건', '설치 실패 1건 · 시간 초과 1건', '오류 코드 · ENAMETOOLONG 1건'])
+    '미획득 1건', '종료 코드 없음 1건', '의존성 설치 3건 · 전체 시도 평균 2500 ms', '성공 1건 · 성공 평균 0 ms', '성공 0건 · 성공 평균 —',
+    'hardlink 1건', '설치 실패 1건 · 시간 초과 1건', '오류 코드 · ENAMETOOLONG 1건'])
     assert.ok(s.texts.some(l => l.includes(part)), part);
   v.refreshResources(cx); await Promise.resolve();
   finish({ code: 2, stdout: '' }); await Promise.all(jobs);

@@ -75,6 +75,18 @@ test('매우 긴 손상 행도 뒤쪽의 UTF-8 정상 행을 보존하고 바이
   assert.deepEqual(resourceStatus(f.env).projects.map(p => [p.project, p.installs]), [['프로젝트', 1]]);
 });
 
+test('전체 시도 평균과 성공 평균을 구분하고 성공이 0건이면 null을 반환한다', t => {
+  const f = fixture(t); mkdirSync(f.metrics);
+  const rows = [install('SW', 0, 'hardlink'), install('SW', 5, 'clone'),
+    { ...install('SW', 20, 'unknown'), result: 'failed' }, { ...install('SW', 101, 'unknown'), result: 'timeout' },
+    { ...install('VDP', 80, 'unknown'), result: 'failed' }, install('VP', 0, 'copy')];
+  writeFileSync(join(f.metrics, 'deps-install.jsonl'), rows.map(row => JSON.stringify(row)).join('\n'));
+  const projects = resourceStatus(f.env).projects;
+  assert.deepEqual(projects.map(p => [p.project, p.installs, p.installMean, p.successfulInstalls, p.successfulInstallMean]), [
+    ['SW', 4, 32, 2, 3], ['VDP', 1, 80, 0, null], ['VP', 1, 0, 1, 0],
+  ]);
+});
+
 test('프로젝트별 설치 실패·시간 초과에는 코드 없는 기록을 포함하고 관측된 오류 코드만 집계한다', t => {
   const f = fixture(t); mkdirSync(f.metrics);
   const sw = install('SW', 50, 'unknown'), vdp = install('VDP', 100, 'hardlink');
