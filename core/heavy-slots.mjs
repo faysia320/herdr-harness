@@ -50,8 +50,11 @@ export function release(slot) {
 
 export function status(dir, slots) {
   return Array.from({ length: slots }, (_, index) => {
-    const holder = parse(read(join(dir, `slot-${index}.json`)));
-    return holder ? { index, pid: holder.pid, alive: alive(holder.pid), cwd: holder.cwd, command: holder.command, started: holder.started } : { index, free: true };
+    const raw = read(join(dir, `slot-${index}.json`));
+    if (raw === null) return { index, free: true };
+    const holder = parse(raw);
+    if (!Number.isInteger(holder?.pid) || holder.pid <= 0) return { index, free: false, alive: null };
+    return { index, pid: holder.pid, alive: alive(holder.pid), cwd: holder.cwd, command: holder.command, started: holder.started };
   });
 }
 

@@ -19,10 +19,12 @@ function fixture(t) {
 test('설치 지문·업데이트·rollback은 개인 설정과 업무 자료를 보존한다', (t) => {
   const f = fixture(t), options = { check: () => {} };
   const first = install({ ...f.plan, modPath: f.plan.modPath.replaceAll('\\', '/') }, options); verifyInstall(f.plan.store);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.modPath, 'release.json'))), { release: first.release });
   assert.ok(existsSync(join(f.root, 'harness-auto/main.js')));
   writeFileSync(join(f.modPath, 'projects.json'), 'changed personal config');
   install(f.plan, options); rollback(f.plan.store); verifyInstall(f.plan.store);
   rollback(f.plan.store);
+  assert.equal(existsSync(join(f.modPath, 'release.json')), false);
   assert.equal(readFileSync(join(f.modPath, 'main.js'), 'utf8'), 'old source');
   assert.equal(readFileSync(join(f.modPath, 'projects.json'), 'utf8'), 'changed personal config');
   assert.equal(readFileSync(join(f.state, 'ledger.json'), 'utf8'), 'ledger bytes');

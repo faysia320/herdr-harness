@@ -19,6 +19,7 @@ export function build() {
   files.push('bin/herdr-browser.mjs', 'core/herdr-browser.mjs', 'bin/heavy.mjs', 'core/heavy-slots.mjs');
   files.push('core/workflow.cjs', 'core/delivery.cjs', 'policy/workflow.json', 'bin/watch-delivery.mjs');
   files.push('core/verification-receipt.cjs', 'core/preparation.mjs', 'core/metrics.mjs', 'bin/metric.mjs');
+  files.push('bin/resource-status.mjs');
   const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(files.sort().map((f) => [f, hash(readFileSync(join(root, f)))])) };
   const raw = `${JSON.stringify(manifest, null, 2)}\n`, digest = hash(raw);

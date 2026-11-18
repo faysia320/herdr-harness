@@ -36,6 +36,39 @@ function setup(overrides = {}) {
     cx: { notify() {}, stop_propagation() {} } };
 }
 const project = { name: 'fixture', root: 'D:/fixture' };
+
+test('준비·자원 카드는 펼쳤을 때만 읽고, 진행 중인 조회를 겹치지 않으며 상태와 프로젝트별 수치를 렌더한다', async () => {
+  const calls = [];
+  let finish;
+  const s = setup({ exec: (tool, args, options) => {
+    calls.push({ tool, args, options });
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  install(s);
+  s.files.set('fixture-home/mods/harness/release.json', JSON.stringify({ release: 'C:/fixture-release' }));
+  const p = await s.load(project), v = new s.Harness();
+  Object.assign(v, { projects: [p], expanded: new Set() });
+  const jobs = [];
+  const cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  v.render(); v.refreshResources(cx); assert.equal(jobs.length, 0);
+  s.clicks.get('harness-resource-toggle')({}, cx);
+  v.refreshResources(cx); await Promise.resolve();
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(calls[0], { tool: 'node', args: ['C:/fixture-release/bin/resource-status.mjs'], options: { timeout: 5000 } });
+  const data = { limit: 200, preparation: { state: 'busy', project: 'fixture', pid: 42, started: new Date().toISOString() },
+    heavy: [{ state: 'unknown' }, { state: 'free' }], projects: [{ project: 'fixture', preparations: 2, acquired: 1,
+      wait: [10, 50], run: [100, 100], missed: 1, nonzero: 0, noExit: 1, installs: 1, installMean: 2500, methods: { hardlink: 1 } }] };
+  finish({ code: 0, stdout: JSON.stringify(data) });
+  await Promise.all(jobs); v.render();
+  assert.ok(s.texts.some(l => l.includes('fixture · PID 42 · 시작 후')));
+  for (const part of ['시험·빌드 슬롯 1 · 잠금 정보 확인 필요', '시험·빌드 슬롯 2 · 비어 있음', '10 ms / 50 ms', '100 ms / 100 ms',
+    '미획득 1건', '종료 코드 없음 1건', '평균 2500 ms', 'hardlink 1건']) assert.ok(s.texts.some(l => l.includes(part)), part);
+  v.refreshResources(cx); await Promise.resolve();
+  finish({ code: 2, stdout: '' }); await Promise.all(jobs);
+  s.texts.length = 0; v.render(); assert.ok(s.texts.includes('활성 릴리스의 자원 조회에 실패했습니다.'));
+  assert.equal(s.texts.some(l => l.includes('PID 42')), false);
+  s.clicks.get('harness-resource-toggle')({}, cx); v.refreshResources(cx); assert.equal(calls.length, 2);
+});
 const configPath = project.root + '/.agents/harness/config.json';
 const ledgerPath = project.root + '/state/ledger.json';
 const task = { id: 'a', title: '권한을 결정해 주세요', state: 'BLOCKED', awaiting: 'permission', blocked_reason: '권한 범위를 선택해야 합니다.', runs: [], history: [], updated: new Date().toISOString() };

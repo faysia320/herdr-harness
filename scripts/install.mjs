@@ -62,6 +62,7 @@ function installUnlocked(plan, check) {
     const id = randomUUID(), recordPath = join(plan.store, 'installs', `${id}.json`);
     const activePath = join(plan.store, 'active.json');
     const writes = [
+      { file: join(plan.modPath, 'release.json'), bytes: Buffer.from(JSON.stringify({ release }) + '\n') },
       ...modFiles.map((name) => ({ file: join(plan.modPath, name), bytes: readFileSync(join(stage, name)) })),
       ...autoFiles.map((name) => ({ file: join(autoPath, name), bytes: readFileSync(join(autoStage, name)) })),
       ...accountFiles.map((name) => ({ file: join(accountPath, name), bytes: readFileSync(join(accountStage, name)) })),

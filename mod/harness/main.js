@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { appHome, readTextFile, watchFolder, terminals, spaces, panes, machines, shared, setShared, theme, run, notify, playSound, props, closeOverlay, hc } from "herdr";
+import { appHome, exec, readTextFile, watchFolder, terminals, spaces, panes, machines, shared, setShared, theme, run, notify, playSound, props, closeOverlay, hc } from "herdr";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage } from "./logic.js";
 import { closedByDecision, decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 import { briefingContext, taskActivity, needsTerminal } from "./context.js";
@@ -119,8 +119,8 @@ export default class Harness extends View {
     this.answerInput = InputState.new({ placeholder: "내용 입력 후 보내기 또는 Enter" });
     this.answerInput.on("submit", (_e, cx) => this.submitTyped(cx));
     this.refresh(cx);
-    // 시각 표시는 I/O 없이 갱신하고, 감시 누락·실패는 60초 전체 조회로 복구한다.
-    cx.timer.every(15000, (cx) => cx.notify());
+    // 시각과 열린 자원 카드는 15초마다, 대장 감시 누락은 60초 전체 조회로 갱신한다.
+    cx.timer.every(15000, (cx) => { this.refreshResources(cx); cx.notify(); });
     cx.timer.every(60000, (cx) => this.refresh(cx));
   }
 
@@ -595,6 +595,71 @@ export default class Harness extends View {
       .children(inbox.map(({ p, d }) => this.decisionCard(p, d, live, t)));
   }
 
+  refreshResources(cx) {
+    if (!this.resourcesOpen || !this.context().project) return;
+    const started = Date.now();
+    if (this.resourceReadAt != null && started - this.resourceReadAt < STUCK) return;
+    this.resourceReadAt = started;
+    cx.spawn(async (cx) => {
+      try {
+        const active = parse(await readTextFile(`${appHome()}/mods/harness/release.json`));
+        if (this.resourceReadAt !== started) return;
+        if (!active?.release) throw new Error("활성 릴리스를 찾지 못했습니다.");
+        const result = await exec("node", [`${active.release}/bin/resource-status.mjs`], { timeout: 5000 });
+        if (result.code !== 0) throw new Error("활성 릴리스의 자원 조회에 실패했습니다.");
+        const data = JSON.parse(result.stdout);
+        if (this.resourceReadAt !== started) return;
+        if (!data?.preparation || !Array.isArray(data.heavy) || !Array.isArray(data.projects)) throw new Error("자원 상태를 읽지 못했습니다.");
+        this.resourceData = data;
+        this.resourceError = null;
+      } catch (err) {
+        if (this.resourceReadAt !== started) return;
+        this.resourceData = null;
+        this.resourceError = String(err.message ?? err);
+      } finally {
+        if (this.resourceReadAt === started) { this.resourceReadAt = null; cx.notify(); }
+      }
+    });
+  }
+
+  resourceCard(t) {
+    const open = this.resourcesOpen, data = this.resourceData;
+    const line = text => div().min_w(0).whitespace_normal().text_size(12).text_color(t.muted).child(text);
+    const slotLabel = s => {
+      if (s.state === "free") return "비어 있음";
+      if (s.state === "unknown") return "잠금 정보 확인 필요";
+      const since = time(s.started);
+      return [s.state === "stale" ? "소유 프로세스 종료" : "점유 중", s.project, `PID ${s.pid}`,
+        since ? `시작 후 ${Math.max(0, Math.floor((Date.now() - since) / 1000))}초` : null].filter(Boolean).join(" · ");
+    };
+    const pair = values => values ? values.map(v => `${v} ms`).join(" / ") : "—";
+    const card = v_flex().flex_none().min_w(0).p(10).gap(6).rounded(8)
+      .bg(open ? t.selected : t.raised).border_1().border_color(open ? t.accent : t.border)
+      .child(div().id("harness-resource-toggle").font_medium().text_size(13).cursor_pointer()
+        .on_click((_e, cx) => {
+          this.resourcesOpen = !this.resourcesOpen;
+          if (this.resourcesOpen) { this.resourceData = null; this.resourceError = null; this.refreshResources(cx); }
+          cx.notify();
+        }).child(open ? "준비·자원 ▴" : "준비·자원 ▾"));
+    if (!open) return card;
+    if (!data) return card.child(line(this.resourceError ?? "자원 상태 조회 중…"));
+    card.child(line(`준비 슬롯 · ${slotLabel(data.preparation)}`));
+    data.heavy.forEach((s, i) => card.child(line(`시험·빌드 슬롯 ${i + 1} · ${slotLabel(s)}`)));
+    card.child(div().pt(4).font_medium().child(`프로젝트별 계측 · 종류별 최근 최대 ${data.limit}행`));
+    if (!data.projects.length) card.child(line("표시할 계측 기록이 없습니다."));
+    for (const p of data.projects) {
+      card.child(div().pt(4).font_medium().whitespace_normal().child(p.project));
+      if (p.preparations) {
+        card.child(line(`대기 ${p.preparations}건 · p50 / p95   ${pair(p.wait)}`))
+          .child(line(`점유 ${p.acquired}건 · p50 / p95   ${pair(p.run)}`))
+          .child(line(`미획득 ${p.missed}건 · 0 이외 종료 코드 ${p.nonzero}건 · 종료 코드 없음 ${p.noExit}건`));
+      }
+      if (p.installs) card.child(line(`의존성 설치 ${p.installs}건 · 평균 ${p.installMean} ms`))
+        .child(line(Object.entries(p.methods).map(([method, count]) => `${method} ${count}건`).join(" · ")));
+    }
+    return card;
+  }
+
   basicAgent(agent, t) {
     const key = `basic-${agent.address}`, opened = this.expanded.has(key), attention = needsTerminal(agent);
     const color = this.color(({ working: "IMPLEMENTING", blocked: "BLOCKED", error: "FAILED", done: "DONE", idle: "QUEUED" })[agent.status], t);
@@ -682,6 +747,7 @@ export default class Harness extends View {
     if (!shown.length) body.child(this.basic(context, t));
     else {
       body.child(this.attention(shown, live, t))
+        .child(this.resourceCard(t))
         .child(h_flex().items_center().gap(6)
           .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && (x.state !== "BLOCKED" || x.waiting)).length, t.muted, t))
           .child(div().flex_1())
