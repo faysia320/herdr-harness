@@ -110,6 +110,8 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 - 강제 종료로 남은 잠금은 시간만 보고 지우지 않는다. 죽은 소유자면 실패로 알리며, 소유 프로세스와 하위 Git까지 종료됐음을 확인한 뒤 해당 잠금만 복구한다. 부분 worktree·브랜치는 자동 삭제하지 않는다.
 - 구 release로 이미 시작한 준비나 직접 Git/프로젝트 CLI를 실행한 작업은 이 슬롯에 참여하지 않는다. 최초 전환 시 기존 checkout을 끝내고 새 binding의 launcher를 사용한다. 원시 디스크 성능 문제가 해결됐거나 기존 대장의 잠금 문제가 수정됐다는 뜻은 아니다.
 
+2026-11-17 vms-design-platform에서는 예전 런처의 시간 초과 뒤에도 `git worktree add`가 띄운 Git 프로세스가 남아 worktree가 `locked initializing` 상태로 멈췄다. 현재 런처는 Windows에서 `taskkill /T /F`로, 그 밖의 환경에서는 프로세스 그룹 단위로 하위 프로세스를 종료한다. 중단된 worktree는 하위 Git 프로세스의 종료를 확인한 뒤 해당 저장소 CLI에서 정리한다.
+
 ## 위임 정책
 
 정본은 [policy/execution.json](policy/execution.json) 하나다. 변경 후 검사·build·설치하면 세 프로젝트에 같은 정책이 적용된다. 새 CLI는 공통 설치가 없거나 지문이 다르면 실패하며 예전 모델로 조용히 돌아가지 않는다. 이미 실행 중인 에이전트는 유지하고 다음 위임부터 적용한다. 구 checkout의 직접 CLI 호출은 설치된 command를 우회하므로 Lead는 binding의 release와 공통 launcher를 사용한다.
