@@ -58,7 +58,8 @@ export const KINDS = {
   preparation: { project: text, command: label, acquired: (v) => typeof v === 'boolean', wait_ms: ms, run_ms: ms, exit: code },
   heavy: { cwd: text, label, slot: ms, wait_ms: ms, run_ms: ms, exit: code },
   'deps-install': { project: text, task: optional(text), worktree: text, trigger: oneOf('first-use', 'stamp-mismatch', 'forced'),
-    install_ms: ms, import_method: oneOf('hardlink', 'clone', 'copy', 'unknown'), store_dir: optional(text), result: oneOf('ok', 'failed', 'timeout') },
+    install_ms: ms, import_method: oneOf('hardlink', 'clone', 'copy', 'unknown'), store_dir: optional(text), result: oneOf('ok', 'failed', 'timeout'),
+    error_code: (value, row) => value === undefined || (row.result !== 'ok' && typeof value === 'string' && /^E[A-Z0-9_]{1,40}$/.test(value)) },
   'first-check': { project: text, task: optional(text), worktree: text, label, run_ms: ms, result: oneOf('ok', 'failed', 'timeout') },
 };
 
@@ -68,7 +69,7 @@ export function metricRecord(kind, data, now = new Date()) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('계측 값은 객체여야 한다.');
   const extra = Object.keys(data).filter((k) => !Object.hasOwn(spec, k));
   if (extra.length) throw new Error(`${kind} 계측에 정의되지 않은 필드: ${extra.join(', ')}`);
-  const bad = Object.entries(spec).filter(([k, check]) => !check(data[k])).map(([k]) => k);
+  const bad = Object.entries(spec).filter(([k, check]) => !check(data[k], data)).map(([k]) => k);
   if (bad.length) throw new Error(`${kind} 계측 필드가 올바르지 않다: ${bad.join(', ')}`);
   return { v: 1, kind, at: now.toISOString(), pid: process.pid, ...data };
 }

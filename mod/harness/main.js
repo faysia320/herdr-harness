@@ -657,6 +657,11 @@ export default class Harness extends View {
       }
       if (p.installs) card.child(line(`의존성 설치 ${p.installs}건 · 평균 ${p.installMean} ms`))
         .child(line(Object.entries(p.methods).map(([method, count]) => `${method} ${count}건`).join(" · ")));
+      if (p.failedInstalls || p.timedOutInstalls) {
+        card.child(line(`설치 실패 ${p.failedInstalls}건 · 시간 초과 ${p.timedOutInstalls}건`));
+        const codes = Object.entries(p.errorCodes);
+        if (codes.length) card.child(line(`오류 코드 · ${codes.map(([code, count]) => `${code} ${count}건`).join(" · ")}`));
+      }
     }
     return card;
   }

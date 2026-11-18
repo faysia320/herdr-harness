@@ -120,7 +120,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 |---|---|---|
 | `preparation` | 공통 런처 | `project`, `command`(CLI 하위 명령), `acquired`, `wait_ms`(순서 대기), `run_ms`(슬롯 점유), `exit` |
 | `heavy` | `bin/heavy.mjs` | `cwd`, `label`, `slot`(0부터), `wait_ms`, `run_ms`, `exit` |
-| `deps-install` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `trigger`(first-use·stamp-mismatch·forced), `install_ms`, `import_method`(hardlink·clone·copy·unknown), `store_dir`(선택), `result`(ok·failed·timeout) |
+| `deps-install` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `trigger`(first-use·stamp-mismatch·forced), `install_ms`, `import_method`(hardlink·clone·copy·unknown), `store_dir`(선택), `result`(ok·failed·timeout), `error_code`(선택) |
 | `first-check` | 저장소 어댑터 | `project`, `task`(선택), `worktree`, `label`, `run_ms`, `result` |
 
 로컬 공간의 하네스 패널이나 기본 브리핑에서 **준비·자원** 카드를 펼치면 이 PC의 준비 슬롯과 시험·빌드 슬롯을 15초마다 조회한다. 카드는 설치 프로그램이 mod 폴더에 기록한 `release.json`에서 해당 버전의 조회 명령을 찾는다. 준비 슬롯에는 프로젝트·소유 PID·시작 후 경과 시간이 나온다. 종료된 소유자와 형식을 확인할 수 없는 잠금은 별도로 표시한다.
@@ -132,6 +132,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 - 어댑터는 실제 설치·첫 검사를 호출한 곳에서 `node <release>/bin/metric.mjs <종류> '<JSON>'`으로 남긴다. 정의된 종류·필드(상속 속성 제외)만 받고, 잘못된 입력은 파일을 만들지 않고 2로 끝난다. 이 CLI의 실패로 본 명령의 결과를 바꾸지 않는다.
 - `deps-install`은 설치를 실제로 수행한 호출에만 남긴다. 표식을 재사용했거나 다른 호출의 설치를 기다린 호출은 설치 횟수로 세지 않는다. `first-check.run_ms`에는 ensure 설치와 대기 시간을 넣지 않는다.
 - `import_method`는 pnpm 출력이나 파일 연결 확인으로 관측한 경우에만 적고, 모르면 `unknown`으로 둔다.
+- 설치 실패나 시간 초과에서 도구가 보고한 오류 코드가 있으면 `error_code`에 코드 하나만 넣는다(예: `ENAMETOOLONG`). 형식은 `^E[A-Z0-9_]{1,40}$`이다. 메시지·경로·숫자 종료 코드는 이 필드에 넣지 않는다. 성공했거나 코드를 확인할 수 없으면 필드를 생략한다. 시간 제한으로 중단됐는지는 기존 `result`로 기록한다. 자원 카드는 코드가 없는 기존 기록도 실패·시간 초과 건수에 포함하고, 오류 코드별 건수는 코드가 있는 기록에서만 센다. 어댑터는 이 필드를 지원하는 릴리스로 binding을 갱신한 뒤부터 전송한다.
 - 공통 런처와 heavy 실행기의 기록 실패는 stderr 경고만 남기며 명령 결과를 바꾸지 않는다. 각 binding은 고정된 release를 쓰므로 기능을 켤 저장소는 재설치하고 실제 진입점으로 smoke를 확인한다.
 - 2026-11-18 참고값(E: ReFS, pnpm 9.7.0, SW 명세 23개, `--ignore-scripts`): 빈 store 6.6초, 찬 store 2.6초, store와 hardlink 확인. 설치 스크립트를 포함한 실제 worktree 값은 이 규약으로 다시 잰다.
 

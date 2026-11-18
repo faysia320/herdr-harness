@@ -74,3 +74,17 @@ test('매우 긴 손상 행도 뒤쪽의 UTF-8 정상 행을 보존하고 바이
   writeFileSync(join(f.metrics, 'deps-install.jsonl'), rows.join('\n'));
   assert.deepEqual(resourceStatus(f.env).projects.map(p => [p.project, p.installs]), [['프로젝트', 1]]);
 });
+
+test('프로젝트별 설치 실패·시간 초과에는 코드 없는 기록을 포함하고 관측된 오류 코드만 집계한다', t => {
+  const f = fixture(t); mkdirSync(f.metrics);
+  const sw = install('SW', 50, 'unknown'), vdp = install('VDP', 100, 'hardlink');
+  const rows = [sw, { ...sw, result: 'failed' }, { ...sw, result: 'timeout' },
+    { ...sw, result: 'failed', error_code: 'ENAMETOOLONG' }, { ...sw, result: 'failed', error_code: 'ENAMETOOLONG' },
+    { ...sw, result: 'timeout', error_code: 'ETIMEDOUT' }, { ...vdp, result: 'failed', error_code: 'ENAMETOOLONG' },
+    { ...sw, result: 'failed', error_code: 'ENOENT: missing file' }];
+  writeFileSync(join(f.metrics, 'deps-install.jsonl'), rows.map(r => JSON.stringify(r)).join('\n'));
+  const summary = resourceStatus(f.env).projects;
+  assert.deepEqual(summary.map(p => [p.project, p.installs, p.failedInstalls, p.timedOutInstalls, p.errorCodes]), [
+    ['SW', 6, 3, 2, { ENAMETOOLONG: 2, ETIMEDOUT: 1 }], ['VDP', 1, 1, 0, { ENAMETOOLONG: 1 }],
+  ]);
+});

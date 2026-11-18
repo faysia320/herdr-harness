@@ -29,6 +29,17 @@ test('종류별 규약 필드만 받고 공통 머리말을 붙인다', () => {
   assert.throws(() => metricRecord('heavy', { ...heavy, slot: -1 }), /slot/);
 });
 
+test('설치 오류 코드는 실패·시간 초과에서만 선택할 수 있고 원문과 경로를 거부한다', () => {
+  const failed = { ...install, result: 'failed' };
+  assert.equal(metricRecord('deps-install', { ...failed, error_code: 'ENAMETOOLONG' }).error_code, 'ENAMETOOLONG');
+  assert.equal(metricRecord('deps-install', { ...install, result: 'timeout', error_code: 'ETIMEDOUT' }).error_code, 'ETIMEDOUT');
+  for (const value of ['E1', 'ERR_PNPM_FETCH_404', 'E' + 'X'.repeat(40)])
+    assert.equal(metricRecord('deps-install', { ...failed, error_code: value }).error_code, value);
+  for (const value of [null, 127, 'E', 'E' + 'X'.repeat(41), 'enametoolong', 'ENOENT\n', 'ENOENT: file missing', 'E:/tmp/path'])
+    assert.throws(() => metricRecord('deps-install', { ...failed, error_code: value }), /error_code/);
+  assert.throws(() => metricRecord('deps-install', { ...install, error_code: 'ENAMETOOLONG' }), /error_code/);
+});
+
 test('상속된 속성은 종류나 필드로 받지 않는다', () => {
   for (const kind of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) assert.throws(() => metricRecord(kind, {}), /알 수 없는 계측 종류/);
   for (const field of ['toString', 'constructor', 'valueOf']) assert.throws(() => metricRecord('deps-install', { ...install, [field]: 'x' }), new RegExp(`정의되지 않은 필드: ${field}`));

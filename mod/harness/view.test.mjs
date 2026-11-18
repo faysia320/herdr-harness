@@ -57,12 +57,14 @@ test('준비·자원 카드는 펼쳤을 때만 읽고, 진행 중인 조회를 
   assert.deepEqual(calls[0], { tool: 'node', args: ['C:/fixture-release/bin/resource-status.mjs'], options: { timeout: 5000 } });
   const data = { limit: 200, preparation: { state: 'busy', project: 'fixture', pid: 42, started: new Date().toISOString() },
     heavy: [{ state: 'unknown' }, { state: 'free' }], projects: [{ project: 'fixture', preparations: 2, acquired: 1,
-      wait: [10, 50], run: [100, 100], missed: 1, nonzero: 0, noExit: 1, installs: 1, installMean: 2500, methods: { hardlink: 1 } }] };
+      wait: [10, 50], run: [100, 100], missed: 1, nonzero: 0, noExit: 1, installs: 3, installMean: 2500, methods: { hardlink: 1, unknown: 2 },
+      failedInstalls: 1, timedOutInstalls: 1, errorCodes: { ENAMETOOLONG: 1 } }] };
   finish({ code: 0, stdout: JSON.stringify(data) });
   await Promise.all(jobs); v.render();
   assert.ok(s.texts.some(l => l.includes('fixture · PID 42 · 시작 후')));
   for (const part of ['시험·빌드 슬롯 1 · 잠금 정보 확인 필요', '시험·빌드 슬롯 2 · 비어 있음', '10 ms / 50 ms', '100 ms / 100 ms',
-    '미획득 1건', '종료 코드 없음 1건', '평균 2500 ms', 'hardlink 1건']) assert.ok(s.texts.some(l => l.includes(part)), part);
+    '미획득 1건', '종료 코드 없음 1건', '평균 2500 ms', 'hardlink 1건', '설치 실패 1건 · 시간 초과 1건', '오류 코드 · ENAMETOOLONG 1건'])
+    assert.ok(s.texts.some(l => l.includes(part)), part);
   v.refreshResources(cx); await Promise.resolve();
   finish({ code: 2, stdout: '' }); await Promise.all(jobs);
   s.texts.length = 0; v.render(); assert.ok(s.texts.includes('활성 릴리스의 자원 조회에 실패했습니다.'));
