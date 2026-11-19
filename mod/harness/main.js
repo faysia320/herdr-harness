@@ -2,7 +2,7 @@ import { CONTRACT_VERSION as CONTRACT } from './contract.js';
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, exec, readTextFile, watchFolder, terminals, spaces, panes, machines, shared, setShared, theme, run, notify, playSound, props, closeOverlay, hc } from "herdr";
-import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage, workflowPhase, workflowLabel } from "./logic.js";
+import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage, workflowPhase, workflowLabel, v2Stages, v2Progress } from "./logic.js";
 import { closedByDecision, decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 import { briefingContext, taskActivity, needsTerminal } from "./context.js";
 
@@ -19,11 +19,10 @@ const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
 
 // 화면에만 쓰는 한국어 이름. 대장 값(계약 코드값)은 그대로 둔다.
 const LABEL = { QUEUED: "대기", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", IMPLEMENTING: "구현", QA: "QA", DONE: "QA 통과", BLOCKED: "막힘", FAILED: "실패" };
-const STAGE = { research: "조사", architect: "설계 검토", implement: "구현", qa: "QA" };
+const STAGE = { research: "조사", architect: "설계 검토", implement: "구현", qa: "QA", publish: "PR 게시", ci: "CI", merged: "병합" };
 const AWAIT = { "ac-approval": "AC 승인 대기", decision: "결정 대기", permission: "권한 대기" };
 // 진행 막대 4칸: 조사 → 구현 → QA → 완료
 const PHASES = ["조사", "구현", "QA", "로컬 QA 통과"];
-const V2_PHASES = ["조사", "구현", "QA", "게시", "CI", "병합"];
 const PHASE_OF_STATE = { QUEUED: -1, RESEARCHING: 0, READY_TO_IMPLEMENT: 1, IMPLEMENTING: 1, QA: 2, DONE: 3 };
 const PHASE_OF_STAGE = { research: 0, architect: 0, implement: 1, qa: 2 };
 const taskLabel = (task) => closedByDecision(task) ? "결정 종결" : workflowLabel(task) ?? LABEL[task.state] ?? task.state;
@@ -87,6 +86,7 @@ async function load(project) {
     const eventLines = (text ?? "").split("\n").filter((s) => s.trim());
     const partial = text === null || eventLines.some((s) => !parse(s));
     let maxParallel = config.limits?.max_parallel ?? config.limits?.max_parallel_tasks;
+    let execution, workflow;
     const bindingText = await readTextFile(`${dir}/harness-binding.json`);
     if (bindingText) {
       const binding = parse(bindingText);
@@ -94,12 +94,26 @@ async function load(project) {
       if (binding.adapterConfig) {
         const adapter = parse(await readTextFile(binding.adapterConfig));
         const policy = parse(await readTextFile(`${binding.release.replaceAll('\\', '/')}/policy/execution.json`));
+        execution = policy;
         if (adapter?.project?.id !== id || policy?.version !== 1) throw new Error("공통 실행 정책을 읽지 못했습니다");
         maxParallel = adapter.execution_overrides?.limits?.max_parallel ?? policy.limits?.max_parallel;
         if (!Number.isInteger(maxParallel) || maxParallel < 1) throw new Error("공통 실행 한도가 올바르지 않습니다");
       }
+      if (typeof binding.release === "string" && rawTasks.some(workflowPhase)) {
+        workflow = parse(await readTextFile(`${binding.release.replaceAll('\\', '/')}/policy/workflow.json`).catch(() => null));
+      }
     }
-    const tasks = rawTasks.map((t) => ({ ...normalize(t), waits: waitReasons(t, ledger, maxParallel, config.git?.overlap_exempt_paths), project: project.name }));
+    const tasks = rawTasks.map((t) => {
+      const task = { ...normalize(t), waits: waitReasons(t, ledger, maxParallel, config.git?.overlap_exempt_paths), project: project.name };
+      if (workflowPhase(t)) {
+        task.steps = v2Stages(t, execution);
+        task.models = task.steps.flatMap((stage) => {
+          const model = stage === "publish" ? workflow?.delivery?.publisher?.model : t.overrides?.[stage]?.model ?? workflow?.roles?.[stage]?.model;
+          return workflow?.version === 2 && typeof model === "string" && model ? [`${STAGE[stage]} · ${model}`] : [];
+        });
+      }
+      return task;
+    });
     const events = lines(text).filter((e) => e.event === "state" && e.project === id)
       .map((e) => ({ at: time(e.at), task: e.task, from: e.from, to: e.to, why: e.why ?? "", x_closure: e.x_closure ?? null, project: project.name }));
     const inbox = decisionInbox(await readTextFile(`${dir}/decisions.json`).catch(() => undefined), id);
@@ -256,11 +270,8 @@ export default class Harness extends View {
     const stopped = task.state === "BLOCKED" || task.state === "FAILED";
     const phase = workflowPhase(task);
     let at = stopped ? PHASE_OF_STATE[task.resume] ?? PHASE_OF_STAGE[task.stage] ?? 0 : PHASE_OF_STATE[task.state] ?? -1;
-    if (phase && task.state === "DONE") at = phase === "merged" ? 5 : -1;
-    else if (phase === "publish") at = 3;
-    else if (phase === "ci" || phase === "delivery-blocked") at = 4;
-    else if (phase === "blocked" || phase === "diagnose") at = 2;
-    const steps = phase ? V2_PHASES : PHASES;
+    const steps = phase ? task.steps.map((stage) => STAGE[stage]) : PHASES;
+    if (phase) at = task.steps.indexOf(v2Progress(task));
     return h_flex().gap(3).children(steps.map((name, i) => div().flex_1().h(3).rounded(2).tooltip(name)
       .bg(i < at || (task.state === "DONE" && at === steps.length - 1) ? tint(t.done, 0.7) : i === at ? color : t.border)));
   }
@@ -317,7 +328,10 @@ export default class Harness extends View {
     return v_flex().gap(3).pb(2)
       .child(div().text_color(t.muted).font_medium().child(totals.map((x) => `${STAGE[x.stage] ?? x.stage} ${span(x.ms)}`).join(" · ")))
       .children(rows.map((r) => h_flex().gap(8).items_center().when(Boolean(r.note), (e) => e.tooltip(r.note))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child([STAGE[r.stage] ?? r.stage, r.round ? `${r.round}회차` : null].filter(Boolean).join(" ")))
+        .child(div().flex_1().min_w(0).whitespace_normal().text_color(t.dim).child([
+          [STAGE[r.stage] ?? r.stage, r.round ? `${r.round}회차` : null].filter(Boolean).join(" "),
+          workflowPhase(task) && r.model,
+        ].filter(Boolean).join(" · ")))
         .child(div().flex_none().text_color(t.dim).child(span(r.ms)))
         .child(div().flex_none().w(64).truncate().text_color(tone[r.tone] ?? t.dim).child(r.result))));
   }
@@ -326,7 +340,7 @@ export default class Harness extends View {
     const rows = task.history.slice(-8).reverse();
     const phase = workflowPhase(task);
     const delivery = phase && task.x_flow.delivery;
-    const historyLabel = (state) => phase ? stateLabel(state, task) : LABEL[state] ?? state;
+    const historyLabel = (state, event) => phase ? stateLabel(state, task, event) : LABEL[state] ?? state;
     const meta = [
       phase && ["file", [
         `v2 · ${taskLabel(task)}`,
@@ -336,7 +350,7 @@ export default class Harness extends View {
       ].filter(Boolean).join(" · ")],
       task.branch && ["git-branch", task.branch],
       task.ticket && ["file", task.ticket],
-      task.run?.model && ["terminal", `${task.run.cli ?? ""} ${task.run.model}`.trim()],
+      !phase && task.run?.model && ["terminal", `${task.run.cli ?? ""} ${task.run.model}`.trim()],
       task.run?.outcome && ["circle-check", `최근 판정 ${task.run.outcome}`],
     ].filter(Boolean);
     return v_flex().gap(6).pt(6).border_t(1).border_color(t.border).text_size(11)
@@ -347,6 +361,9 @@ export default class Harness extends View {
       .children(meta.map(([icon, text]) => h_flex().gap(6).items_center().text_color(t.muted)
         .child(svg(ICON(icon)).size(12).flex_none().text_color(t.dim))
         .child(div().min_w(0).truncate().tooltip(text).child(text))))
+      .when(Boolean(task.models?.length), (e) => e.child(v_flex().gap(2)
+        .child(div().font_medium().text_color(t.muted).child("현재 위임 정책"))
+        .children(task.models.map((line) => div().whitespace_normal().text_color(t.dim).child(line)))))
       .when(task.runs.length > 0, (e) => e.child(this.runs(task, t)))
       .when(rows.length > 0, (e) => e.child(v_flex().gap(0).pt(2)
         .children(rows.map((h, i) => h_flex().gap(8).items_start()
@@ -356,7 +373,7 @@ export default class Harness extends View {
           .child(v_flex().flex_1().min_w(0).pb(4)
             .child(h_flex().gap(6)
               .child(div().flex_none().text_color(t.dim).child(clock(h.at)))
-              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${historyLabel(h.from) ?? "—"} → ${h.x_closure ? "결정 종결" : historyLabel(h.to)}`)))
+              .child(div().flex_none().text_color(i === 0 ? t.foreground : t.muted).child(`${historyLabel(h.from) ?? "—"} → ${h.x_closure ? "결정 종결" : historyLabel(h.to, h)}`)))
             .when(Boolean(h.why), (e) => e.child(div().text_color(t.dim).truncate().child(h.why))))))));
   }
 
@@ -565,7 +582,7 @@ export default class Harness extends View {
   changeCard(p, r, t) {
     const key = `change-${p.name}-${r.id}`, expanded = this.expanded.has(key);
     const color = ["qa", "closed", "merged"].includes(r.kind) ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
-    const body = r.body || `${stateLabel(r.from, r.task) ?? "—"} → ${stateLabel(r.to, r.task)}`;
+    const body = r.body || `${stateLabel(r.from, r.task) ?? "—"} → ${r.to === "DONE" ? r.title : stateLabel(r.to, r.task)}`;
     return v_flex().id(`more-${key}`).flex_none().min_w(0).py(8).gap(3).border_t(1).border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())

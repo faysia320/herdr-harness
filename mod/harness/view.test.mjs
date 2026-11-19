@@ -128,11 +128,56 @@ test('v2 목록과 펼친 카드가 게시·CI·병합을 구분하고 완료 �
     assert.equal(summary.includes('PR #12'), Boolean(delivery));
     assert.equal(summary.includes('병합 abababababab'), phase === 'merged');
     if (state === 'DONE') {
-      assert.ok(s.texts.includes('QA → 종결'));
+      assert.ok(s.texts.includes(phase === 'merged' ? 'QA → 병합 완료' : 'QA → 업무 종결'));
       assert.ok(!s.texts.some(text => text.includes('로컬 QA 통과') || text.includes('병합·배포는 별도 확인')));
       assert.equal(p.attentionRecords[0].kind, phase === 'merged' ? 'merged' : 'ended');
     }
   }
+});
+
+test('v2 설계 검토와 게시 정책을 표시하고 과거 위임 모델은 해당 회차에 보존한다', async () => {
+  const s = setup(); install(s);
+  const b = 'D:/fixture/state/harness-binding.json', release = 'D:/release';
+  s.files.set(b, JSON.stringify({ project: 'fixture', adapterConfig: 'D:/adapter.json', release }));
+  s.files.set('D:/adapter.json', JSON.stringify({ project: { id: 'fixture' } }));
+  s.files.set(release + '/policy/execution.json', JSON.stringify({
+    version: 1, limits: { max_parallel: 2 }, profiles: { design: { stages: ['research', 'architect', 'implement', 'qa'] } },
+    aliases: { high: 'design' },
+  }));
+  s.files.set(release + '/policy/workflow.json', JSON.stringify({ version: 2,
+    roles: { research: { model: 'research-default' }, architect: { model: 'architect-default' }, qa: { model: 'qa-default' } },
+    delivery: { publisher: { model: 'publisher-default' } } }));
+  const record = { ...task, state: 'RESEARCHING', profile: 'high', awaiting: null, blocked_reason: null,
+    overrides: { qa: { model: 'qa-task-override' } }, x_flow: { version: 2, phase: 'work' },
+    runs: [{ stage: 'research', round: 1, model: 'research-previous', status: 'done', outcome: 'ok' },
+      { stage: 'architect', round: 1, model: 'architect-default', status: 'running' }], current: { stage: 'architect', run: 1 } };
+  s.files.set(ledgerPath, JSON.stringify({ version: 1, project: 'fixture', tasks: { a: record } }));
+  const p = await s.load(project), v = new s.Harness();
+  const taskView = p.tasks[0];
+  assert.deepEqual(taskView.steps, ['research', 'architect', 'implement', 'qa', 'publish', 'ci', 'merged']);
+  assert.equal(logic.v2Progress(taskView), 'architect');
+  Object.assign(v, { projects: [p], expanded: new Set(), open: 'fixture/a' });
+  v.render();
+  for (const line of ['설계 검토 중', '현재 위임 정책', '조사 · research-default', 'QA · qa-task-override',
+    'PR 게시 · publisher-default', '조사 1회차 · research-previous']) assert.ok(s.texts.includes(line), line);
+  assert.deepEqual(logic.v2Stages({ runs: [] }), ['research', 'implement', 'qa', 'publish', 'ci', 'merged']);
+  s.files.delete(release + '/policy/workflow.json');
+  const older = await s.load(project);
+  assert.equal(older.stale, false);
+  assert.deepEqual(older.tasks[0].models, []);
+});
+
+test('재개한 업무의 이전 완료 행에 나중 병합 상태를 소급하지 않는다', () => {
+  const a = { at: 10, from: 'QA', to: 'DONE', why: '' };
+  const b = { at: 30, from: 'QA', to: 'DONE', why: '병합 SHA 확인: ' + 'a'.repeat(40) };
+  const t = { ...task, id: 'a', state: 'DONE', history: [a, { at: 20, from: 'DONE', to: 'QA' }, b],
+    x_flow: { version: 2, phase: 'merged' }, runs: [] };
+  const kinds = () => attention.importantRecords({ tasks: [t] }).filter(r => r.to === 'DONE').map(r => r.kind);
+  assert.deepEqual(kinds(), ['merged', 'ended']);
+  assert.equal(attention.stateLabel('DONE', t, a), '업무 종결');
+  t.state = 'QA'; t.x_flow.phase = 'repair';
+  assert.deepEqual(kinds(), ['merged', 'ended']);
+  assert.equal(attention.stateLabel('DONE', t, b), '병합 완료');
 });
 
 function refreshFixture() {

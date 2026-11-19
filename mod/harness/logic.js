@@ -17,7 +17,10 @@ export function workflowLabel(task) {
   if (!phase) return null;
   if (task.state === "DONE") return phase === "merged" ? "병합 완료" : "종결 상태 확인 필요";
   switch (phase) {
-    case "work": return null;
+    case "work":
+      if (task.state === "RESEARCHING" && task.current?.stage === "architect") return "설계 검토 중";
+      if (task.state === "RESEARCHING" && task.pending === "architect") return "설계 검토 대기";
+      return null;
     case "repair":
       if (task.state === "READY_TO_IMPLEMENT") return "재작업 대기";
       if (task.state === "IMPLEMENTING") return "재작업 중";
@@ -29,6 +32,26 @@ export function workflowLabel(task) {
     case "ci": return task.state === "QA" ? "CI 대기" : null;
     default: return "v2 단계 확인 필요";
   }
+}
+
+export function v2Stages(task, execution) {
+  const name = task.profile ?? execution?.default_profile;
+  const profile = execution?.profiles?.[execution.aliases?.[name] ?? name];
+  const architect = profile?.stages?.includes("architect") || task.current?.stage === "architect" ||
+    task.pending === "architect" || task.runs.some((run) => run.stage === "architect");
+  return ["research", ...(architect ? ["architect"] : []), "implement", "qa", "publish", "ci", "merged"];
+}
+
+export function v2Progress(task) {
+  const phase = workflowPhase(task);
+  if (task.state === "DONE") return phase === "merged" ? "merged" : null;
+  if (phase === "delivery-blocked" || phase === "ci") return "ci";
+  if (phase === "publish") return "publish";
+  if (phase === "blocked" || phase === "diagnose") return "qa";
+  const state = ["FAILED", "BLOCKED"].includes(task.state) ? task.resume ?? task.state : task.state;
+  if (state === "RESEARCHING") return task.stage === "architect" ? "architect" : "research";
+  if (state === "QUEUED") return null;
+  return IDLE_STAGE[state] ?? task.stage;
 }
 
 // Herdr readTextFile의 한도는 UTF-8 1 MiB다. 호스트에 Node의 Buffer를 요구하지 않는다.
@@ -83,7 +106,7 @@ export function timeline(runs, now) {
     const end = live ? now : time(run.ended);
     const failed = run.outcome && !TONE[run.outcome];
     return {
-      stage: run.stage, round: run.round ?? null, ms: started && end ? end - started : 0, live, note: run.note ?? null,
+      stage: run.stage, model: run.model, round: run.round ?? null, ms: started && end ? end - started : 0, live, note: run.note ?? null,
       result: run.outcome ? RESULT[run.outcome] ?? run.outcome : STATUS[run.status] ?? run.status ?? "",
       tone: live ? "live" : failed ? "bad" : TONE[run.outcome] ?? (STATUS[run.status] ? "warn" : null),
     };

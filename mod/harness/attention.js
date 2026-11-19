@@ -8,7 +8,10 @@ export const projectKey = (p) => JSON.stringify([p.root.replaceAll("\\", "/").re
 export const seenKey = (p) => `harness.attention.v1.${projectKey(p)}`;
 // 사용자 결정으로 QA 게이트를 예외 처리해 병합·종결한 업무. DONE이지만 로컬 QA 통과가 아니다.
 export const closedByDecision = (t) => t?.state === "DONE" && t.x_closure?.kind === "user-decision";
-export const stateLabel = (s, task) => ({ DONE: task && workflowPhase(task) ? "종결" : "로컬 QA 통과", FAILED: "실패", BLOCKED: "막힘", QA: "QA", IMPLEMENTING: "구현", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", QUEUED: "대기" }[s] ?? s);
+export const stateLabel = (s, task, event) => {
+  if (s === "DONE" && event?.to === "DONE") return TITLE[doneKind(event, task)];
+  return ({ DONE: task && workflowPhase(task) ? "종결" : "로컬 QA 통과", FAILED: "실패", BLOCKED: "막힘", QA: "QA", IMPLEMENTING: "구현", RESEARCHING: "조사", READY_TO_IMPLEMENT: "구현 대기", QUEUED: "대기" }[s] ?? s);
+};
 
 export const openRequests = (p) => (p.requests ?? []).filter((r) => r.status === "open").sort((a, b) => at(a.created) - at(b.created) || a.id.localeCompare(b.id));
 
@@ -52,12 +55,20 @@ export function decisions(p) {
   }).sort((a, b) => b.affected.length - a.affected.length || (b.task.priority ?? 0) - (a.task.priority ?? 0) || a.since - b.since);
 }
 
+function doneKind(e, task) {
+  if (e.x_closure) return "closed";
+  if (!workflowPhase(task)) return "qa";
+  // SW·VDP가 해당 전이에 쓴 병합 근거는 업무가 다시 열려도 그대로다.
+  if (/^병합 SHA 확인: (?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(e.why ?? "")) return "merged";
+  // 구버전 대장의 근거 없는 행에는 현재 상태를 소급하지 않는다. 마지막 전이만 보완한다.
+  const last = task.history.at(-1);
+  if (task.state === "DONE" && task.x_flow.phase === "merged" && last?.to === "DONE" &&
+      at(last.at) === at(e.at) && last.from === e.from && (last.why ?? "") === (e.why ?? "")) return "merged";
+  return "ended";
+}
+
 function kindOf(e, task) {
-  if (e.to === "DONE") {
-    if (e.x_closure) return "closed";
-    if (!workflowPhase(task)) return "qa";
-    return workflowPhase(task) === "merged" ? "merged" : "ended";
-  }
+  if (e.to === "DONE") return doneKind(e, task);
   if (e.to === "FAILED") return "failed";
   if (e.to === "BLOCKED") return waitMark(e.why) ? "waiting" : "blocked";
   if (e.from === "BLOCKED") return "resolved";
@@ -77,6 +88,7 @@ export function importantRecords(p) {
     const kind = kindOf(e, tasks.get(e.task));
     if (!kind) continue;
     const id = JSON.stringify(["state", e.task, at(e.at), e.from ?? null, e.to, e.why ?? ""]);
+    if (!e.x_closure && records.get(id)?.kind === "closed") continue;
     add({ id, task: tasks.get(e.task), kind, at: at(e.at), body: str(e.why), from: e.from, to: e.to });
   }
   for (const t of tasks.values()) {
