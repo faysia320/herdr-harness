@@ -3,6 +3,7 @@ import { workflowLabel, workflowPhase } from './logic.js';
 // 사람의 확인에 필요한 정보만 계산한다. 대장 변경·자동 승인·문장 의미 추론은 하지 않는다.
 export const at = (value) => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
 const str = (value) => typeof value === "string" ? value.trim() : "";
+const excerpt = (value) => value.length > 88 ? value.slice(0, 87).trimEnd() + "…" : value;
 const active = (p) => p.tasks.filter((t) => !t.archived);
 export const projectKey = (p) => JSON.stringify([p.root.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase(), p.projectId]);
 export const seenKey = (p) => `harness.attention.v1.${projectKey(p)}`;
@@ -20,6 +21,35 @@ export const openRequests = (p) => (p.requests ?? []).filter((r) => r.status ===
 export const userPaused = (task) => task.state === "BLOCKED" && !task.awaiting && !str(task.x_pending_decision)
   && /^(?:사용자 )?중단:\s*사용자 요청[.!。]?\s*$/.test(str(task.reason));
 export const pausedTasks = (p) => active(p).filter(userPaused);
+
+export const needsAnswer = (task) => task.state === "BLOCKED" &&
+  (["permission", "decision", "ac-approval"].includes(task.awaiting) || Boolean(str(task.x_pending_decision)));
+
+export function qaEvidence(task) {
+  const result = task.x_flow?.verification;
+  if (!task.candidate?.fingerprint || result?.candidate !== task.candidate.fingerprint ||
+      !["FAIL", "BLOCKED", "CONDITIONAL PASS"].includes(result.verdict) || !Array.isArray(result.findings)) return [];
+  return result.findings.map((f) => str(f?.evidence)).filter(Boolean);
+}
+
+// 이전 대장의 병합 메모는 Lead의 보고로만 표시한다. 대장의 상태나 병합 증명을 바꾸지는 않는다.
+export function blockedSummary(d) {
+  const task = d.task, flow = task.x_flow;
+  const reason = d.reason.replace(/^(?:사용자 )?중단:\s*/, "").trim();
+  const brief = excerpt(reason);
+  const first = qaEvidence(task)[0];
+  const evidence = first ? excerpt(first) : null;
+  if (needsAnswer(task)) return { label: d.kind, text: d.question || brief, evidence };
+  if (["publish", "ci", "delivery-blocked"].includes(workflowPhase(task)) && flow.verification?.verdict === "PASS") {
+    const note = /^PR #(\d+) Lead 병합 [a-f0-9]{7,64}(?=\s*(?:\(|—|$))/i.exec(reason);
+    const pr = flow.delivery?.pr;
+    if ((note && (!pr || Number(note[1]) === pr)) || (pr && /^사용자 결정 [^:\n]+: DEV-14 기준 Lead 병합 — QA r\d+ PASS 후보/.test(reason))) {
+      return { label: "대장 종결 보류", source: pr ? "병합 증명" : "PR 게시 기록", text: `Lead 병합 기록 · PR #${pr || note[1]}`,
+        next: pr ? "Lead가 대장의 병합 증명을 확인할 차례입니다." : "대장에 최초 게시 PR 연결 기록이 없어 Lead 확인이 필요합니다." };
+    }
+  }
+  return { label: d.kind === "확인 필요" ? "진행 중단" : d.kind, text: brief, evidence };
+}
 
 export function decisionSignature(t) {
   const entry = [...(t.history ?? [])].reverse().find((h) => h.to === "BLOCKED");
@@ -44,7 +74,7 @@ export function decisions(p) {
   const tasks = active(p);
   return tasks.filter((t) => t.state === "BLOCKED" && !userPaused(t) && !waitingOn(t, p)).map((task) => {
     const entry = [...task.history].reverse().find((h) => h.to === "BLOCKED");
-    const affected = tasks.filter((t) => t.id !== task.id && t.state !== "DONE" && (t.depends ?? []).includes(task.id));
+    const affected = tasks.filter((t) => t.id !== task.id && !["DONE", "FAILED"].includes(t.state) && (t.depends ?? []).includes(task.id));
     return { task, affected, since: at(entry?.at) || task.updated,
       kind: ({ "ac-approval": "완료 기준 승인", decision: "방향 결정", permission: "권한 결정" })[task.awaiting]
         ?? workflowLabel(task)

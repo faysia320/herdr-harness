@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, exec, readTextFile, watchFolder, terminals, spaces, panes, machines, shared, setShared, theme, run, notify, playSound, props, closeOverlay, hc } from "herdr";
 import { span, timeline, waitReasons, ledgerCapacityNote, answerKey, answerMessage, instructionMessage, workflowPhase, workflowLabel, v2Stages, v2Progress } from "./logic.js";
-import { closedByDecision, decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
+import { closedByDecision, decisions, userPaused, needsAnswer, blockedSummary, qaEvidence, importantRecords, changes, snapshot, recordSnapshot, seenKey, validSeen, stateLabel, leadTerminal, decisionSignature, leadReport, decisionInbox, openRequests, waitingOn } from "./attention.js";
 import { briefingContext, taskActivity, needsTerminal } from "./context.js";
 
 // Herdr 하네스 대장을 읽기만 한다. 대장은 각 저장소의 Lead CLI만 쓴다(여기서 쓰면 전이 검사와 충돌한다).
@@ -243,15 +243,10 @@ export default class Harness extends View {
     this.seen = new Map([...now].map(([k, t]) => [k, { state: t.state, signature: decisionSignature(t), waiting: Boolean(t.waiting) }]));
   }
 
-  visible(p) {
-    return p.tasks
-      .filter((t) => !t.archived && (t.state !== "BLOCKED" || waitingOn(t, p)) && (this.showEnded || !ENDED.includes(t.state)))
-      .sort((a, b) => this.rank(a, p) - this.rank(b, p) || b.updated - a.updated);
-  }
-
-  // 선행 업무를 기다리는 막힘은 위임 대기 업무와 같은 자리에 둔다.
-  rank(task, p) {
-    return ORDER.indexOf(waitingOn(task, p) ? "READY_TO_IMPLEMENT" : task.state);
+  rank(task, p, linked) {
+    if (linked.has(task.id) || needsAnswer(task)) return -1;
+    if (task.state !== "BLOCKED") return ORDER.indexOf(task.state);
+    return ORDER.indexOf(waitingOn(task, p) ? "READY_TO_IMPLEMENT" : "QUEUED") + 0.5;
   }
 
   color(state, t) {
@@ -276,7 +271,7 @@ export default class Harness extends View {
       .bg(i < at || (task.state === "DONE" && at === steps.length - 1) ? tint(t.done, 0.7) : i === at ? color : t.border)));
   }
 
-  task(p, task, live, t) {
+  task(p, task, live, t, requests = []) {
     // 다른 업무를 기다리는 막힘은 사람 확인 대상이 아니므로 진행 목록에 대기로 둔다.
     const on = waitingOn(task, p), waits = on ? [{ text: `선행 업무 대기: ${on.join(", ")}` }] : task.waits;
     const key = `${p.name}/${task.id}`, opened = this.open === key, color = on ? t.dim : this.color(task.state, t);
@@ -311,6 +306,7 @@ export default class Harness extends View {
         .when(Boolean(waiting), (e) => e.child(div().font_medium().text_color(t.blocked).child(waiting)))
         .when(Boolean(task.reason), (e) => e.child(div().text_color(t.muted).child(task.reason)))))
       .when(Boolean(waits), (e) => e.child(this.waits(waits, t)))
+      .children(requests.map((r) => this.requestCard(p, r, live, t, true)))
       .when(opened, (e) => e.child(this.detail(task, t)));
   }
 
@@ -377,12 +373,27 @@ export default class Harness extends View {
             .when(Boolean(h.why), (e) => e.child(div().text_color(t.dim).truncate().child(h.why))))))));
   }
 
-  project(p, i, live, t) {
-    const tasks = this.visible(p);
+  project(p, live, t) {
+    const tasks = p.tasks.filter((task) => !task.archived && (this.showEnded || !ENDED.includes(task.state)));
+    const visible = new Set(tasks.map((task) => task.id)), linked = new Map(), standalone = [];
+    for (const request of openRequests(p)) {
+      if (!visible.has(request.task)) { standalone.push(request); continue; }
+      if (!linked.has(request.task)) linked.set(request.task, []);
+      linked.get(request.task).push(request);
+    }
+    const blocked = new Map(decisions(p).map((d) => [d.task.id, d]));
+    tasks.sort((a, b) => this.rank(a, p, linked) - this.rank(b, p, linked) || b.updated - a.updated);
     return v_flex().flex_none().min_w(0).gap(8)
-      .when(!p.note && !tasks.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
+      .children([p.note, p.historyNote, p.decisionNote, p.capacityNote].filter(Boolean).map((note) => div().whitespace_normal().text_size(11).text_color(t.muted).child(note)))
+      .children(standalone.map((r) => this.requestCard(p, r, live, t)))
+      .when(!p.note && !tasks.length && !standalone.length, (e) => e.child(h_flex().px(6).pb(4).gap(6).items_center().text_size(11).text_color(t.dim)
         .child(svg(ICON("check")).size(12).flex_none()).child("진행 중인 업무 없음")))
-      .children(tasks.map((task) => this.task(p, task, live, t)));
+      .children(tasks.map((task) => {
+        const requests = linked.get(task.id) ?? [];
+        if (blocked.has(task.id)) return this.decisionCard(p, blocked.get(task.id), live, t, requests);
+        if (userPaused(task)) return this.pausedCard(p, task, live, t, requests);
+        return this.task(p, task, live, t, requests);
+      }));
   }
 
   // 공간 생성 당시 folder보다 첫 터미널의 현재 경로를 우선한다.
@@ -419,14 +430,17 @@ export default class Harness extends View {
       .child(div().text_size(11).text_color(color ?? t.dim).child(String(count)));
   }
 
-  requestCard(p, request, live, t) {
-    return v_flex().flex_none().min_w(0).p(12).gap(7).rounded(8).bg(t.raised).border_1().border_color(t.blocked)
-      .child(div().text_size(10.5).text_color(t.blocked).child(`답변 대기 · ${request.id}`))
+  requestCard(p, request, live, t, embedded = false) {
+    const card = v_flex().flex_none().min_w(0).gap(6);
+    if (embedded) card.pt(7).border_t(1).border_color(t.border);
+    else card.p(10).rounded(8).bg(t.raised).border_1().border_color(t.blocked);
+    return card
+      .child(div().text_size(11).font_medium().text_color(t.blocked).child("내 답변 필요"))
       .child(div().whitespace_normal().font_semibold().text_size(12.5).child(request.question))
-      .child(div().text_size(10.5).text_color(t.dim).child(`${p.name}${request.task ? ` · ${request.task}` : " · 업무 등록 전 질문"}`))
+      .when(!embedded, (e) => e.child(div().text_size(11).text_color(t.muted).child(`${p.name} · ${request.task || "프로젝트 질문"}`)))
       .when(Boolean(request.reason), (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.muted).child(request.reason)))
       .when(Boolean(request.recommendation) && !request.options.some((o) => o.label === request.recommendation), (e) => e.child(div().text_size(11).text_color(t.accent).child(`Lead 추천: ${request.recommendation}`)))
-      .child(div().whitespace_normal().text_size(10.5).text_color(t.dim).child(`출처: ${request.source}`))
+      .child(div().whitespace_normal().text_size(11).text_color(t.muted).child(`질문 출처 · ${request.source}`).tooltip(request.id))
       .when(p.stale || p.decisionStatus !== "ready", (e) => e.child(div().text_size(10.5).text_color(t.blocked).child("마지막 정상 기록 · 현재 해소 여부 확인 필요")))
       .child(this.answerRow(p, request, live, t))
       .child(h_flex().child(this.leadButton(p, null, live, t, `request-${p.name}-${request.id}`)));
@@ -481,7 +495,7 @@ export default class Harness extends View {
     return JSON.stringify([p.root, p.projectId, d.task.id, d.signature]);
   }
 
-  instructionRow(p, d, live, t, detailKey = `decision-${p.name}-${d.task.id}`) {
+  instructionRow(p, d, live, t, detailKey = `decision-${p.name}-${d.task.id}`, offerInput = true) {
     this.instructions ??= new Map();
     const key = this.instructionKey(p, d), id = `${p.name}-${d.task.id}`, sent = this.instructions.get(key);
     const lead = !p.stale && !this.error && leadTerminal(p, live, d.task);
@@ -494,9 +508,9 @@ export default class Harness extends View {
     return v_flex().min_w(0).gap(5)
       .when(Boolean(sent), (e) => e.child(div().whitespace_normal().text_size(11).text_color(sent.status === "failed" ? t.blocked : t.muted)
         .child(sent.status === "sending" ? "Lead에게 지시 전달 중…" : sent.status === "sent" ? `전달됨 · Lead 처리 대기 — ${sent.answer}` : `전달 실패: ${sent.error}`)))
-      .when(!lead, (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.dim).child("최신 대장과 Lead 연결을 확인하면 지시를 보낼 수 있습니다.")))
+      .when(!lead && offerInput, (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.dim).child("최신 대장과 Lead 연결을 확인하면 지시를 보낼 수 있습니다.")))
       .child(h_flex().gap(6).items_center()
-        .when(Boolean(lead && this.answerInput) && !typing && sent?.status !== "sending", (e) => e.child(this.button(`instruction-${id}-edit`, sent?.status === "sent" ? "다른 지시 보내기" : sent?.status === "failed" ? "지시 다시 입력" : "Lead에게 지시…", edit, t)))
+        .when(Boolean(lead && this.answerInput) && (offerInput || sent) && !typing && sent?.status !== "sending", (e) => e.child(this.button(`instruction-${id}-edit`, sent?.status === "sent" ? "다른 지시 보내기" : sent?.status === "failed" ? "지시 다시 입력" : "Lead에게 지시…", edit, t)))
         .child(this.button(`more-${detailKey}`, this.expanded.has(detailKey) ? "근거 접기" : "근거 보기", (cx) => {
           this.expanded.has(detailKey) ? this.expanded.delete(detailKey) : this.expanded.add(detailKey); cx.notify();
         }, t)))
@@ -550,31 +564,39 @@ export default class Harness extends View {
     });
   }
 
-  decisionCard(p, d, live, t) {
+  decisionCard(p, d, live, t, requests = []) {
     const key = `decision-${p.name}-${d.task.id}`, expanded = this.expanded.has(key);
-    return v_flex().flex_none().min_w(0).p(10).gap(6).rounded(8).bg(tint(t.blocked, .05)).border_1().border_color(tint(t.blocked, .35))
-      .child(h_flex().gap(6).items_center()
-        .child(div().text_size(10.5).font_medium().text_color(t.blocked).child(d.kind))
-        .child(div().flex_1())
-        .child(div().text_size(10.5).text_color(t.dim).child(ago(d.since))))
+    const task = d.task, personal = needsAnswer(task), asks = personal || requests.length > 0;
+    const summary = blockedSummary(d);
+    const stage = workflowPhase(task) ? v2Progress(task) : task.stage;
+    const lastRun = task.runs.at(-1);
+    const round = lastRun?.round && lastRun.outcome ? `${STAGE[lastRun.stage] ?? "실행"} ${lastRun.round}차 ${lastRun.outcome}` : null;
+    const origin = [p.name, task.id, summary.source || (round && lastRun.stage === stage ? null : STAGE[stage]), round].filter(Boolean).join(" · ");
+    return v_flex().flex_none().min_w(0).p(10).gap(5).rounded(8).bg(t.raised).border_1().border_color(asks ? t.blocked : t.border)
+      .child(div().whitespace_normal().text_size(11).text_color(t.muted).child(origin))
       .child(div().whitespace_normal().font_medium().text_size(12.5).child(d.task.title ?? d.task.id))
-      .child(div().text_size(10.5).text_color(t.dim).child(d.task.id))
-      .child(div().whitespace_normal().text_size(12).text_color(t.foreground).child(d.reason))
-      .when(d.affected.length > 0, (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.muted)
-        .child(`이 업무를 기다리는 후속 ${d.affected.length}건 · ${d.affected.map((x) => x.id).join(", ")}`)))
-      .child(this.instructionRow(p, d, live, t))
+      .child(div().text_size(11).font_medium().text_color(asks ? t.blocked : t.muted).child(summary.label))
+      .when(Boolean(summary.evidence), (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.muted).child(`QA 발견 근거 · ${summary.evidence}`)))
+      .when(!requests.some((r) => r.question === summary.text || r.reason === summary.text), (e) =>
+        e.child(div().whitespace_normal().text_size(12).child(summary.text)))
+      .when(!requests.length, (e) => e.child(div().whitespace_normal().text_size(11).text_color(personal ? t.blocked : t.muted).child(summary.next ??
+        (personal ? "내 답변 필요 · Lead에게 결정을 전달하세요." : p.decisionStatus === "ready" && !p.stale && !this.error ? "Lead 확인 대기 · 등록된 답변 요청 없음" : "결정함 갱신 후 답변 요청 확인"))))
+      .children(requests.map((r) => this.requestCard(p, r, live, t, true)))
+      .child(this.instructionRow(p, d, live, t, key, !requests.length && (personal || expanded)))
       .when(expanded, (e) => e
-        .when(Boolean(d.question && d.question !== d.reason), (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.muted).child(d.question)))
-        .child(div().whitespace_normal().text_size(11).text_color(t.dim).child("등록된 선택지 없음 · 자유 입력 지시를 Lead에게 전달할 수 있습니다."))
-        .child(div().text_size(11).text_color(t.dim).child("답하기 전: 이 업무의 대기 상태 유지"))
+        .child(div().text_size(11).text_color(t.muted).child(`업무 대장 원문 · ${ago(d.since)}`))
+        .child(div().whitespace_normal().text_size(12).child(d.reason))
+        .children(qaEvidence(task).map((text) => div().whitespace_normal().text_size(11).text_color(t.muted).child(text)))
+        .when(d.affected.length > 0, (e) => e.child(div().whitespace_normal().text_size(11).text_color(t.muted).child(`이 업무를 기다리는 후속 · ${d.affected.map((x) => x.id).join(", ")}`)))
         .child(this.detail(d.task, t)));
   }
 
-  pausedCard(p, task, live, t) {
+  pausedCard(p, task, live, t, requests = []) {
     const key = `paused-${p.name}-${task.id}`;
     return v_flex().flex_none().min_w(0).py(8).gap(5).border_t(1).border_color(t.border)
       .child(div().whitespace_normal().font_medium().text_size(12).child(task.title ?? task.id))
       .child(div().text_size(11).text_color(t.dim).child(`${task.id} · 사용자 요청으로 중단`))
+      .children(requests.map((r) => this.requestCard(p, r, live, t, true)))
       .child(this.instructionRow(p, { task, signature: decisionSignature(task) }, live, t, key))
       .when(this.expanded.has(key), (e) => e.child(this.detail(task, t)));
   }
@@ -614,20 +636,6 @@ export default class Harness extends View {
         // 화면에 적재된 변화만 읽음 처리하며 결정함과 업무 상태는 바꾸지 않는다.
         setShared(seenKey(p), snapshot(p, Date.now(), shared(seenKey(p))));
       }, t).tooltip("접힌 변화를 포함해 이 저장소의 변화를 모두 확인합니다. 승인하거나 업무를 재개하지 않습니다.")));
-  }
-
-  attention(shown, live, t) {
-    const requests = shown.flatMap((p) => openRequests(p).map((request) => ({ p, request })));
-    const inbox = shown.flatMap((p) => decisions(p).map((d) => ({ p, d })))
-      .sort((a, b) => b.d.affected.length - a.d.affected.length || (b.d.task.priority ?? 0) - (a.d.task.priority ?? 0) || a.d.since - b.d.since);
-    return v_flex().flex_none().min_w(0).gap(8)
-      .when(Boolean(requests.length || inbox.length), (e) => e.child(this.section("내 결정·확인", `질문 ${requests.length} · 막힘 ${inbox.length}`, t.blocked, t)))
-      .children(shown.filter((p) => p.note || p.historyNote).map((p) => div().px(2).text_size(11).text_color(t.blocked).child(`${p.name} · ${p.note ?? p.historyNote}`)))
-      .children(requests.map(({ p, request }) => this.requestCard(p, request, live, t)))
-      .children(shown.filter((p) => p.decisionNote).map((p) => div().px(2).text_size(11).text_color(t.muted).child(`${p.name} · ${p.decisionNote}`)))
-      .children(shown.filter((p) => p.capacityNote).map((p) => div().text_size(11).text_color(t.blocked).child(p.capacityNote)))
-      .when(!inbox.length && !requests.length, (e) => e.child(div().py(4).text_size(11).text_color(t.muted).child(shown.some((p) => p.stale || p.decisionStatus !== "ready") || this.error ? "최신 결정 상태를 확인할 수 없습니다." : "지금 내 답변을 기다리는 일은 없습니다.")))
-      .children(inbox.map(({ p, d }) => this.decisionCard(p, d, live, t)));
   }
 
   refreshResources(cx) {
@@ -747,11 +755,12 @@ export default class Harness extends View {
 
   contextHeader(context, shown, t, overlay) {
     const p = shown[0], tasks = (p?.tasks ?? []).filter((x) => !x.archived);
-    const needs = p ? decisions(p).length + openRequests(p).length : context.agents.filter(needsTerminal).length;
+    const requests = p ? openRequests(p) : [];
+    const needs = p ? requests.length + tasks.filter((task) => needsAnswer(task) && !requests.some((r) => r.task === task.id)).length : context.agents.filter(needsTerminal).length;
     const unseen = p ? changes(p, shared(seenKey(p))).length : null;
     const mode = ["unavailable", "loading"].includes(context.kind) ? "연결 확인 필요" : p ? p.stale || this.error ? "하네스 확인 필요" : "하네스 연결" : this.error || this.loading ? "하네스 연결 확인 중" : "기본 브리핑";
     const ready = p && !p.stale && !this.error && p.decisionStatus === "ready";
-    const summary = p ? [ready ? needs ? `내 결정·확인 ${needs}` : "내 답변 필요 없음" : "결정 상태 확인 필요", p.stale || this.error ? "업무 상태 확인 필요" : `진행 ${tasks.filter((x) => !ENDED.includes(x.state) && (x.state !== "BLOCKED" || waitingOn(x, p))).length}`, pausedTasks(p).length ? `사용자 중단 ${pausedTasks(p).length}` : null, unseen ? `새 변화 ${unseen}` : null].filter(Boolean).join(" · ")
+    const summary = p ? [ready ? needs ? `내 답변 필요 ${needs}건` : "내 답변 필요 없음" : "결정 상태 확인 필요", p.stale || this.error ? "업무 상태 확인 필요" : null, unseen ? `새 변화 ${unseen}` : null].filter(Boolean).join(" · ")
       : ["unavailable", "loading", "none"].includes(context.kind) ? "현재 상태 확인 불가" : `에이전트 ${context.agents.length} · 터미널 확인 ${needs}`;
     return v_flex().flex_none().min_w(0).px(14).py(12).gap(6).border_b(1).border_color(t.border)
       .child(h_flex().gap(8).items_start()
@@ -787,23 +796,17 @@ export default class Harness extends View {
     const t = theme(), overlay = props()?.overlay;
     const live = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
     const context = this.context(), shown = context.project ? [context.project] : [];
-    const all = shown.flatMap((p) => p.tasks.filter((x) => !x.archived).map((x) => ({ ...x, waiting: Boolean(waitingOn(x, p)) })));
+    const activeCount = shown.flatMap((p) => p.tasks.filter((task) => !task.archived && !ENDED.includes(task.state))).length;
     const body = v_flex().id("harness-list").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(8).gap(8);
     if (this.error) body.child(div().text_size(11).text_color(t.ansi1).child(this.error));
-    if (shown.length) body.child(this.attention(shown, live, t));
-    if (showsLocalResources(context)) body.child(this.resourceCard(t));
     if (!shown.length) body.child(this.basic(context, t));
     else {
       body.child(h_flex().items_center().gap(6)
-          .child(this.section("진행 중", all.filter((x) => !ENDED.includes(x.state) && (x.state !== "BLOCKED" || x.waiting)).length, t.muted, t))
+          .child(this.section("업무 진행", `미종결 ${activeCount}건`, t.muted, t))
           .child(div().flex_1())
           .child(this.button("harness-ended", this.showEnded ? "종료 숨기기" : "종료 포함", (cx) => { this.showEnded = !this.showEnded; cx.notify(); }, t)))
-        .children(shown.map((p) => this.project(p, this.projects.indexOf(p), live, t)));
+        .children(shown.map((p) => this.project(p, live, t)));
       for (const p of shown) {
-        const paused = pausedTasks(p);
-        if (paused.length) body.child(v_flex().flex_none().min_w(0).gap(5)
-          .child(this.section("사용자 요청으로 중단", paused.length, t.muted, t))
-          .children(paused.map((task) => this.pausedCard(p, task, live, t))));
         const report = leadReport(p, live);
         if (report.available) body.child(h_flex().id(`lead-status-${p.name}`).py(4).gap(6).items_center().text_size(11).text_color(t.dim).cursor_pointer()
           .tooltip(report.text).on_click(() => run("agent.focus", { terminal: report.address }))
@@ -811,6 +814,7 @@ export default class Harness extends View {
           .child(div().flex_1().min_w(0).truncate().child(report.text)));
       }
     }
+    if (showsLocalResources(context)) body.child(this.resourceCard(t));
     return v_flex().id("harness").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(12)
       .child(this.contextHeader(context, shown, t, overlay))
       .child(body)

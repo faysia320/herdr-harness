@@ -1,11 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decisions, pausedTasks, importantRecords, changes, snapshot, recordSnapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
+import { decisions, pausedTasks, blockedSummary, importantRecords, changes, snapshot, recordSnapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
 
 const now = Date.parse('2026-11-09T02:00:00Z');
 const task = (id, state, patch = {}) => ({ id, state, title: id, reason: '', awaiting: null, updated: now - 1000, runs: [], history: [], depends: [], ...patch });
 const project = (tasks, events = []) => ({ name: 'fixture', projectId: 'fixture', root: 'D:/fixture', tasks, events, lead: 't7' });
 const transition = (id, from, to, why = '', delta = 1000) => ({ task: id, from, to, why, at: now - delta });
+
+test('막힌 업무의 QA 발견 근거는 같은 후보의 비통과 결과에서 가져온다', () => {
+  const verification = { candidate: 'old', verdict: 'FAIL', findings: [{ evidence: 'run.test.mjs · 입력 누락' }] };
+  const t = task('SW-1', 'BLOCKED', { candidate: { fingerprint: 'current' }, x_flow: { version: 2, phase: 'diagnose', verification } });
+  const [d] = decisions(project([t]));
+  assert.equal(blockedSummary(d).evidence, null);
+  verification.candidate = 'current';
+  assert.equal(blockedSummary(d).evidence, verification.findings[0].evidence);
+  verification.verdict = 'PASS';
+  assert.equal(blockedSummary(d).evidence, null);
+});
 
 test('명시적 사용자 중단은 결정에서 분리하며 결정 필드와 다른 막힘은 보존한다', () => {
   const p = project([

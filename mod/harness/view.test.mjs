@@ -350,7 +350,7 @@ test('일반 저장소는 기본 브리핑을 제공하고 하네스 대장·Git
   s.paneList[1].cwd = 'd:\\FIXTURE\\src'; s.clicks.clear(); v.render(s.cx);
   assert.equal(s.clicks.has('harness-tab-brief'), false);
   assert.equal(s.clicks.has('harness-scope'), false);
-  assert.ok(s.texts.includes('내 결정·확인'));
+  assert.ok(s.texts.includes('업무 진행'));
 });
 
 test('미등록 공간은 projects.json이 없어도 Git 화면을 만들지 않는다', () => {
@@ -384,9 +384,9 @@ test('결정·변화·진행은 한 화면에 있고 읽음·근거 보기·종�
   const v = new s.Harness();
   Object.assign(v, { projects: [p], expanded: new Set(), showEnded: false });
   v.render();
-  assert.ok(s.texts.includes('내 결정·확인')); assert.ok(s.texts.includes(task.blocked_reason));
-  assert.ok(s.texts.includes('진행 중'));
-  assert.ok(s.texts.indexOf('내 결정·확인') < s.texts.indexOf('진행 중'));
+  assert.ok(!s.texts.includes('내 결정·확인')); assert.ok(s.texts.includes(task.blocked_reason));
+  assert.ok(s.texts.indexOf('업무 진행') < s.texts.indexOf(task.title));
+  assert.equal(s.texts.filter(text => text === task.title).length, 1);
   assert.equal(s.clicks.has('page-progress'), false); assert.equal(s.clicks.has('page-attention'), false);
   assert.equal(s.clicks.has('task-fixture/a'), false); // 결정함과 진행 목록에 중복 표시하지 않는다.
   s.clicks.get('read-fixture')({}, s.cx);
@@ -412,6 +412,45 @@ test('읽기 실패 시 마지막 정상 자료는 남고 읽음·Lead 조작은
   v.render(); assert.equal(s.clicks.has('read-fixture'), false); assert.equal(s.clicks.has('lead-decision-fixture-a'), false);
 });
 
+test('Lead 병합 메모는 업무 진행에 한 번만 표시하고 답변 건수와 상세 근거를 분리한다', async () => {
+  const s = setup(); install(s);
+  const tasks = {};
+  for (const [id, pr, linked] of [['SW-0122',1131,true], ['SW-0123',1137,false], ['SW-0134',1165,true], ['SW-0135',1163,true]]) {
+    const reason = id === 'SW-0122' ? '중단: 사용자 결정 v2-revalidate-loop(권장안): DEV-14 기준 Lead 병합 — QA r5 PASS 후보, 필수 CI 확인' :
+      `중단: PR #${pr} Lead 병합 0419dfdf(DEV-14) — 대장 DONE은 proofOnly 반영 뒤 정리`;
+    tasks[id] = { ...task, id, title: id + ' 작업', awaiting: null, blocked_reason: reason, resume_state: 'QA',
+      runs: [{stage:'qa',round:5,outcome:'PASS',status:'done'}],
+      x_flow: { version:2, phase:linked?'ci':'publish', verification:{verdict:'PASS'}, delivery:linked?{pr}:null } };
+  }
+  tasks.old = { ...task, id:'old', state:'FAILED', depends:['SW-0123'] };
+  s.files.set(ledgerPath, JSON.stringify({version:1,project:'fixture',tasks}));
+  const path = project.root + '/state/decisions.json';
+  const inbox = {version:1,project:'fixture',requests:{}};
+  s.files.set(path, JSON.stringify(inbox));
+  const v = new s.Harness(); Object.assign(v,{expanded:new Set(),projects:[await s.load(project)]});
+  const draw = () => { s.texts.length = 0; s.clicks.clear(); v.render(); };
+  draw();
+  assert.ok(s.texts.some(x=>x.startsWith('내 답변 필요 없음')));
+  for (const id of Object.keys(tasks).filter(id=>id!=='old')) {
+    assert.equal(s.texts.filter(x=>x===tasks[id].title).length,1);
+    assert.ok(!s.texts.includes(tasks[id].blocked_reason));
+  }
+  assert.equal(s.texts.filter(x=>x==='대장 종결 보류').length,4);
+  assert.ok(s.texts.includes('fixture · SW-0123 · PR 게시 기록 · QA 5차 PASS'));
+  assert.ok(s.texts.includes('대장에 최초 게시 PR 연결 기록이 없어 Lead 확인이 필요합니다.'));
+  s.clicks.get('more-decision-fixture-SW-0123')({},s.cx); draw();
+  assert.ok(s.texts.includes(tasks['SW-0123'].blocked_reason));
+  assert.ok(!s.texts.some(x=>x.startsWith('이 업무를 기다리는 후속')));
+
+  inbox.requests.q = { id:'q',task:'SW-0123',question:'후속 기록 방식을 선택해 주세요.',source:'Lead',revision:1,status:'open',options:[] };
+  s.files.set(path,JSON.stringify(inbox)); v.projects=[await s.load(project)]; draw();
+  assert.ok(s.texts.some(x=>x.startsWith('내 답변 필요 1건')));
+  assert.ok(s.texts.includes('Lead 병합 기록 · PR #1137'));
+  assert.equal(s.texts.filter(x=>x===inbox.requests.q.question).length,1);
+  assert.ok(s.texts.indexOf(tasks['SW-0123'].title)<s.texts.indexOf(inbox.requests.q.question));
+  assert.ok(s.texts.indexOf(inbox.requests.q.question)<s.texts.indexOf(tasks['SW-0122'].title));
+});
+
 test('변화가 많아도 진행 업무가 함께 보이고 펼침·전체 읽음 범위가 명확하다', async () => {
   const s = setup(); install(s);
   const stamp = new Date().toISOString(), events = [];
@@ -428,7 +467,7 @@ test('변화가 많아도 진행 업무가 함께 보이고 펼침·전체 읽�
   const draw = () => { s.clicks.clear(); s.texts.length = 0; v.render(); };
   const changeCount = () => [...s.clicks.keys()].filter((k) => k?.startsWith('more-change-')).length;
   draw(); assert.equal(changeCount(), 3);
-  assert.ok(s.texts.indexOf('진행 중') < s.texts.indexOf('알아둘 변화'));
+  assert.ok(s.texts.indexOf('업무 진행') < s.texts.indexOf('알아둘 변화'));
   s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 0);
   assert.equal(attention.decisions(p).length, 1);
   s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 3);
@@ -461,7 +500,6 @@ test('Lead 진행 보고는 프로젝트 상태에만 표시하고 결정함에 
   const message = 'ITSM 5건 하네스 등록; 3건 조사 중, 2건 대기, 완료 보고 대기';
   Object.assign(s.terminalList[0], { status: 'done', report: { msg: message } });
   const v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set() });
-  const live = new Map([['t7', s.terminalList[0]]]);
   const draw = () => { s.clicks.clear(); s.texts.length = 0; v.render(); };
   draw();
   assert.ok(s.texts.includes(message));
@@ -470,9 +508,9 @@ test('Lead 진행 보고는 프로젝트 상태에만 표시하고 결정함에 
   for (const status of ['done', 'idle', 'working', 'blocked', 'error']) {
     s.terminalList[0].status = status;
     s.texts.length = 0; s.clicks.clear();
-    v.attention([p], live, {});
-    assert.ok(s.texts.includes('지금 내 답변을 기다리는 일은 없습니다.'));
-    assert.equal(s.texts.includes(message), false);
+    v.render();
+    assert.ok(s.texts.some(text => text.startsWith('내 답변 필요 없음')));
+    assert.equal(s.texts.filter(text => text === message).length, 1);
     assert.equal(s.texts.includes('Lead 응답 확인'), false);
     assert.equal(s.clicks.has('lead-report-fixture'), false);
   }
@@ -601,7 +639,7 @@ test('전체 이력은 로드 때 계산하고 반복 렌더·읽음은 재순�
   assert.equal(p.attentionRecords.length, 2000);
   Object.defineProperty(p.tasks[0], 'history', { get() { throw new Error('렌더에서 전체 이력을 다시 읽음'); } });
   const v = new s.Harness(); Object.assign(v, { projects: [p], expanded: new Set() });
-  for (let i = 0; i < 3; i++) { v.attention([p], new Map(), {}); v.changesFooter([p], {}); }
+  for (let i = 0; i < 3; i++) v.render();
   s.clicks.get('read-fixture')({}, s.cx);
   assert.equal(s.store.get(attention.seenKey(p)).ids.length, 2000);
   raw.tasks.a.history.push({ at: new Date().toISOString(), from: 'QA', to: 'DONE', why: '새 QA 결과' });
@@ -663,7 +701,7 @@ test('선택 후 질문 revision이나 공간이 바뀌면 오래된 카드의 �
   v.projects = [p]; s.spaceList[0].name = 'other'; send({}, s.cx); assert.equal(sends.length, 0);
 });
 
-test('막힘에는 자유 입력 지시를 붙이고 사용자 중단은 별도 영역으로 분리한다', async () => {
+test('업무 목록에서 직접 답할 항목을 구분하고 나머지 막힘에는 근거에서 선택적 지시를 연다', async () => {
   const s = setup(); install(s);
   const ledger = JSON.parse(s.files.get(ledgerPath));
   ledger.tasks.paused = { ...task, id: 'paused', title: '중단한 업무', awaiting: null, blocked_reason: '중단: 사용자 요청' };
@@ -672,9 +710,11 @@ test('막힘에는 자유 입력 지시를 붙이고 사용자 중단은 별도 
   const p = await s.load(project), v = new s.Harness();
   Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => '', set_value() {}, focus() {} } });
   v.render();
-  assert.ok(s.texts.includes('질문 0 · 막힘 2'));
-  assert.ok(s.texts.includes('사용자 요청으로 중단'));
+  assert.ok(s.texts.includes('미종결 3건'));
+  assert.ok(s.texts.includes('paused · 사용자 요청으로 중단'));
   assert.ok(s.clicks.has('instruction-fixture-a-edit'));
+  assert.equal(s.clicks.has('instruction-fixture-environment-edit'), false);
+  s.clicks.get('more-decision-fixture-environment')({}, s.cx); v.render();
   assert.ok(s.clicks.has('instruction-fixture-environment-edit'));
   assert.ok(s.clicks.has('instruction-fixture-paused-edit'));
   assert.equal(s.clicks.has('lead-paused-fixture-paused'), false);
