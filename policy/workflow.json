@@ -8,12 +8,15 @@
     "refactor": "보존할 동작·경계 확정 → 작은 변경 → 동작 동등성·소비처 검증"
   },
   "roles": {
-    "research": { "model": "gpt-6-astra", "effort": "high", "minutes": 30 },
+    "research": { "model": "gpt-6.2-astra", "effort": "high", "minutes": 30 },
     "architect": { "model": "claude-fable-5-2", "effort": "high", "minutes": 30 },
     "implement": { "model": "claude-opus-5-5", "effort": "high", "minutes": 60 },
-    "qa": { "model": "gpt-6.1-sol", "effort": "high", "minutes": 45 }
+    "qa": { "model": "gpt-6.2-sol", "effort": "high", "minutes": 45 }
   },
   "max_same_failure": 2,
   "max_repairs": 3,
-  "delivery": { "strategy": "squash", "base": "main", "poll_seconds": 30 }
+  "delivery": {
+    "publisher": { "cli": "codex", "model": "gpt-6-luna", "effort": "medium", "fast": false, "sandbox": "danger-full-access" },
+    "strategy": "squash", "base": "main", "poll_seconds": 30
+  }
 }

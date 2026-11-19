@@ -8,12 +8,12 @@
 - QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다.
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
-- 게시자는 기존 게시 스킬로 정확한 후보를 커밋·PR로 만들고 `flow-attach-pr ID --pr N`으로 연결한다. 커밋 blob과 QA 바이트·경로·Git mode를 대조한다. `next`는 worker 위임과 게시 후 조치를 함께 반환한다.
+- v2 업무가 독립 QA PASS 후 `publish`에 도달하면 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
 - `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
 - `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
 - CI 실패·필수 검사 누락·리뷰 조치는 즉시 `delivery-blocked`로 반환한다. `flow-resume --evidence`는 해결된 CI만 다시 확인하고, 코드 수정은 `--stage implement`, 요구사항 변경은 `--stage research`로 보낸다. watcher의 대기 상한 도달은 nonzero이며 완료로 보고하지 않는다.
 
-초기 역할은 조사 Astra/high, 설계 Fable/high, 구현 Opus/high(고위험 xhigh), 독립 검토 Sol/high다. v2는 재작업 횟수만으로 effort를 올리지 않는다. 역할별 30/30/60/45분은 진단 점검 시점이며 강제 종료·품질 축소 기준이 아니다. Lead는 기존 세션 모델을 유지하고, CI 대기·검사 실행·병합 조건 판정에는 추가 모델을 쓰지 않는다.
+v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 Opus/high(고위험 xhigh), 독립 QA에는 `gpt-6.2-sol`/high를 사용한다. 세 저장소의 PR 게시자는 Codex `gpt-6-luna`/medium이다. 정책은 다음 위임부터 적용한다. 조사·설계·구현·QA의 30/30/60/45분은 진단 점검 시점이며 재작업 횟수만으로 effort를 올리지 않는다. Lead는 기존 세션 모델을 사용하고, CI 대기와 병합 조건 판정은 스크립트가 수행한다.
 
 완료는 Git 병합 증명을 뜻한다. 운영 버전 통합검증·배포·티켓 전이는 별도 기존 절차를 유지한다. 실제 QA 단축 효과와 자동 병합은 fixture 결과만으로 실측 완료라고 부르지 않는다.
 

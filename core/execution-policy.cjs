@@ -80,6 +80,23 @@ function resolve(local, task, stage) {
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
+  return { ...role, argv: launchArgs(role, stage), policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
+}
+
+// 게시는 독립 QA가 끝난 뒤 Lead가 위임한다. 일반 작업 단계와 별개이므로 v1 프로필에 추가하지 않는다.
+function publisherCommand(task, project, id) {
+  if (task?.project !== project || task?.id !== id) fail('조회된 게시 업무의 프로젝트 또는 ID가 다르다.');
+  const flow = task.x_flow;
+  if (task.archived || task.state !== 'QA' || flow?.version !== 2 || flow.phase !== 'publish'
+    || flow.verification?.verdict !== 'PASS' || typeof flow.authorization !== 'string' || !flow.authorization.trim())
+    fail('독립 QA를 통과한 v2 게시 대기 업무가 필요하다.');
+  if (typeof task.worktree !== 'string' || !path.isAbsolute(task.worktree)) fail('게시 worktree의 절대 경로가 필요하다.');
+  const role = require('../policy/workflow.json').delivery.publisher;
+  roleCheck(role);
+  return { id, worktree: task.worktree, ...role, argv: launchArgs(role, 'publish') };
+}
+
+function launchArgs(role, stage) {
   // 여러 저장소의 에이전트가 한 PC를 나눠 쓴다. 병렬도 상한은 에이전트가 실행하는 명령의 환경으로, 무거운 작업 슬롯과 단계 규칙은 각 CLI의 지시로 전달한다.
   // 프로젝트 CLI는 argv를 그대로 실행하므로 회사 저장소를 고치지 않아도 같은 규칙이 적용된다.
   const { env, heavy_slots: slots } = defaults.resources;
@@ -87,12 +104,11 @@ function resolve(local, task, stage) {
     .replaceAll('{heavy}', path.join(__dirname, '../bin/heavy.mjs').replaceAll('\\', '/'))
     .replaceAll('{slots}', String(slots)).replaceAll('{env}', Object.keys(env).join('·'));
   // 하위 에이전트 화면은 사람이 보지 않는다. 사용자 statusline(Git Bash)이 짧은 실행이 끝날 때 고아로 남아 쌓이므로 빈 명령으로 끈다.
-  const argv = role.cli === 'codex'
+  return role.cli === 'codex'
     ? ['codex', '--no-daemon', '-m', role.model, '-c', `model_reasoning_effort="${role.effort}"`, '-c', `service_tier="${role.fast ? 'fast' : 'default'}"`, '-s', role.sandbox,
       ...Object.entries(env).flatMap(([key, value]) => ['-c', `shell_environment_policy.set.${key}="${value}"`]), '-c', `developer_instructions=${JSON.stringify(rules)}`]
     : ['claude', '--model', role.model, '--effort', role.effort, '--permission-mode', role.permission_mode,
       '--settings', JSON.stringify({ fastMode: role.fast, statusLine: { type: 'command', command: '' }, env }), '--append-system-prompt', rules];
-  return { ...role, argv, policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }
 
-module.exports = { configure, resolve };
+module.exports = { configure, resolve, publisherCommand };

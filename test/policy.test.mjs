@@ -57,6 +57,13 @@ test('재작업 상향은 max에서 멈추고 명시적 업무 예외는 자동 
 });
 
 test('v2는 재작업으로 모델 노력을 올리지 않고 고위험 별칭을 같은 정책으로 해석한다', () => {
+  for (const stage of ['research', 'qa']) {
+    const expected = stage === 'research' ? 'gpt-6.2-astra' : 'gpt-6.2-sol';
+    const role = resolve(local(), { x_flow: { version: 2 } }, stage);
+    assert.equal(role.model, expected);
+    assert.deepEqual(role.argv.slice(0, 4), ['codex', '--no-daemon', '-m', expected]);
+    assert.equal(role.effort, 'high');
+  }
   for (const profile of ['high', 'architecture', 'token', 'high-risk']) {
     assert.equal(resolve(local(), { profile, rework: 3, x_flow: { version: 2 } }, 'implement').effort, 'xhigh');
   }

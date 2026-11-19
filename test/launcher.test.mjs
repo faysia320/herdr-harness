@@ -21,6 +21,38 @@ writeFileSync(${JSON.stringify(pidFile)}, String(g.pid)); setInterval(() => {}, 
   return { dir, pidFile, script };
 }
 
+test('publisher-command는 세 저장소의 show를 읽고 v2 게시 대기 업무에서만 Luna 실행 인자를 돌려준다', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'herdr-publisher-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const script = join(dir, 'show.mjs'), data = join(dir, 'task.json'), file = join(dir, 'harness-binding.json');
+  writeFileSync(script, `import {readFileSync} from 'node:fs';
+const task = JSON.parse(readFileSync(process.argv[2]));
+if (process.argv.slice(3).join(' ') !== 'show ' + task.id) process.exit(7);
+console.log(JSON.stringify(task));`);
+  const built = build();
+  const flow = { version: 2, phase: 'publish', authorization: 'PR까지', verification: { verdict: 'PASS' } };
+  for (const [project, id] of [['smart-workspace', 'SW-0119'], ['vms-design-platform', 'VDP-053'], ['vp', 'VP-TASK-028']]) {
+    writeFileSync(file, JSON.stringify({ version: 1, release: built.release, manifestHash: built.manifestHash, project, command: [process.execPath, script, data], cwd: dir }));
+    const task = { id, project, worktree: dir, state: 'QA', x_flow: flow };
+    writeFileSync(data, JSON.stringify(task));
+    const args = [join(built.release, 'bin/harness.mjs'), '--binding', file, 'publisher-command'];
+    const result = run(process.execPath, [...args, id]);
+    assert.equal(result.code, 0, result.stderr);
+    const spec = JSON.parse(result.stdout);
+    assert.deepEqual([spec.id, spec.worktree, spec.releaseHash], [id, dir, built.manifestHash]);
+    assert.deepEqual(spec.argv.slice(0, 6), ['codex', '--no-daemon', '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="medium"']);
+    assert.deepEqual(JSON.parse(readFileSync(data)), task);
+    if (project !== 'vp') continue;
+    for (const patch of [{ x_flow: null }, { x_flow: { ...flow, phase: 'ci' } },
+      { x_flow: { ...flow, verification: { verdict: 'FAIL' } } }, { state: 'DONE' }, { project: 'other' }]) {
+      writeFileSync(data, JSON.stringify({ ...task, ...patch }));
+      const rejected = run(process.execPath, [...args, id]);
+      assert.equal(rejected.code, 2); assert.equal(rejected.stdout, '');
+    }
+    assert.equal(run(process.execPath, [...args, 'UNKNOWN-98']).code, 7);
+  }
+});
+
 test('시간 한도를 넘기면 자식이 띄운 손자 프로세스까지 끝내고 124로 알린다', async (t) => {
   const f = fixture(t);
   const r = await runTree(process.execPath, [f.script], { timeout: 1500 });
