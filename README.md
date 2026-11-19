@@ -17,6 +17,15 @@ v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 O
 
 완료는 Git 병합 증명을 뜻한다. 운영 버전 통합검증·배포·티켓 전이는 별도 기존 절차를 유지한다. 실제 QA 단축 효과와 자동 병합은 fixture 결과만으로 실측 완료라고 부르지 않는다.
 
+### DEV-14 동기화와 병합 증명
+
+저장소 어댑터는 검증된 binding release의 `core/delivery.cjs`에서 `dev14Version === 1`을 확인한 뒤 기존 `workflow(binding, {action:'delivery', ...})`에 `dev14: {candidate: task.candidate, mergeAuthorized, sensitivePaths}`를 추가한다. 이전 release는 이 옵션을 무시하므로 버전 확인에 실패하면 DEV-14 호출을 중단한다. `mergeAuthorized`는 Lead가 해당 업무의 사용자 권한과 미해소 결정을 확인한 결과다. PR까지만 허용된 업무에는 쓰기 권한을 주지 않는다. `sensitivePaths`에는 저장소 고유의 공용 설정·계약 파일이나 디렉터리를 상대 경로로 추가한다. 이 옵션을 보내지 않는 어댑터는 기존 고정 head/base 검사를 사용한다.
+
+- 최초 게시 head·base·tree, QA 보고서의 후보 지문, 해당 경로의 Git 모드·삭제 여부·바이트 SHA-256을 대조한다. main이 이동하면 양쪽 변경 경로의 교집합과 lockfile·CI·공통 설정·계약 변경을 확인한다. 충돌, 겹침, 민감 변경, 설명되지 않는 PR 커밋은 재검증 대상이다.
+- 조건을 충족하면 `apply`에서만 확인한 PR head와 main을 부모로 하는 동기화 커밋을 만들어 PR 브랜치에 일반 push한다. 업무 checkout과 최초 게시 근거는 보존한다. 이 호출은 `phase: ci`로 끝난다. 이후 호출은 각 동기화 커밋의 부모와 전체 tree를 다시 확인한다. 최종 head의 필수 CI·리뷰·서버 보호 규칙을 충족할 때만 그 head를 지정해 squash한다.
+- 이미 병합된 업무는 같은 입력에 `proofOnly: true`를 주고 `apply`를 생략한다. 같은 저장소의 원본 checkout에서도 조회할 수 있다. 미병합 PR은 `not-merged`, 자격이 부족한 병합은 `proof-blocked`로 반환한다. 증명에는 실제 병합 SHA, main 포함 여부, 전체 예상 tree, QA 후보 경로 일치, 최종 head의 필수 CI 결과가 있다. 현재 유효한 main 보호 규칙에서 필수 검사 이름과 지정된 GitHub App도 대조한다. 과거 PR이 지금의 규칙을 증명할 수 없으면 자동 종결을 보류한다.
+- 대장 쓰기는 저장소 Lead CLI가 맡는다. BLOCKED 상태에서는 증명 전용 경로만 허용한다. 잠금 안에서 업무·후보·PR·binding이 같은지 다시 확인하고 `merged`일 때만 원래 게시 근거(`original`)와 증명을 보존하며 DONE을 기록한다. `proof-blocked`나 `not-merged`이면 기존 상태와 근거를 보존한다. 민감 경로가 바뀐 과거 병합을 후보 파일 일치만으로 종결할 수 없다.
+
 개인 AI 개발 하네스의 단계별 위임 정책, 공통 결정함, 실행 진입점, Herdr mod를 함께 관리한다. 프로젝트의 스킬·산출물 검증·업무 데이터는 각 프로젝트에 남긴다.
 
 Herdr 패널은 모든 저장소와 원격 공간에서 작업 브리핑을 제공한다. 현재 공간의 CLI 활동과 원문 보고를 보여주고 해당 터미널로 이동할 수 있다. `projects.json`에 등록된 로컬 저장소에서는 결정 질문·새 결과·업무 대장·QA 상태를 추가로 보여준다. 하네스가 없는 저장소의 CLI 입력 대기를 승인 질문으로 해석하거나, 연결되지 않은 기능을 0건으로 표시하지 않는다.

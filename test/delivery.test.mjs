@@ -38,6 +38,9 @@ function fixture({pending=false,drift=false,reject=false,merged=false,wrongTree=
 test('모든 기준 통과 후 정확한 head로 병합하고 서버 readback·tree를 확인한다',()=>{
  const f=fixture();assert.equal(deliver(f.input,f.exec).merge,M);
  assert.deepEqual(f.calls.filter(x=>x[0]==='gh'&&x[2]==='merge'),[['gh','pr','merge','12','--repo','example/repo','--squash','--match-head-commit',H]]);
+ // main can advance between two remote calls. Both graph checks must use
+ // objects fetched by the exact advertised SHA, including the post-merge read.
+ assert.deepEqual(f.calls.filter(x=>x[0]==='git'&&x[1]==='fetch').map(x=>x[5]),[B,M]);
 });
 test('CI 대기는 쓰기 없이 반환하고 base 이동은 재검증으로 돌린다',()=>{
  for(const options of [{pending:true},{drift:true}]){const f=fixture(options);assert.equal(deliver(f.input,f.exec).phase,options.drift?'revalidate':'ci');assert.equal(f.calls.some(x=>x[0]==='gh'&&x[2]==='merge'),false);}
