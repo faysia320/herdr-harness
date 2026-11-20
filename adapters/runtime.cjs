@@ -62,6 +62,19 @@ function ledgerArchive(file, input) {
   if (input.action === 'restore') return api.restore(input.ledger.tasks[input.id], input.stateDir);
   throw new Error('지원하지 않는 대장 보관 동작이다.');
 }
+// 끝난 업무의 worktree·로컬 업무 브랜치 정리. 호출자는 대장 잠금 안에서 DONE 업무의 경로·브랜치 규칙과 실행 조회 결과를 넘기고
+// 돌려받은 결과를 대장에 기록한다. 고정 release에 정리 모듈이 없으면 실행하지 않는다.
+function worktreeCleanup(file, input) {
+  const b = binding(file);
+  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('worktree 정리 연결의 프로젝트·상태 경계가 다르다.');
+  const real = (p) => { const r = fs.realpathSync.native(p); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  if (typeof b.cwd !== 'string' || typeof input.task?.root !== 'string' || real(b.cwd) !== real(input.task.root)) throw new Error('worktree 정리 연결의 저장소 경계가 다르다.');
+  const manifest = JSON.parse(fs.readFileSync(path.join(b.release, 'manifest.json'), 'utf8'));
+  if (!Object.hasOwn(manifest.files, 'core/worktree-cleanup.cjs')) throw new Error('고정 release가 worktree 정리를 지원하지 않는다. 새 release를 설치한 뒤 재시도한다.');
+  const api = require(path.join(b.release, 'core/worktree-cleanup.cjs'));
+  if (input.action === 'cleanup') return api.cleanup({ ...input.task, stateDir: input.stateDir });
+  throw new Error('지원하지 않는 worktree 정리 동작이다.');
+}
 // 사용자 결정으로 QA 게이트를 예외 처리한 업무의 게시 허가·종결. 호출자는 대장 잠금 안에서 부르고 돌려받은 업무·사건을 저장한다.
 // 병합 확인은 release 쪽에서 gh로 직접 한다. 호출자가 PR 조회 결과를 넘겨 근거를 대신할 수 없다.
 function decisionClosure(file, input) {
@@ -88,9 +101,9 @@ function workflow(file, input) {
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
   throw new Error('지원하지 않는 workflow 동작');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, decisionClosure, workflow };
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, worktreeCleanup, decisionClosure, workflow };
 if (require.main === module) {
-  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, closure: decisionClosure }[process.argv[3]] ?? bridge;
+  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, cleanup: worktreeCleanup, closure: decisionClosure }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

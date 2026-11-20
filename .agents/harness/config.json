@@ -13,5 +13,11 @@
     "qa": { "skill": "", "invoke": "" }
   },
   "execution_overrides": {},
+  "cleanup": {
+    "keep_ignored": ["target/hh-verify/"],
+    "discard_ignored": ["dist/", "mod/harness/contract.js", "mod/harness/decisions.js"],
+    "content_ms": 60000,
+    "retry_content_ms": 600000
+  },
   "sensitive_paths": [".agents/harness", ".github", "adapters", "core", "bin", "policy", "scripts", "mod", "test", "package.json", ".gitattributes", ".gitignore"]
 }
