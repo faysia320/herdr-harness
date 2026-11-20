@@ -8,10 +8,14 @@ import { spawnSync } from 'node:child_process';
 import { build } from '../scripts/build.mjs';
 const { deliver }=createRequire(import.meta.url)('../core/delivery.cjs');
 const H='a'.repeat(40), B='b'.repeat(40), M='c'.repeat(40), T='d'.repeat(40);
-function fixture({pending=false,drift=false,reject=false,merged=false,wrongTree=false,deletedBranch=false,ruleset=null}={}) {
- const calls=[]; let didMerge=merged;
- const flow={version:2,phase:'ci',authorization:'사용자 요청',verification:{verdict:'PASS'},delivery:{pr:12,head:H,base:B,tree:T}};
- const pr=()=>({number:12,url:'https://github.com/example/repo/pull/12',state:didMerge?'MERGED':'OPEN',headRefName:'codex/test',headRefOid:H,baseRefName:'main',baseRefOid:B,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'APPROVED',statusCheckRollup:[{status:'COMPLETED',conclusion:'SUCCESS'}],...(didMerge?{mergeCommit:{oid:M},mergedAt:'2026-11-17T00:00:00Z'}:{})});
+function fixture({pending=false,drift=false,reject=false,merged=false,wrongTree=false,deletedBranch=false,ruleset=null,plan,bodies=[]}={}) {
+ const calls=[]; let didMerge=merged, views=0;
+ const flow={version:2,phase:'ci',authorization:'사용자 요청',verification:{verdict:'PASS'},delivery:{pr:12,head:H,base:B,tree:T},...(plan?{plan}:{})};
+ // bodies[n]은 n번째 PR 조회의 본문이다. 비어 있으면 body 필드가 없는 이전 조회와 같다.
+ const pr=()=>{
+   const body=views<bodies.length?{body:bodies[views]}:{};views++;
+   return {number:12,url:'https://github.com/example/repo/pull/12',state:didMerge?'MERGED':'OPEN',headRefName:'codex/test',headRefOid:H,baseRefName:'main',baseRefOid:B,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'APPROVED',statusCheckRollup:[{status:'COMPLETED',conclusion:'SUCCESS'}],...(didMerge?{mergeCommit:{oid:M},mergedAt:'2026-11-17T00:00:00Z'}:{}),...body};
+ };
  const exec=(cwd,cmd,args)=>{
    calls.push([cmd,...args]);let text='';const key=args.join(' ');
    if(cmd==='gh') {
@@ -62,6 +66,37 @@ test('SW처럼 ruleset을 쓰면 strict 필수 CI와 우회 없는 규칙을 요
    assert.equal(f.calls.some(x=>x[0]==='gh'&&x[2]==='merge'),false);
  }
  const f=fixture({ruleset:{strict:true,bypass:false}});assert.equal(deliver(f.input,f.exec).phase,'merged');
+});
+
+test('후속 확인이 있는 계획은 첫 조회와 병합 직전 PR 본문에 남은 검증 줄이 모두 있어야 병합한다',()=>{
+ const plan={version:2,criteria:['AC1','AC2'],checks:['hh-suite'],checkScopes:[{id:'hh-suite',location:'independent-qa',executor:'hh-suite',criteria:['AC1','AC2']},
+   {id:'mobile-browser-copy',location:'follow-up',criteria:['AC2'],environment:'배포 후 Galaxy Chrome',verify:'제목을 복사해 Teams에 붙여넣고 원문과 대조'}]};
+ const line='mobile-browser-copy (AC2) | 환경: 배포 후 Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조';
+ const body=`## 남은 검증\r\n- [ ] ${line}\r\n`;
+ const merges=f=>f.calls.filter(x=>x[0]==='gh'&&x[2]==='merge').length;
+ let f=fixture({plan,bodies:[body,body,body]});assert.equal(deliver(f.input,f.exec).phase,'merged');assert.equal(merges(f),1);
+ assert.ok(f.calls.some(x=>x[0]==='gh'&&x[1]==='pr'&&x[2]==='view'&&x.at(-1).split(',').includes('body')));
+ // 본문이 없거나 환경·방법 한 줄이 빠지면 병합하지 않고 빠진 줄을 돌려준다.
+ // 템플릿 HTML 주석 안에만 있는 줄은 PR 화면에 보이지 않으므로 누락이다.
+ // HTML 속성이나 요소 안에만 있는 줄도 화면에 보이지 않는다.
+ const attribute=`## 남은 검증\n<div title="internal fixture\n- [ ] ${line}\n">Template</div>\n`;
+ for(const bodies of [[],[null],['## 남은 검증\n- mobile-browser-copy (AC2) | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조'],[`## 남은 검증\n<!-- 예시:\n- [ ] ${line}\n-->\n`],
+   [attribute],[`<details>\n\n- [ ] ${line}\n\n</details>`]]){
+   f=fixture({plan,bodies});const r=deliver(f.input,f.exec);
+   assert.deepEqual([r.phase,r.missing],['blocked',[line]]);assert.match(r.reasons[0],/PR 본문 남은 검증 누락/);assert.equal(merges(f),0);
+ }
+ // 인라인 코드의 리터럴 주석 표식은 주석이 아니므로 뒤의 목록 줄이 보인다.
+ const coded=`템플릿 표식은 \`<!--\`로 시작한다.\n\n## 남은 검증\n- [ ] ${line}\n`;
+ f=fixture({plan,bodies:[coded,coded,coded]});assert.equal(deliver(f.input,f.exec).phase,'merged');assert.equal(merges(f),1);
+ // PR 연결 뒤 본문을 지우거나 숨기면 병합 직전 재조회에서 막는다.
+ for(const edited of ['본문 삭제',`## 남은 검증\n<!-- ${line} -->`,attribute]){
+   f=fixture({plan,bodies:[body,edited]});const late=deliver(f.input,f.exec);
+   assert.deepEqual([late.phase,late.missing],['blocked',[line]]);assert.equal(merges(f),0);
+ }
+ // 이미 병합된 PR의 증명과 후속 확인 0건·기존 계획은 본문을 요구하지 않는다.
+ f=fixture({plan,merged:true});assert.equal(deliver(f.input,f.exec).phase,'merged');
+ f=fixture({plan:{version:2,criteria:['AC1'],checks:['hh-suite']}});assert.equal(deliver(f.input,f.exec).phase,'merged');
+ f=fixture({plan:{...plan,checkScopes:plan.checkScopes.slice(0,1)}});assert.equal(deliver(f.input,f.exec).phase,'merged');
 });
 
 test('병합 증명에 PR 브랜치 이름을 남긴다',()=>{

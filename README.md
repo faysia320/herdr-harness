@@ -6,7 +6,7 @@
 
 기존 대장은 그대로 두고 `add --workflow v2 --kind bug-fix|feature|ui|performance|refactor --authorization <사용자의 자동 게시·병합 지시>`로 만든 업무만 새 흐름을 따른다. 모델 선택·작업별 절차는 `policy/workflow.json`, 실패 분류·진행 판정은 `core/workflow.cjs`가 정본이다. Herdr의 기존 단계는 호환 표시이며 `x_flow.phase`가 게시·CI·복구 진행을 구분한다.
 
-- 조사에서 `verification-plan.json`의 AC·필수 검사 ID를 동결하고 구현자는 실패 검사부터 짧게 확인한다. 고위험 업무는 기존 설계 검토를 유지한다.
+- 조사에서 `verification-plan.json`의 AC·필수 검사 ID와 검사별 실행 위치를 동결하고 구현자는 실패 검사부터 짧게 확인한다. 고위험 업무는 기존 설계 검토를 유지한다. 독립 QA가 실행할 수 없는 배포 후·실기기 확인은 필수 검사가 아니라 후속 확인으로 남기고, 업무에 연결된 해소 결정은 다음 단계 지시서에 들어간다([검증 계획 실행 위치와 해소 결정 인계](#검증-계획-실행-위치와-해소-결정-인계)).
 - QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다.
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
@@ -207,11 +207,108 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 
 현재 대장에 등록된 살아 있는 Lead가 `decision request KEY --file 질문.json`으로 먼저 등록한다. 질문은 `question`, `source`, 선택 `task`, `kind`, `options`, `reason`, `recommendation`으로 구성한다. 업무 등록 전에는 `task:null`, DONE 이후에도 후속 질문을 남길 수 있다.
 
-질문을 수정할 때는 `--revision 현재값`을 요구한다. 해소는 실제 답변의 `quote`와 `source`를 담은 파일로 `decision resolve KEY --file 답변.json --revision 질문revision`을 실행한다. 같은 입력의 재시도는 멱등적이다. 읽음·다른 업무 완료·Lead 새 보고는 해소 근거가 아니다. 결정함 해소는 업무 승인이나 Git 작업을 대신하지 않는다.
+질문을 수정할 때는 `--revision 현재값`을 요구한다. 해소는 실제 답변의 `quote`와 `source`를 담은 파일로 `decision resolve KEY --file 답변.json --revision 질문revision`을 실행한다. 사용자가 질문의 선택지를 실제로 골랐으면 그 label을 `selection`에 함께 적는다. `selection`은 선택지 label 중 하나여야 하고, 자유 답변이나 선택지 없는 질문에는 적지 않는다(기록은 `null`). 추천값이나 답변 문장에서 선택을 추측하지 않는다. 같은 입력의 재시도는 멱등적이고, 이미 해소된 질문의 답변·출처·선택은 덮어쓰지 않는다. 읽음·다른 업무 완료·Lead 새 보고는 해소 근거가 아니다. 결정함 해소는 업무 승인이나 Git 작업을 대신하지 않는다.
 
 읽기 오류·다른 프로젝트·설치 변조는 정상적인 빈 결정함으로 취급하지 않는다. 입력 파일과 설치본이 유효하지 않으면 기존 기록을 보존하고 실패한다. 상태 파일의 기록 크기는 mod 읽기 한도인 1 MiB를 넘기지 않는다.
 
-모드의 질문 카드에서 사용자가 답을 고른 뒤 보내기를 누르면 모드가 `hc send`로 Lead 터미널에 `[사용자 결정 · Herdr 하네스 모드] 질문 <KEY>(revision N)의 답: "..."`를 보낸다. Lead는 이 문장을 `quote`, 출처를 `Herdr 하네스 모드 사용자 선택`으로 해 해소를 기록한다. revision이 결정함과 다르면 기록하지 않고 다시 묻는다. 모드는 결정함을 직접 쓰지 않는다.
+모드의 질문 카드에서 사용자가 답을 고른 뒤 보내기를 누르면 모드가 `hc send`로 Lead 터미널에 `[사용자 결정 · Herdr 하네스 모드] 질문 <KEY>(revision N)의 답: "..."`를 보낸다. Lead는 이 문장을 `quote`, 출처를 `Herdr 하네스 모드 사용자 선택`으로 해 해소를 기록한다. 따옴표 안이 선택지 label과 같으면 그 label을 `selection`에 적는다. revision이 결정함과 다르면 기록하지 않고 다시 묻는다. 모드는 결정함을 직접 쓰지 않는다.
+
+## 검증 계획 실행 위치와 해소 결정 인계
+
+v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 QA에서 실행할 수 없는 실기기·브라우저 검사를 필수 검사로 넣었고, QA 지시서는 브라우저를 금지해 QA가 구조적으로 BLOCKED가 됐다. 사용자가 «배포 후 실기기 확인»으로 결정했지만 그 결정이 다음 QA 지시서에 들어가지 않았다. 공통 release는 검사의 실행 위치를 동결 계획에 분류하고, 업무에 연결된 해소 결정을 다음 단계 지시서에 넣는 경로를 제공한다. 분류·동결·남은 검증·PR 본문 대조는 `core/workflow.cjs`, 위치 이름과 문구 길이 상한은 `policy/workflow.json`의 `plan`, 결정 조회는 `core/decisions.js`·`core/decision-store.js`가 정본이다.
+
+### 계획 형식과 동결
+
+새 계획은 기존 v2 형식에 `checkScopes`를 더한다. `checkScopes`에는 모든 검사를 한 번씩 적는다.
+
+```json
+{"version":2,"criteria":["AC1","AC2"],"checks":["hh-suite","copy-unit"],
+ "checkScopes":[
+  {"id":"hh-suite","location":"independent-qa","executor":"hh-suite","criteria":["AC1"]},
+  {"id":"copy-unit","location":"independent-qa","executor":"node-test","command":"node --test test/copy.test.mjs","criteria":["AC1","AC2"]},
+  {"id":"mobile-browser-copy","location":"follow-up","criteria":["AC2"],"environment":"배포 후 Galaxy Chrome","verify":"제목을 복사해 Teams에 붙여넣고 원문과 대조"}]}
+```
+
+| 위치 | 뜻 | 필수 필드 |
+|---|---|---|
+| `independent-qa` | 독립 QA가 후보 worktree에서 어댑터가 선언한 실행 수단으로 직접 실행해 판정한다. QA PASS의 필수 조건이다. | `executor`, 수단이 정한 형식의 `command`, `criteria` |
+| `follow-up` | 배포 후·실기기·브라우저·외부 계정·운영 환경에서 확인한다. QA는 실행하지 않고 PASS를 막지 않는다. 게시 PR 본문의 «남은 검증»에 그대로 싣는다. | `environment`(확인 시점·실행 환경), `verify`(확인 방법), `criteria` |
+
+어댑터는 `freezePlan(plan, {executors, required})`(runtime의 `freeze`)로 동결한다. 아래 중 하나라도 해당하면 오류에 원인 ID를 넣고 동결을 거부한다. 거부는 대장을 바꾸지 않는다.
+
+- `checkScopes`가 없거나 비었다. 검사 행이 빠졌거나 같은 ID가 두 번 나온다. 지원하지 않는 위치거나 위치가 문자열이 아니다(`["follow-up"]` 같은 배열 포함).
+- `checks`에 `follow-up` 항목이 있다(독립 QA가 실행할 수 없는 필수 지정). `independent-qa` 항목이 `checks`에 없다. 즉 `checks`는 `independent-qa` 항목의 ID 집합과 정확히 같다.
+- `independent-qa` 행의 `executor`가 어댑터 선언에 없다. 특정 검사 ID 전용 수단(예: QA runner `hh-suite`)을 다른 검사에 쓰거나, 전용 ID를 다른 수단으로 적었다. ID 전용 수단 행에 `command`를 적었다(빈 문자열·`null` 포함. 버리고 동결하면 적은 명령과 실제 실행이 달라진다). `command`가 수단의 형식과 다르다. 행에 `environment`·`verify`를 함께 적었다.
+- `follow-up` 행에 `executor`·`command`가 있다. `environment`·`verify`가 없거나 개행·제어문자를 포함하거나 300자(`plan.text_max`)를 넘는다. 두 문구는 PR 본문 목록 줄에 그대로 옮기는 일반 문장이어야 한다. 글을 숨기거나 다른 요소로 바꿀 수 있는 링크·이미지 대괄호(`[`, `]`), 꺾쇠(`<`, `>`: HTML 태그·주석·`<URL>` 자동 링크), 백틱, HTML 엔티티(`&lt;`, `&#60;` 등)가 있으면 필드·이유·ID를 넣어 거부한다. 예: `[](https://… "확인 방법")`처럼 빈 링크의 title에만 확인 방법이 있는 문구.
+- 행의 `criteria`가 계획에 없는 AC를 가리킨다. `independent-qa` 행이 하나도 연결되지 않은 AC가 있다. 후속 확인으로만 판정되는 AC는 QA가 `unverified`로 적어 PASS가 막히므로, QA가 판정할 수 있는 부분과 후속 확인으로 나눠 적거나 결정 요청으로 올린다.
+- 어댑터 필수 검사(`required`, HH의 `hh-suite`)가 `checks`에 없다.
+
+동결 결과는 알려진 필드만 남긴 정규화 계획이다. 명령 형식 수단 행만 `command`를 남기고, 후속 설명의 앞뒤 공백을 지운다.
+
+**실행 수단 선언.** 어댑터는 `executors`에 `{이름: {description, ids}}`(그 검사 ID 전용, 행에 command를 적으면 거부) 또는 `{이름: {description, pattern}}`(행 `command` 전체가 맞아야 하는 정규식)을 선언한다. HH는 `.agents/harness/config.json`의 `qa_executors`에 `hh-suite`(QA runner 전용), `node-test`(지정 시험 파일), `git-read`(Git 읽기 명령. 허용 목록의 조회 옵션만 받고 `--output`·`-O`·`--ext-diff` 같은 파일 출력·외부 명령 옵션과 따옴표·중괄호·와일드카드 같은 셸 확장 문자를 거부한다)를 둔다. 독립 QA 수단은 후보를 바꾸지 않아야 하므로, 명령 형식을 선언할 때 부작용 있는 옵션이 형식에 들어가지 않게 허용 목록으로 좁힌다. 수단 대조는 «선언된 QA 수단의 형식에 맞는다»까지만 기계로 확인한다. 실기기 검사를 일반 로컬 명령 형식으로 적으면 형식상 통과할 수 있으므로, architect 검토와 Lead가 검사 내용이 그 수단으로 실제 판정되는지 확인한다. 실행 위치는 환경이 정상일 때 그 역할이 실행할 수 있는지를 뜻한다. 허용된 QA 검사가 회차 중 환경 장애로 실패하면 기존 BLOCKED 경로를 따른다.
+
+### QA와 남은 검증
+
+- `collect`는 기존처럼 모든 AC와 `checks`(독립 QA 필수 검사)의 증거를 요구한다. 후속 확인 ID가 보고서 `checks`에 있으면 상태와 무관하게 거부한다. 후속 확인을 `passed`로 꾸미거나 `blocked`로 적어 PASS를 막지 못한다. PASS 사유에는 `남은 검증 N건`이 붙는다.
+- `remainingVerification(plan)`(runtime의 `remaining`)은 후속 확인을 `{id, criteria, environment, verify, line}`으로 돌려준다. `line`은 PR 본문에 그대로 넣는 한 줄이다: `mobile-browser-copy (AC2) | 환경: 배포 후 Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조`.
+- `missingRemaining(plan, body)`(runtime의 `pr-remaining`)는 PR 화면에 보이는 것이 확실한 목록 줄에 없는 항목을 돌려준다. GitHub 렌더링 전체를 흉내 내지 않고, 확인할 수 없는 문맥은 보이지 않는 것으로 본다(잘못 통과시키기보다 게시자가 본문을 고치게 한다).
+  - 인정하는 줄은 들여쓰기 0~3칸의 `-`, `*`, `+` 목록 항목(`- [ ]`, `- [x]` 포함)이다. 이 줄은 항상 새 블록이라 앞 문단의 링크 제목·인라인 HTML에 묻히지 않는다. 순서 목록(`1.`), 표시 없는 줄, 4칸 이상 들여쓴 줄, 인용(`>`) 안의 줄은 앞 문단(예: 여러 줄 링크 제목)의 연속일 수 있어 인정하지 않는다.
+  - 목록 표시를 뺀 나머지를 줄 끝(CRLF)·연속 공백만 정규화해 `line` 전체와 비교한다. ID만 겹치거나 환경·방법 일부가 빠진 줄은 누락이다. 본문이 `null`이거나 비면 모두 누락이다.
+  - 같은 줄에서 닫히는 HTML 주석은 지우고 비교한다(줄 끝 메모 허용). 줄 맨 앞에서 시작한 여러 줄 주석 안의 줄은 숨는다. 닫히지 않은 주석은 본문 끝까지 숨는다.
+  - 줄 맨 앞(들여쓰기 없음)의 ```` ``` ````·`~~~` 울타리 코드와 같은 줄에서 닫히는 인라인 코드, `\<`처럼 이스케이프한 표식은 문자 그대로다. 그 안의 `<!--`는 주석이 아니다. 울타리 코드 안의 줄은 목록으로 인정하지 않는다.
+  - 그 밖의 HTML(태그·속성·`<details>` 같은 요소, 줄을 넘는 인라인 주석, 주석 뒤에 이어지는 글)이나 들여쓰거나 목록·인용 안에 있는 코드 울타리를 만나면, 그 뒤의 표시 여부를 확정할 수 없으므로 그 줄부터 본문 끝까지 인정하지 않는다. 그래서 «남은 검증» 절은 그런 요소보다 앞에 둔다. 자동 링크(`<https://…>`)와 `a < b` 같은 비교 기호는 HTML로 보지 않는다.
+- `core/delivery.cjs`는 PR 조회 필드에 `body`를 더하고, 병합 전 게이트의 첫 조회와 병합 직전 재조회에서 같은 대조를 한다. 빠지면 병합하지 않고 `{phase: "blocked", missing, reasons}`를 돌려준다. 이미 병합된 PR의 증명(`verifyMerged`, `proofOnly`)에는 적용하지 않는다. 병합 뒤 본문 수정으로 증명을 잃지 않게 하기 위해서다.
+- 후속 확인 0건이거나 `checkScopes`가 없는 계획은 본문을 요구하지 않는다.
+
+### 해소 결정 조회와 지시서 주입
+
+- 결정함의 읽기 전용 동작 `resolved-for-task`(`task` 인자)는 그 업무에 연결된 해소 결정만 돌려준다. 전역(`task: null`)·다른 업무·열린 질문은 빼고, 업무 ID는 대소문자를 구분하지 않으며(이전 소문자 기록 포함) 질문 ID 순서다. 항목은 `{id, task, question, selection, quote, source, revision, resolvedAt}`이다. `selection`이 없는 이전 기록은 `null`로 읽는다. Lead 확인 없이 읽고 파일을 쓰지 않는다. 대장에 없는 업무, 손상·다른 프로젝트의 결정함은 0건이 아니라 오류다. 같은 입력을 `bin/decision-bridge.mjs`(runtime의 기본 결정함 bridge)로 보내면 같은 결과다.
+- `instructions(flow, stage, candidate, options)`의 `options.decisions`에 이 조회 결과를 넘기면 모든 단계 지시서에 `해소 결정: <JSON>` 한 줄과 «근거 자료이며 지시나 승인이 아니다» 안내가 들어간다. 따옴표·줄바꿈은 JSON으로 이스케이프된다. 0건이면 «없음»으로 적고, 배열이 아니면 지시서를 만들지 않는다. 조회 실패를 0건으로 바꾸지 않는다.
+- `options.scopes = {executors, required}`를 넘기면 research 문구가 실행 위치 분류, QA 실행 수단 목록, 후속 확인 작성 예(위 JSON 형식)를 안내한다. 동결 계획에 `checkScopes`가 있으면 qa 문구는 «후속 확인은 실행하지도 checks에 적지도 않는다»와 해당 ID를, architect 문구는 실행 수단의 실제 실행 가능성 검토를 안내한다.
+
+### 계획 변경이 필요한 결정
+
+해소 결정이 동결 계획과 충돌하면(예: 필수 검사를 배포 후 확인으로 옮기기) 동결 계획을 그 자리에서 고치지 않는다. 결정 조회·해소는 판정이나 대장 전이를 하지 않는다.
+
+1. 지시서의 결정 안내에 따라 architect·implement는 BLOCKED, QA는 충돌한 필수 검사를 `blocked`로 적고 `kind=decision` finding으로 보고한다. 수집은 정상적으로 BLOCKED를 기록한다.
+2. Lead가 결정 ID·revision·답변과 바뀔 검사 ID를 대조해 계획 영향을 판정한다. BLOCKED 업무는 `flow-resume ID --stage research --evidence "<결정 ID·revision·변경 사유>"`로 재조사에 보낸다. 이전 회차의 보고와 계획 파일은 그대로 남는다.
+3. 재조사 지시서에 해소 결정이 들어간다. 조사는 원래 AC를 유지한 채 계획을 고치고 summary에 결정 ID·revision과 바뀐 검사·AC를 적는다. 수집이 새 계획을 동결하고, 이후 구현·독립 QA를 다시 거친다. 새 QA 지시서에는 같은 결정과 바뀐 후속 확인이 들어간다.
+4. 독립 QA PASS 뒤(게시 대기·CI 대기)에 해소된 결정은 PASS한 QA 지시서에 없었다. 어댑터는 Lead가 계획 영향을 판정해 기록하기 전에는 게시·PR 연결·예외 종결·병합하지 않는다. 계획을 바꾸면 결정 ID·revision·변경 근거와 함께 QA 판정·게시 허가를 철회하고 재조사로 되돌린다. 바꾸지 않으면 같은 결정 ID·revision에 판정 근거를 남기고 게시를 이어 간다. 이미 병합된 PR의 증명은 막지 않는다. 철회는 병합 증명에 필요한 QA·게시 anchor·delivery를 지우므로, 연결된 PR이 있으면 철회 전에 PR을 조회한다. 서버에서 이미 MERGED이거나 조회 실패·다른 PR·상태 없음으로 확정할 수 없으면 재조사를 거부하고 대장을 그대로 둔다. 이때는 병합 증명(HH `flow-prove-merged`)으로 업무를 마치고 결정은 후속 업무로 다룬다. HH 명령은 [자체 운영 지침](.agents/harness/LEAD.md#해소-결정이-동결-계획과-충돌할-때)에 있다.
+
+### 남는 한계
+
+검사 비용이 고칠 비용보다 커지지 않도록 아래 경계는 기계로 막지 않는다. 해당하면 게시자·Lead가 PR 화면에서 직접 확인한다.
+
+- 후속 확인 문구의 강조·취소선·이스케이프 문자(`*`, `_`, `~`, `\`), 문구 앞의 목록·제목 표식, 표·수식(`$`)·이모지 단축어(`:x:`), 맨 URL·`#123` 자동 링크는 거부하지 않는다. 글을 숨기지 않고 모양만 바꾸며, PR 본문 대조는 렌더링 결과가 아니라 게시자가 옮긴 원문 줄을 비교한다.
+- PR 본문 대조는 GitHub 렌더링 전체를 흉내 내지 않는다. 위 «QA와 남은 검증»의 보수적인 목록 줄 판정만 하고, 새 마크다운 특수 사례 처리는 늘리지 않는다.
+- 결정 재조사 전 PR 조회는 그 시점 한 번이다. 조회 뒤 철회 사이에 병합되거나 철회 뒤 사람이 GitHub에서 직접 병합하면 대장에 게시 근거가 없어 병합 증명을 자동으로 모을 수 없다. 이 경우 Lead가 PR과 main을 직접 대조해 정리한다. 닫힌(CLOSED) PR은 병합되지 않았으므로 재조사를 허용한다. BLOCKED(`delivery-blocked`) 업무의 재조사는 이 조회를 하지 않는다.
+
+### 하위 호환
+
+- 새 동작의 표지는 `core/workflow.cjs`의 `planScopeVersion === 1` 하나다(runtime의 `features`가 `{planScopeVersion}`을 돌려준다). 어댑터는 표지가 있을 때만 새 freeze·결정 조회·지시서 옵션을 쓴다. 이전 release의 결정함은 모르는 동작을 쓰기 명령으로 받아 거부하므로, 표지 없이 `resolved-for-task`를 부르면 모든 위임이 막힌다.
+- 이미 동결된 v2 계획(`criteria`·`checks` ID 배열, `checkScopes` 없음)은 읽기·수집·게시에서 이전과 같다. `checks` 전체가 필수이고 후속 확인은 0건이며 PR 본문을 요구하지 않는다. 새 동결은 `checkScopes`가 없는 계획을 받지 않으므로 새 입력이 이 호환 경로로 우회하지 않는다.
+- `options` 없는 3인자 `instructions`는 기존 계획 형식을 안내하고 결정을 넣지 않는다. 새 release가 설치돼도 전환하지 않은 어댑터는 기존 동작을 유지한다.
+- 결정 기록의 `resolution.selection`은 추가 필드다. 이전 mod 검증기는 `resolution`의 추가 필드를 거부하지 않는다. 새 검증기는 `selection`이 없는 이전 기록을 받는다.
+- `policy/workflow.json`의 `version`은 2 그대로다(mod는 `version === 2`일 때만 단계별 모델을 표시한다).
+- 기존 release로 시작한 회차는 그 release로 마친다. 이미 저장한 보고·계획·결정 파일은 다시 쓰지 않는다.
+
+### SW·VDP·VP 전환 안내
+
+새 release로 binding을 전환할 때 저장소마다 아래를 확인한다. 이번 변경은 세 저장소의 코드·binding을 바꾸지 않으며, 전환하지 않은 어댑터는 새 release에서도 위 호환 동작을 유지한다.
+
+1. **runtime 사본 교체**: `adapters/runtime.cjs`가 바뀌었다(`workflow` CLI 라우팅, `instructions`의 `options` 전달, `features`·`freeze`·`remaining`·`pr-remaining`). 세 저장소의 `.agents/harness/runtime.cjs`를 같은 내용으로 교체한다. `test/adapters.integration.mjs`가 내용 동등을 확인한다.
+2. **표지 확인**: JS 어댑터는 `require(<release>/core/workflow.cjs).planScopeVersion === 1`, Python 어댑터는 `'{"action":"features","project":"<id>","stateDir":"<상태폴더>"}' | node .agents/harness/runtime.cjs <binding> workflow`로 확인하고, 없으면 아래 단계를 모두 건너뛴다. 이전 runtime CLI는 `workflow` 키가 없어 결정함 bridge로 떨어지므로 1을 먼저 한다.
+3. **QA 실행 수단 선언**: 그 저장소의 독립 QA 지시서가 실제로 허용하는 수단만 config에 선언한다. ID 전용 수단 행에 `command`를 쓰던 계획은 새 동결에서 거부되므로 조사 산출물에서 지운다. 예: SW의 QA runner(`target/sw-verify` 영수증) 전용 ID, VDP의 Bun 시험 명령 형식, VP의 pytest 명령 형식. QA 지시서가 브라우저를 금지하면 브라우저 수단을 선언하지 않는다.
+4. **동결 교체**: 자체 freeze가 `criteria`·`checks`만 복사하면 `checkScopes`가 조용히 사라진다. research 지시서에 `options.scopes`를 넘기는 시점과 같은 배포에서 자체 freeze를 공통 `freeze`(필수 검사 목록 `required` 포함)로 바꾸고 결과 전체를 저장한다. 둘 중 하나만 바꾸지 않는다.
+5. **결정 조회·주입**: 매 단계 위임 전에(run 폴더 생성·대장 변경 전) `resolved-for-task`로 조회하고 결과를 `instructions`의 `options.decisions`로 넘긴다. 조회 실패는 위임을 멈춘다. 해소 기록에 사용자가 고른 label을 `selection`으로 남긴다.
+6. **게시**: 게시자 인계에 `remaining`의 `line`과 해소 결정을 넣고, PR 본문 «남은 검증»에 `line`을 HTML·코드 블록보다 앞에 `- [ ] <line>` 목록 줄로 적게 한다. PR 연결 시 `pr-remaining`으로 실제 PR 조회의 `body`를 대조한다. 병합은 공통 delivery가 다시 대조한다. PR 없는 종결 기록에도 남은 검증을 남긴다.
+7. **재조사 경로**: 결정 충돌 BLOCKED에서 재조사로 보내는 저장소 명령을 확인한다(HH는 `flow-resume --stage research`). 독립 QA PASS 뒤 해소된 결정은 게시·병합 전에 Lead 판정 기록(재조사 철회 또는 계획 영향 없음)을 요구하고, 철회 시 이전 QA 판정·게시 근거를 지운다(HH는 `flow-resume --decision KEY --revision N`). 연결된 PR이 있으면 철회 전에 조회해 MERGED이거나 확정할 수 없으면 거부하고 병합 증명으로 안내한다. VP의 재조사 전이와 계획 파일 시각 검사는 v-project 저장소의 별도 업무다.
+
+```powershell
+'{"action":"freeze","project":"<id>","stateDir":"<상태폴더>","plan":{...},"options":{"executors":{...},"required":["<필수 검사>"]}}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json workflow
+'{"action":"remaining","project":"<id>","stateDir":"<상태폴더>","plan":{...}}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json workflow
+'{"project":"<id>","stateDir":"<상태폴더>","ledger":{...},"action":"resolved-for-task","task":"<업무 ID>"}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json
+```
 
 ## 단계 수집 판정
 

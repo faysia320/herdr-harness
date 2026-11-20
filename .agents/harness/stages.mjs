@@ -15,12 +15,25 @@ const relative = p => isText(p) && !/[\\:*?[\]\x00-\x1f]/.test(p) &&
   p.replace(/\/$/, '').split('/').every(part => part && part !== '.' && part !== '..') && !/^(\.local|target|\.git)(\/|$)/.test(p);
 const includesPath = (scope, path) => scope.endsWith('/') ? path.startsWith(scope) : path === scope;
 export const activeRun = task => task.current ? task.runs[task.current.run] : null;
+// 고정 release가 검증 계획 실행 위치 분류·해소 결정 주입을 지원하는지. 없으면 기존 계획 형식·지시서로 동작하고 새 동작을 호출하지 않는다.
+export const scoped = ctx => ctx.release('workflow.cjs').planScopeVersion === 1;
+const scopeOptions = () => ({ executors: config.qa_executors, required: ['hh-suite'] });
 
-function prompt(ctx, ledger, task, run) {
+// 결정 조회와 공통 지시서 작성은 run 폴더·대장 변경 전에 한다. 조회 실패를 결정 0건으로 바꾸지 않고 위임을 멈춘다.
+function guide(ctx, ledger, task, stage) {
+  const input = { action: 'instructions', flow: task.x_flow, stage, candidate: task.candidate?.fingerprint };
+  if (!scoped(ctx)) return ctx.flow(input);
+  const decisions = ctx.decisions({ ledger, action: 'resolved-for-task', task: task.id });
+  return ctx.flow({ ...input, options: { decisions, ...(stage === 'research' ? { scopes: scopeOptions() } : {}) } });
+}
+
+function prompt(ctx, ledger, task, run, instructions) {
   const stage = run.stage, release = ctx.binding.release;
+  const plan = scoped(ctx) ? 'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite], checkScopes:[one row per check]} following the plan rules below.' :
+    'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite]}.';
   const file = join(run.dir, stage === 'qa' ? 'verification.json' : stage + '.json');
   const shape = {
-    research: 'Write research.json with {run, summary, planned_files: [literal paths or directory paths ending in /]}. Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite]}. Describe what each ID verifies in summary. Inspect the request and baseline. Keep the source tree unchanged.',
+    research: 'Write research.json with {run, summary, planned_files: [literal paths or directory paths ending in /]}. ' + plan + ' Describe what each ID verifies in summary. Inspect the request and baseline. Keep the source tree unchanged.',
     architect: 'Independently review the frozen plan, including boundary and failure cases. Write architect.json with {run, verdict:"PASS"|"BLOCKED", reason}. Keep the source tree unchanged.',
     implement: 'Implement within planned_files and report implement.json as {run, verdict:"DONE"|"BLOCKED", summary, checks:[{command,exit}]}. Use the actual exit code for an executed check and null for a check you did not run. Keep changes in the worktree. Finish background processes before reporting.',
     qa: 'Evaluate the original request and the frozen plan independently. Read the implementation report as context. Leave the candidate unchanged. Run the QA command below before a PASS. In verification.json include run plus all common verification fields and the evidence for every frozen ID. Finish background processes before reporting.',
@@ -37,7 +50,7 @@ function prompt(ctx, ledger, task, run) {
     'Frozen plan: ' + JSON.stringify(task.x_flow.plan ?? null),
     'Planned files: ' + JSON.stringify(task.planned_files ?? []),
     'Prior run directories: ' + task.runs.filter(r => r.token !== run.token).map(r => r.dir).join(', '),
-    ctx.flow({ action: 'instructions', flow: task.x_flow, stage, candidate: task.candidate?.fingerprint }),
+    instructions,
     stage === 'qa' ? 'QA runner: ' + qa : '',
     'Pinned release: ' + release,
     'Do not change the ledger, binding, baseline release, remote Git state or other tasks. When finished, send the result to the Lead: hc send ' +
@@ -66,6 +79,7 @@ export async function dispatch(ctx, ledger, task) {
   const before = candidate(ctx, task);
   if (stage === 'qa') check(before.fingerprint === task.candidate?.fingerprint, '구현 수집 뒤 후보가 바뀌었다.');
   const role = ctx.execution({ action: 'resolve', task, stage });
+  const instructions = guide(ctx, ledger, task, stage);
   const round = task.runs.filter(r => r.stage === stage).length + 1;
   const name = (config.project.terminal_prefix + task.id.split('-').at(-1) + '-' + stage + '-' + round).toLowerCase();
   const token = randomUUID();
@@ -78,7 +92,7 @@ export async function dispatch(ctx, ledger, task) {
   task.runs.push(run);
   await transition(ctx, task, stateForStage[stage], stage + ' 위임');
   const file = join(dir, 'prompt.txt');
-  writeFileSync(file, prompt(ctx, ledger, task, run), { flag: 'wx' });
+  writeFileSync(file, prompt(ctx, ledger, task, run, instructions), { flag: 'wx' });
   save(ctx, ledger, { task: task.id, event: 'dispatch', stage, round });
   const text = '[' + task.id + ' ' + stage + '] Read "' + file + '" first and follow it.';
   const extra = role.cli === 'codex' ? ['-C', task.worktree, '--add-dir', dir, text] : ['--add-dir', dir, '--', text];
@@ -92,11 +106,13 @@ export async function dispatch(ctx, ledger, task) {
   return { id: task.id, run };
 }
 
-function freezePlan(plan, report) {
-  check(plan.version === 2 && identifiers(plan.criteria) && identifiers(plan.checks) && plan.checks.includes('hh-suite'), '유효한 AC·필수 검사 ID와 hh-suite가 필요하다.');
+// 새 release는 공통 freeze가 실행 위치 분류·QA 실행 수단·hh-suite를 검사한 정규화 계획을 저장한다. 이전 release는 기존 ID 배열 계획을 쓴다.
+function freezePlan(ctx, plan, report) {
+  const frozen = scoped(ctx) ? ctx.flow({ action: 'freeze', plan, options: scopeOptions() }) : null;
+  if (!frozen) check(plan.version === 2 && identifiers(plan.criteria) && identifiers(plan.checks) && plan.checks.includes('hh-suite'), '유효한 AC·필수 검사 ID와 hh-suite가 필요하다.');
   check(isText(report.summary) && Array.isArray(report.planned_files) && report.planned_files.length &&
     report.planned_files.every(relative) && new Set(report.planned_files).size === report.planned_files.length, '조사 결과·수정 예정 경로가 필요하다.');
-  return { version: 2, criteria: plan.criteria, checks: plan.checks };
+  return frozen ?? { version: 2, criteria: plan.criteria, checks: plan.checks };
 }
 
 function finish(run, task, verdict, note) {
@@ -129,7 +145,7 @@ export async function collect(ctx, ledger, task) {
   if (stage !== 'implement') check(current.fingerprint === run.before, '현재 단계에서 후보가 변경됐다.');
   let verdict, note, to, awaiting;
   if (stage === 'research') {
-    task.x_flow.plan = freezePlan(artifact(join(run.dir, 'verification-plan.json'), run), report);
+    task.x_flow.plan = freezePlan(ctx, artifact(join(run.dir, 'verification-plan.json'), run), report);
     task.planned_files = report.planned_files;
     verdict = 'ok';
     note = report.summary;

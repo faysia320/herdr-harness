@@ -15,6 +15,13 @@
   },
   "max_same_failure": 2,
   "max_repairs": 3,
+  "plan": {
+    "locations": {
+      "independent-qa": "독립 QA가 후보 worktree에서 선언된 실행 수단으로 직접 실행해 판정한다. QA PASS의 필수 조건이다.",
+      "follow-up": "배포 후·실기기·브라우저·외부 계정·운영 환경에서 확인한다. QA는 실행하지 않고 PASS를 막지 않으며, 게시 PR 본문의 남은 검증에 그대로 싣는다."
+    },
+    "text_max": 300
+  },
   "delivery": {
     "publisher": { "cli": "codex", "model": "gpt-6-luna", "effort": "medium", "fast": false, "sandbox": "danger-full-access" },
     "strategy": "squash", "base": "main", "poll_seconds": 30
