@@ -34,6 +34,53 @@ node .agents/harness/launch.mjs flow-resume HH-001 --evidence "업무 checkout�
 node .agents/harness/launch.mjs dispatch HH-001
 ```
 
+## 해소 결정이 동결 계획과 충돌할 때
+
+각 단계 지시서에는 위임 당시 이 업무에 연결된 해소 결정(질문·선택·답변 원문·출처·revision)이 `해소 결정: <JSON>`으로 들어간다. 결정을 해소해도 동결 계획은 그 자리에서 바뀌지 않는다. 결정이 계획을 바꾸라고 요구하면(예: 필수 검사 `mobile-browser-copy`를 배포 후 실기기 확인으로 옮기기) 아래 순서로 재조사·재동결한다.
+
+1. `decision list --all`과 `flow-status ID`에서 결정 ID·revision·답변과 동결 계획의 검사·AC를 대조해 바뀔 ID를 정한다. 답변이 계획을 바꾸지 않으면 그대로 진행한다.
+2. 업무가 BLOCKED이면(예: QA가 충돌한 검사를 `blocked`, `kind=decision` finding으로 보고) 근거를 넣어 재조사로 보낸다. 이전 회차의 보고와 계획 파일은 그대로 남는다.
+
+   ```powershell
+   node .agents/harness/launch.mjs flow-resume HH-123 --stage research --evidence "결정 browser-check revision 2: mobile-browser-copy를 배포 후 실기기 확인(follow-up)으로 이동"
+   node .agents/harness/launch.mjs dispatch HH-123
+   ```
+
+3. 업무가 독립 QA PASS 뒤 게시 대기(phase=publish)나 CI 대기(phase=ci)이면 그 결정은 PASS한 QA 지시서에 없었다. 판정을 기록하기 전에는 `publish-check`·`flow-attach-pr`·`flow-close`·`flow-deliver`가 «QA 이후 해소된 결정의 계획 영향을 판정하지 않았다»로 멈춘다(이미 병합된 PR의 `flow-prove-merged`는 막지 않는다). `decision list --all`에서 결정 ID와 해소 뒤 revision을 확인한다.
+   - 계획을 바꾸면 결정 ID·revision·변경 근거로 QA 판정과 게시 허가를 철회하고 재조사로 돌린다. 대장에는 `QA → BLOCKED`(철회)와 `BLOCKED → RESEARCHING`이 남고, `x_flow.recovery`에 결정(`decision`)과 철회한 QA 보고 지문·phase·연결했던 PR(`withdrawn`)이 남는다. 이전 QA 판정·실행 영수증·게시 근거(`verification`, `runner`, `delivery`)는 지워진다. 열린 PR은 새 QA 뒤 같은 브랜치에 다시 게시하고 `flow-attach-pr`로 다시 연결한다.
+
+     ```powershell
+     node .agents/harness/launch.mjs flow-resume HH-123 --stage research --decision copy-timing --revision 2 --evidence "copy-check를 배포 후 실기기 확인(follow-up)으로 이동"
+     node .agents/harness/launch.mjs dispatch HH-123
+     ```
+
+   - 계획을 바꾸지 않으면 `--stage` 없이 같은 결정 ID·revision과 판정 근거를 기록한다. 상태·QA 판정은 그대로이고 `x_flow.decisionReviews`에 남는다. 그 뒤 게시를 이어 간다.
+
+     ```powershell
+     node .agents/harness/launch.mjs flow-resume HH-123 --decision pr-title --revision 2 --evidence "PR 제목 표현만 바뀜. 동결 계획·수정 범위 영향 없음"
+     ```
+
+   - 이 업무에 연결되지 않은 결정, 현재와 다른 revision, `--decision` 없는 재조사, `--stage implement`는 거부되고 대장은 바뀌지 않는다.
+   - PR이 연결된 업무(phase=ci)는 철회 전에 그 PR을 조회한다. 서버에서 이미 MERGED이거나 조회 실패·다른 PR 번호·상태 없음으로 확정할 수 없으면 «재조사하지 않는다»로 거부하고 QA 판정·게시 anchor·delivery를 그대로 둔다. 이때는 PR 상태를 확인해 `flow-prove-merged HH-123`으로 병합을 증명해 업무를 마치고, 결정은 `add`로 후속 업무를 만들어 다룬다. 조회가 일시 장애였으면 같은 `flow-resume`을 다시 실행한다.
+4. 업무가 BLOCKED도 게시·CI 대기도 아니면(조사·설계·구현·QA 진행 중) 다음 단계에 위임한다. 지시서의 결정 안내에 따라 그 단계가 충돌을 BLOCKED로 보고하면 수집 뒤 2를 따른다. 이미 실행 중인 회차는 결과를 수집한 뒤 판단한다.
+5. 재조사 summary에서 결정 ID·revision과 바뀐 검사·AC를 확인한다. 원래 AC가 빠지지 않았는지, 옮긴 항목이 `follow-up`에 환경·확인 방법과 함께 남았는지 본다. collect가 새 계획을 동결하면 구현·독립 QA를 다시 위임한다. 새 QA 지시서의 `해소 결정`과 «후속 확인 항목은 실행하지도 checks에 적지도 않는다» 줄을 확인한다. 새 QA PASS 뒤 `publish-check`의 `decisions`에 그 결정이, `remainingVerification`에 옮긴 후속 확인이 나오는지 확인하고 게시한다.
+
+BLOCKED 업무의 재조사(2)에도 `--decision KEY --revision N`을 붙이면 같은 검증을 거쳐 `x_flow.recovery.decision`에 남는다.
+
+collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 수 없는 항목의 필수 지정, 선언되지 않은 실행 수단, QA runner 전용 `hh-suite` 행의 `command`, follow-up `environment`·`verify`의 링크·이미지 대괄호·꺾쇠·백틱·HTML 엔티티 등) 대장은 바뀌지 않는다. 같은 조사 회차의 verification-plan.json을 고치게 한 뒤 다시 collect한다. 오류 메시지에 원인 검사·AC ID가 있다.
+
+## PR 본문 남은 검증 누락 복구
+
+`publish-check ID`의 `remainingVerification[].line`이 PR 본문 «남은 검증»에 `- [ ] <line>` 목록 줄로 한 줄씩 그대로 보여야 한다. 판정은 화면에 보이는 것이 확실한 줄만 인정한다([공통 규칙](../../README.md#qa와-남은-검증)).
+
+- PR 템플릿의 HTML 주석(`<!-- -->`)이나 HTML 속성·요소(`<div title="…">`, `<details>`) 안의 줄은 없는 것으로 본다. 태그·속성·`<details>`, 줄을 넘는 인라인 주석, 들여쓰거나 목록·인용 안에 있는 코드 울타리가 나오면 그 뒤의 줄도 인정하지 않으므로 «남은 검증» 절을 그런 요소보다 앞에 옮긴다.
+- 순서 목록(`1.`)·표시 없는 줄·4칸 이상 들여쓴 줄은 인정하지 않는다. `- `, `* `, `+ `(선택 `[ ]`)로 시작한다.
+- 인라인 코드(`` `<!--` ``)나 줄 맨 앞 울타리 코드 안의 주석 표식은 문자 그대로라 판정에 영향이 없다. 같은 줄 끝의 닫힌 주석 메모는 허용된다.
+
+- `flow-attach-pr`가 «PR 본문 «남은 검증»에 … 줄이 빠졌다»로 거부하면 대장은 그대로다. 게시자에게 빠진 줄을 넣게 하거나 `gh pr edit N --body-file <본문 파일>`로 고친 뒤 같은 명령을 다시 실행한다.
+- 연결 뒤 본문이 바뀌어 `flow-deliver`가 `phase: blocked`, `missing`을 돌려주면 본문을 고친 뒤 다시 확인한다. `--apply`·`watch-delivery`에서 막혀 BLOCKED(`delivery-blocked`)가 됐으면 본문을 고친 뒤 `flow-resume HH-123 --evidence "PR 본문 남은 검증 복구"`로 CI 확인에 돌려보낸다.
+- 이미 병합된 PR의 증명(`flow-prove-merged`)은 본문을 대조하지 않는다.
+
 ## PR 없는 업무의 정책 예외 종결
 
 사용자가 PR·병합 없이 끝내도록 승인한 업무만 대상이다. `flow-status`에서 state=QA, phase=publish, 독립 QA PASS, 연결된 PR 없음을 확인하고 `decision list`에 열린 결정이 없는지 본다. 근거에는 승인 출처와 이 업무에 적용하는 이유를 적는다.
@@ -44,7 +91,7 @@ node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(�
 node .agents/harness/launch.mjs show HH-123
 ```
 
-결과는 DONE, phase=closed와 `x_flow.closure.kind=policy-exception`이다. QA 미통과, 활성 실행, 열린 결정, PR 연결, QA 이후 후보 변경이 있으면 거부되고 대장은 바뀌지 않는다. DONE 직후 worktree 정리가 자동으로 실행된다. 결과는 아래 절차로 확인한다.
+결과는 DONE, phase=closed와 `x_flow.closure.kind=policy-exception`이다. 동결 계획에 후속 확인이 있으면 `closure.remainingVerification`에 남으므로 사용자에게 그 목록을 함께 알린다. QA 미통과, 활성 실행, 열린 결정, 판정을 기록하지 않은 QA 이후 해소 결정, PR 연결, QA 이후 후보 변경이 있으면 거부되고 대장은 바뀌지 않는다. DONE 직후 worktree 정리가 자동으로 실행된다. 결과는 아래 절차로 확인한다.
 
 ## 끝난 업무 worktree 정리와 재시도
 

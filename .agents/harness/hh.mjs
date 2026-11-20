@@ -2,18 +2,18 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { activeRun, collect, createWorktree, dispatch } from './stages.mjs';
+import { activeRun, collect, createWorktree, dispatch, scoped } from './stages.mjs';
 import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, command, config, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
 
 const cli = fileURLToPath(import.meta.url);
-const prFields = 'number,url,state,isCrossRepository,isDraft,headRefName,headRefOid,baseRefName';
+const prFields = 'number,url,state,isCrossRepository,isDraft,headRefName,headRefOid,baseRefName,body';
 const optionsByCommand = {
   whoami: {}, recover: {}, ls: { all: 'boolean' }, show: {}, policy: { stage: 'string', profile: 'string' },
   add: { title: 'string', 'desc-file': 'string', slug: 'string', workflow: 'string', kind: 'string', authorization: 'string', profile: 'string', depends: 'string' },
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
-  'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string' },
+  'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string', decision: 'string', revision: 'string' },
   'publish-check': { committed: 'boolean' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
   'flow-close': { evidence: 'string' }, 'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
@@ -35,8 +35,11 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
   });
 }
 
-// delivery는 시험에서 병합 증명 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery를 쓴다.
-export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery } = {}) {
+// 동결 계획의 후속 확인 목록. 이전 release에는 이 기능이 없으므로 호출하지 않는다.
+const remaining = (ctx, plan) => scoped(ctx) ? ctx.flow({ action: 'remaining', plan }) : null;
+
+// delivery·prView는 시험에서 병합 증명·PR 조회 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery와 gh를 쓴다.
+export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery, prView } = {}) {
   const [name, ...args] = argv;
   if (name === '--help' || !name) return { commands: Object.keys(optionsByCommand) };
   check(Object.hasOwn(optionsByCommand, name), '알 수 없는 명령: ' + name);
@@ -47,6 +50,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
   ctx.delivery = delivery ?? ctx.flow;
+  ctx.viewPr = prView ?? (n => viewPr(ctx, n));
   if (bindingFile !== undefined) check(bindingFile && samePath(bindingFile, ctx.file), '자체 launch.mjs로 현재 checkout의 binding을 전달해야 한다.');
   const mutate = handler => update(ctx, terminal, handler);
   if (name === 'recover') return update(ctx, terminal, ledger => {
@@ -117,7 +121,10 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     if (name === 'next') return Object.values(ledger.tasks).filter(t => !activeRun(t) && t.state !== 'BLOCKED' && t.pending)
       .map(t => ({ id: t.id, stage: t.pending, dependenciesReady: t.depends.every(id => ledger.tasks[id]?.state === 'DONE') }));
     const task = taskById(ledger, p[0]);
-    if (name === 'flow-status') return { id: task.id, state: task.state, pending: task.pending, flow: task.x_flow };
+    if (name === 'flow-status') {
+      const left = remaining(ctx, task.x_flow?.plan);
+      return { id: task.id, state: task.state, pending: task.pending, flow: task.x_flow, ...(left ? { remainingVerification: left } : {}) };
+    }
     if (!task.x_archive) return task;
     return adapter.ledgerArchive(ctx.file, { action: 'restore', project, stateDir: ctx.stateDir, ledger, id: task.id });
   }
@@ -140,7 +147,12 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     check(task, '위임할 업무가 없다.');
     return dispatch(ctx, ledger, task);
   });
-  if (name === 'publish-check') return publicationCheck(ctx, await readLedger(ctx), p[0], a.committed);
+  if (name === 'publish-check') {
+    // 게시자는 remainingVerification의 line을 PR 본문 «남은 검증»에 그대로 넣고, decisions를 근거 자료로 읽는다.
+    const ledger = await readLedger(ctx);
+    const result = publicationCheck(ctx, ledger, p[0], a.committed);
+    return scoped(ctx) ? { ...result, decisions: ctx.decisions({ ledger, action: 'resolved-for-task', task: result.id }) } : result;
+  }
   return mutate(async ledger => {
     const task = taskById(ledger, p[0]);
     if (name === 'dispatch') return dispatch(ctx, ledger, task);
@@ -157,9 +169,13 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       const { committed: anchor } = publicationCheck(ctx, ledger, task.id, true);
       const number = Number(a.pr);
       check(Number.isSafeInteger(number) && number > 0 && /^[1-9][0-9]*$/.test(a.pr), '--pr에 PR 번호가 필요하다.');
-      const pr = viewPr(ctx, number);
+      const pr = ctx.viewPr(number);
       check(pr.number === number && pr.state === 'OPEN' && pr.isCrossRepository === false && !pr.isDraft &&
         pr.headRefName === task.branch && pr.headRefOid === anchor.head && pr.baseRefName === 'main', '원격 PR이 최초 게시 후보와 다르다.');
+      // 후속 확인 0건·기존 계획은 본문을 요구하지 않는다. 연결 뒤 본문을 지우면 병합 직전 게이트(core/delivery.cjs)가 다시 막는다.
+      const missing = scoped(ctx) ? ctx.flow({ action: 'pr-remaining', plan: task.x_flow.plan, body: pr.body ?? null }) : [];
+      check(!missing.length, 'PR 본문 «남은 검증»에 publish-check의 remainingVerification 줄이 빠졌다: ' + missing.map(m => m.line).join(' / ') +
+        ' (각 line을 HTML·코드 블록보다 앞에 "- [ ] " 목록 항목으로 적는다)');
       task.x_flow.delivery = { pr: number, url: pr.url, ...anchor, original: anchor };
       task.x_flow.phase = 'ci';
       task.updated = now();
@@ -170,17 +186,30 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
   });
 }
 
+// PASS한 QA 회차를 위임한 뒤 해소된 이 업무의 결정은 그 QA 지시서에 없었다. Lead가 flow-resume으로 계획 영향을 판정해
+// 재조사로 되돌리거나 영향 없음을 기록하기 전에는 게시·연결·종결·병합하지 않는다.
+function requireDecisionReview(ctx, ledger, task) {
+  const since = task.runs.filter(r => r.stage === 'qa' && r.outcome === 'PASS').at(-1)?.started ?? '';
+  const reviewed = task.x_flow.decisionReviews ?? [];
+  const late = ctx.decisions({ ledger, action: 'list', all: true }).filter(r => r.status === 'resolved' && typeof r.task === 'string' &&
+    r.task.toUpperCase() === task.id && !(r.resolution?.at < since) && !reviewed.some(v => v.id === r.id && v.revision === r.revision));
+  check(!late.length, 'QA 이후 해소된 결정의 계획 영향을 판정하지 않았다: ' + late.map(r => r.id + ' revision ' + r.revision).join(', ') +
+    '. 계획을 바꾸면 flow-resume ' + task.id + ' --stage research --decision KEY --revision N --evidence "변경 근거", 바꾸지 않으면 같은 명령에서 --stage 없이 판정 근거를 기록한다.');
+}
+
 function publicationCheck(ctx, ledger, id, committed) {
   const task = taskById(ledger, id);
   withoutDecision(ctx, ledger, task);
   check(task.state === 'QA' && !activeRun(task) && task.x_flow.phase === 'publish' && task.x_flow.verification?.verdict === 'PASS',
     '독립 QA를 통과한 게시 대기 업무만 허용한다.');
+  requireDecisionReview(ctx, ledger, task);
   const anchor = committed ? verifyCommit(ctx, task) : null;
   if (!anchor) {
     const current = candidate(ctx, task);
     check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
   }
-  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor };
+  const left = remaining(ctx, task.x_flow.plan);
+  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}) };
 }
 
 async function deliver(ctx, ledger, task, name, a) {
@@ -191,6 +220,8 @@ async function deliver(ctx, ledger, task, name, a) {
   'QA 후보와 최초 게시 근거가 있는 업무가 필요하다.');
   check(ctx.release('delivery.cjs').dev14Version === 1, '고정 릴리스가 DEV-14 병합 증명을 지원하지 않는다.');
   const cwd = proofOnly ? ctx.root : task.worktree;
+  // 이미 병합된 PR의 증명은 막지 않는다.
+  if (!proofOnly) requireDecisionReview(ctx, ledger, task);
   if (!proofOnly) verifyCommit(ctx, task);
   assertBinding(ctx);
   const result = ctx.delivery({ action: 'delivery', cwd, flow, branch: task.branch,
@@ -220,25 +251,68 @@ async function close(ctx, ledger, task, a, terminal) {
     flow.phase === 'publish' && !flow.delivery, 'PR이 연결되지 않은 게시 대기 업무만 예외 종결한다.');
   check(flow.verification?.verdict === 'PASS' && task.candidate?.fingerprint && flow.verification.candidate === task.candidate.fingerprint &&
     flow.runner?.tree && flow.runner.tree === task.candidate.tree, '독립 QA PASS와 실행 영수증이 저장 후보와 일치해야 한다.');
-  publicationCheck(ctx, ledger, task.id, false);
+  // PR이 없으면 후속 확인이 드러날 곳이 없으므로 종결 기록에 남긴다.
+  const left = publicationCheck(ctx, ledger, task.id, false).remainingVerification ?? [];
   const previousPhase = flow.phase;
   task.pending = null;
   flow.phase = 'closed';
   await transition(ctx, task, 'DONE', '정책 예외 종결: ' + evidence);
   const entry = task.history.at(-1);
-  const closure = { kind: 'policy-exception', at: entry.at, terminal, evidence, previousPhase, qaVerdict: flow.verification.verdict };
+  const closure = { kind: 'policy-exception', at: entry.at, terminal, evidence, previousPhase, qaVerdict: flow.verification.verdict,
+    ...(left.length ? { remainingVerification: left } : {}) };
   flow.closure = closure;
   entry.closure = { ...closure };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'closed', closure: closure.kind });
   return { id: task.id, state: task.state, phase: flow.phase, closure, cleanup: cleanupWorktree(ctx, ledger, task) };
 }
 
+// 복구 근거로 남길 해소 결정. 이 업무에 연결돼 있고 지정한 revision이 현재 해소 기록과 같아야 한다.
+// 이전 release에도 있는 결정함 list --all로 확인하므로 고정 release의 기능 표지와 무관하다.
+function resolvedDecision(ctx, ledger, task, id, revision) {
+  check(/^[1-9][0-9]*$/.test(revision ?? ''), '--decision에는 해소 결정의 현재 --revision이 함께 필요하다.');
+  const found = ctx.decisions({ ledger, action: 'list', all: true }).find(r => r.id === id);
+  check(found?.status === 'resolved' && typeof found.task === 'string' && found.task.toUpperCase() === task.id,
+    '이 업무에 연결된 해소 결정이 아니다: ' + id);
+  check(found.revision === Number(revision), '결정 ' + id + '의 현재 revision은 ' + found.revision + '이다.');
+  return { id, revision: found.revision };
+}
+
+// 재조사는 QA·게시 근거(delivery anchor)를 지운다. 연결된 PR이 대장 갱신 전에 이미 병합됐으면 병합 증명을 모을 수 없게 되므로,
+// 먼저 PR을 조회해 병합됐거나 상태를 확정할 수 없으면 대장을 그대로 두고 거부한다.
+function requireUnmergedPr(ctx, task, decision) {
+  const number = task.x_flow.delivery.pr;
+  const next = ' QA·게시 근거는 그대로 둔다. 병합됐으면 flow-prove-merged ' + task.id + '로 증명하고 결정 ' + decision.id + '은 후속 업무로 다룬다.';
+  let pr;
+  try { pr = ctx.viewPr(number); } catch (error) { check(false, '연결된 PR #' + number + '의 상태를 확정할 수 없어 재조사하지 않는다(' + error.message + ').' + next); }
+  check(pr?.number === number && ['OPEN', 'CLOSED', 'MERGED'].includes(pr.state), '연결된 PR #' + number + '의 상태를 확정할 수 없어 재조사하지 않는다.' + next);
+  check(pr.state !== 'MERGED', '연결된 PR #' + number + '이 이미 병합돼 재조사하지 않는다.' + next);
+}
+
 async function resume(ctx, ledger, task, a) {
   const flow = task.x_flow;
-  check(task.state === 'BLOCKED' && ['blocked', 'diagnose', 'delivery-blocked'].includes(flow.phase) &&
+  // QA PASS 뒤 게시·CI 대기 중인 업무는 계획을 바꾸는 해소 결정을 근거로 재조사에만 되돌린다. 병합·종결된 업무는 대상이 아니다.
+  const publishing = flow?.version === 2 && task.state === 'QA' && !activeRun(task) && ['publish', 'ci'].includes(flow.phase) &&
+    flow.verification?.verdict === 'PASS';
+  check((publishing || task.state === 'BLOCKED' && ['blocked', 'diagnose', 'delivery-blocked'].includes(flow.phase)) &&
     a.evidence?.trim() && [undefined, 'research', 'implement'].includes(a.stage),
-  '차단 업무, 달라진 조건의 근거와 유효한 복구 단계가 필요하다.');
+  '차단 업무 또는 게시 대기 업무, 달라진 조건의 근거와 유효한 복구 단계가 필요하다.');
+  check(a.revision === undefined || a.decision !== undefined, '--revision은 --decision과 함께 지정한다.');
+  check(!publishing || (a.decision !== undefined && [undefined, 'research'].includes(a.stage)),
+    '게시 대기 업무는 해소 결정(--decision KEY --revision N)을 근거로 재조사(--stage research)로 되돌리거나 계획 영향 없음(--stage 없음)을 기록한다.');
   withoutDecision(ctx, ledger, task);
+  const decision = a.decision === undefined ? null : resolvedDecision(ctx, ledger, task, a.decision, a.revision);
+  if (publishing && a.stage === undefined) {
+    // 계획을 바꾸지 않는 결정: 판정 근거만 남기고 게시 대기·CI 대기와 QA 판정은 그대로 둔다.
+    flow.decisionReviews = [...(flow.decisionReviews ?? []).filter(v => v.id !== decision.id), { ...decision, at: now(), evidence: a.evidence }];
+    task.updated = now();
+    save(ctx, ledger, { event: 'x_flow', task: task.id, phase: flow.phase, decision: decision.id });
+    return { id: task.id, state: task.state, pending: task.pending, phase: flow.phase, reviewed: flow.decisionReviews.at(-1) };
+  }
+  if (publishing && flow.delivery) requireUnmergedPr(ctx, task, decision);
+  // 철회하는 QA 보고 지문과 연결된 PR을 남긴다. 열린 PR은 새 QA 뒤 다시 연결해야 병합 판정에 쓰인다.
+  const withdrawn = publishing ? { phase: flow.phase, verification: flow.verification.digest ?? null, pr: flow.delivery?.pr ?? null } : null;
+  // 계약상 QA에서 조사로 바로 갈 수 없으므로 게시 철회(BLOCKED)를 기록한 뒤 재조사로 보낸다. 이전 QA·게시 허가는 아래에서 지운다.
+  if (publishing) await transition(ctx, task, 'BLOCKED', '결정 ' + decision.id + ' revision ' + decision.revision + '로 게시 대기 QA·게시 허가 철회', 'flow-blocked');
   const originalStage = task.pending;
   let pending, phase;
   if (a.stage === 'research') {
@@ -263,8 +337,10 @@ async function resume(ctx, ledger, task, a) {
   if (['research', 'implement'].includes(pending)) {
     flow.delivery = null;
     flow.verification = null;
+    delete flow.runner;
+    delete flow.decisionReviews;
   }
-  flow.recovery = { at: now(), evidence: a.evidence };
+  flow.recovery = { at: now(), evidence: a.evidence, ...(decision ? { decision } : {}), ...(withdrawn ? { withdrawn } : {}) };
   task.pending = pending;
   flow.phase = phase;
   const to = pending === 'research' || pending === 'architect' ? 'RESEARCHING' : pending === 'implement' ? 'READY_TO_IMPLEMENT' : 'QA';

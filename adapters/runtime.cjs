@@ -96,14 +96,22 @@ function workflow(file, input) {
   const api = require(path.join(b.release, 'core/workflow.cjs'));
   if (input.action === 'create') return api.create(input.kind, input.authorization);
   if (input.action === 'collect') return api.collect(input.flow, input.report, input.candidate);
-  if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate);
+  // options는 새 계획 형식 문구(scopes)와 해소 결정(decisions)을 켜는 명시 입력이다. 이전 release는 무시하므로 features로 먼저 확인한다.
+  if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate, input.options);
+  if (input.action === 'features') return { planScopeVersion: api.planScopeVersion ?? null };
+  if (['freeze', 'remaining', 'pr-remaining'].includes(input.action)) {
+    if (api.planScopeVersion !== 1) throw new Error('고정 release가 검증 계획 실행 위치 분류를 지원하지 않는다.');
+    if (input.action === 'freeze') return api.freezePlan(input.plan, input.options);
+    if (input.action === 'remaining') return api.remainingVerification(input.plan);
+    return api.missingRemaining(input.plan, input.body);
+  }
   if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base,input.receipt);
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
   throw new Error('지원하지 않는 workflow 동작');
 }
 module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, worktreeCleanup, decisionClosure, workflow };
 if (require.main === module) {
-  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, cleanup: worktreeCleanup, closure: decisionClosure }[process.argv[3]] ?? bridge;
+  const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, cleanup: worktreeCleanup, closure: decisionClosure, workflow }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }
   catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
 }

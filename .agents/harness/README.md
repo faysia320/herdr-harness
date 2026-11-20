@@ -19,15 +19,32 @@
     node .agents/harness/launch.mjs next --go
     node .agents/harness/launch.mjs collect HH-001
 
-위임은 동결한 AC·검사와 보고서 위치를 전달한다. QA의 PASS에는 독립 회차의 보고서와 함께 고정 release를 사용한 후보 tree별 실행 영수증이 필요하다. runner는 시험 worker 표지를 제거한 환경에서 고정 시험 명령을 실행하고 양수의 전체 통과 건수가 기록된 경우에만 영수증을 발급한다. 수집기는 해당 회차의 로그에서 같은 건수를 다시 확인한다. 복구는 recover로 현재 연결된 실행을 조회하고, 차단 업무는 flow-resume ID --evidence "달라진 조건"으로 재개한다.
+위임은 동결한 AC·검사와 보고서 위치를 전달한다. 고정 release가 [검증 계획 실행 위치 분류](../../README.md#검증-계획-실행-위치와-해소-결정-인계)를 지원하면(`planScopeVersion === 1`) 조사는 verification-plan.json에 checkScopes를 함께 쓰고, collect는 공통 freeze에 config.json의 qa_executors와 필수 검사 hh-suite를 넘겨 동결한다. 지원하지 않는 release에서는 기존 ID 배열 계획과 기존 지시서를 그대로 쓰고 새 조회를 부르지 않는다.
+
+    {"run":"<토큰>","version":2,"criteria":["AC1","AC2"],"checks":["hh-suite","copy-unit"],
+     "checkScopes":[
+      {"id":"hh-suite","location":"independent-qa","executor":"hh-suite","criteria":["AC1","AC2"]},
+      {"id":"copy-unit","location":"independent-qa","executor":"node-test","command":"node --test test/copy.test.mjs","criteria":["AC2"]},
+      {"id":"mobile-browser-copy","location":"follow-up","criteria":["AC2"],"environment":"배포 후 Galaxy Chrome","verify":"제목을 복사해 Teams에 붙여넣고 원문과 대조"}]}
+
+HH의 독립 QA 실행 수단은 hh-suite(QA runner 전용. 행에 command를 적으면 동결을 거부한다), node-test(`node --test <test·mod 아래 .test.mjs 파일>`), git-read(`git diff|ls-files|show|log|grep` 읽기 명령. config.json 허용 목록의 조회 옵션과 리비전·경로만 받고 `--output`·`-O`·`--ext-diff`·`--no-index` 같은 옵션과 셸 확장 문자는 동결에서 거부한다)다. 이 밖의 검사(배포 후·실기기·브라우저·외부 계정)는 follow-up으로 적는다. follow-up의 environment·verify는 PR 본문에 그대로 싣는 일반 문장이며 링크·이미지 대괄호, 꺾쇠(HTML 태그·주석·`<URL>`), 백틱, HTML 엔티티가 있으면 동결을 거부한다. 매 위임 전에 이 업무의 해소 결정을 조회해 지시서에 `해소 결정: <JSON>`으로 넣는다. 조회는 run 폴더를 만들거나 대장을 바꾸기 전에 하며, 결정함을 읽지 못하면 위임하지 않는다. 결정이 계획과 충돌할 때의 재조사는 [LEAD.md](LEAD.md#해소-결정이-동결-계획과-충돌할-때)를 따른다.
+
+QA의 PASS에는 독립 회차의 보고서와 함께 고정 release를 사용한 후보 tree별 실행 영수증이 필요하다. runner는 시험 worker 표지를 제거한 환경에서 고정 시험 명령을 실행하고 양수의 전체 통과 건수가 기록된 경우에만 영수증을 발급한다. 수집기는 해당 회차의 로그에서 같은 건수를 다시 확인한다. 복구는 recover로 현재 연결된 실행을 조회하고, 차단 업무는 flow-resume ID --evidence "달라진 조건"으로 재개한다.
 
 ## 게시와 병합
 
 Lead는 publish-check ID를 확인한 뒤 공통 launcher의 publisher-command ID가 돌려준 argv를 사용한다. 게시자는 같은 ID의 후보를 확인하고 승인된 파일만 명시적으로 stage한다. 로컬 커밋 뒤 publish-check ID --committed로 Git tree·변경 경로·mode·blob을 대조한다. 이 판정을 얻은 뒤 해당 업무 브랜치만 push하고 main을 대상으로 PR을 만든다. PR 본문에 원래 AC, 독립 QA 회차·후보·실행한 검사, 남은 검증을 기록한다.
 
-Lead는 flow-attach-pr ID --pr N으로 실제 PR을 대장에 연결한다. flow-deliver ID는 현재 후보와 CI·보호 규칙을 확인한다. flow-deliver ID --apply 또는 watch-delivery ID는 열린 결정이 없고 공통 DEV-14 조건이 충족됐을 때만 squash한다. 이미 병합된 PR은 flow-prove-merged ID로 읽기 전용 증명을 확인한다. 최초 게시 anchor, 최종 head의 CI, squash 부모와 tree, GitHub main 포함이 확인되면 대장이 DONE으로 바뀐다.
+publish-check는 remainingVerification(동결 계획의 후속 확인)과 decisions(이 업무의 해소 결정)를 함께 돌려준다. 게시자는 PR 본문의 «남은 검증» 절에 remainingVerification 각 항목의 line을 `- [ ] <line>` 목록 줄(들여쓰기 0~3칸)로 한 줄씩 그대로 넣고, 이 절을 raw HTML(`<details>` 등)·들여쓴 코드 블록보다 앞에 둔다. 줄을 고치거나 합친 줄, 순서 목록·표시 없는 줄, HTML 주석·속성 안의 줄, 그런 HTML 뒤의 줄은 PR 화면에 보이는지 확정할 수 없어 누락으로 판정된다. 인라인 코드·울타리 코드 안의 `<!--`는 문자 그대로라 판정에 영향이 없다. 판정 규칙은 [공통 README](../../README.md#qa와-남은-검증)를 따른다. 후속 확인이 없으면 이 절의 형식은 기존과 같다. flow-status도 같은 remainingVerification을 보여 준다.
 
-PR을 만들지 않기로 승인된 업무는 flow-close ID --evidence "승인 출처와 적용 이유"로 정책 예외 종결한다. 등록된 Lead만 실행하며, 업무가 독립 QA PASS 후 publish 단계에 있고 활성 실행·열린 결정·연결된 PR이 없으며 현재 후보가 QA 후보와 같을 때만 DONE이 된다. 대장에는 phase=closed와 x_flow.closure(kind=policy-exception, 시각, Lead 터미널, 근거, 직전 phase, QA 판정)가 남아 병합 증명(phase=merged)과 구분된다. PR이 이미 연결된 업무는 병합 증명 절차를 따른다.
+독립 QA PASS 뒤에 이 업무의 결정이 해소되면 그 결정은 PASS한 QA 지시서에 없었다. publish-check·flow-attach-pr·flow-close·flow-deliver(병합 증명 제외)는 Lead가 flow-resume ID --decision KEY --revision N으로 판정을 기록할 때까지 멈춘다. 계획을 바꾸는 결정이면 --stage research로 QA 판정·게시 허가를 철회하고 재조사로 돌린다. PR이 연결돼 있으면 철회 전에 조회해, 이미 병합됐거나 상태를 확정할 수 없으면 거부하고 대장을 그대로 둔다(flow-prove-merged로 증명한 뒤 결정은 후속 업무). 절차는 [LEAD.md](LEAD.md#해소-결정이-동결-계획과-충돌할-때)에 있다.
+
+    ## 남은 검증
+    - [ ] mobile-browser-copy (AC2) | 환경: 배포 후 Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조
+
+Lead는 flow-attach-pr ID --pr N으로 실제 PR을 대장에 연결한다. 연결 전에 gh pr view의 실제 body를 대조해 남은 검증 줄이 하나라도 빠지면 빠진 줄을 알려 주고 대장을 바꾸지 않는다. 연결 뒤 본문에서 줄을 지우면 flow-deliver의 병합 전 확인이 blocked로 막는다. flow-deliver ID는 현재 후보와 CI·보호 규칙을 확인한다. flow-deliver ID --apply 또는 watch-delivery ID는 열린 결정이 없고 공통 DEV-14 조건이 충족됐을 때만 squash한다. 이미 병합된 PR은 flow-prove-merged ID로 읽기 전용 증명을 확인한다. 최초 게시 anchor, 최종 head의 CI, squash 부모와 tree, GitHub main 포함이 확인되면 대장이 DONE으로 바뀐다.
+
+PR을 만들지 않기로 승인된 업무는 flow-close ID --evidence "승인 출처와 적용 이유"로 정책 예외 종결한다. 등록된 Lead만 실행하며, 업무가 독립 QA PASS 후 publish 단계에 있고 활성 실행·열린 결정·판정을 기록하지 않은 QA 이후 해소 결정·연결된 PR이 없으며 현재 후보가 QA 후보와 같을 때만 DONE이 된다. 대장에는 phase=closed와 x_flow.closure(kind=policy-exception, 시각, Lead 터미널, 근거, 직전 phase, QA 판정)가 남아 병합 증명(phase=merged)과 구분된다. 후속 확인이 있으면 PR 대신 closure.remainingVerification에 남는다. PR이 이미 연결된 업무는 병합 증명 절차를 따른다.
 
     node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(대화 2026-01-01): PR 없는 검증 업무"
 
@@ -47,6 +64,6 @@ collect는 단계 보고를 정상 수집해 회차를 저장한 뒤 그 회차�
 
 GitHub Actions 검사 이름은 harness-ci (ubuntu-latest)와 harness-ci (windows-latest)다. 서버에서 검사 이름과 GitHub Actions App을 필수로 지정하고 strict up-to-date와 우회 없는 보호를 확인해야 자동 병합할 수 있다.
 
-결정 요청은 decision request KEY --file JSON으로 등록한다. 실제 사용자 답변과 출처는 decision resolve KEY --file JSON --revision N으로 기록한다. 설치된 Herdr 패널은 이 저장소의 업무·결정함과 현재 Lead를 읽는다.
+결정 요청은 decision request KEY --file JSON으로 등록한다. 실제 사용자 답변과 출처는 decision resolve KEY --file JSON --revision N으로 기록한다. 사용자가 선택지를 골랐으면 답변 JSON에 그 label을 selection으로 넣는다(예: `{"quote":"[사용자 결정 · Herdr 하네스 모드] 질문 browser-check(revision 1)의 답: \"배포 후 실기기 확인\"","source":"Herdr 하네스 모드 사용자 선택","selection":"배포 후 실기기 확인"}`). 설치된 Herdr 패널은 이 저장소의 업무·결정함과 현재 Lead를 읽는다.
 
 최초 도입 QA는 후보 밖에 보관한 기준 commit·검증 계획·고정 release에서 판정하고 별도 bootstrap ID를 사용한다. .local/hh-harness/의 실제 v2 업무에는 그 조사·QA·게시 판정을 복사하지 않는다.

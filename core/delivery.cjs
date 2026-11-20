@@ -1,6 +1,6 @@
 // PR의 실시간 상태를 직접 읽는다. 호출자가 전달한 CI 성공이나 병합 결과는 믿지 않는다.
 const { spawnSync } = require('node:child_process');
-const { mergeGate } = require('./workflow.cjs');
+const { mergeGate, missingRemaining } = require('./workflow.cjs');
 const { verifyPublication, syncHistory, candidateInTree, checksAtHead } = require('./dev14.cjs');
 function execute(cwd, cmd, args, allowFailure = false) {
   const blob = cmd === 'git' && args[0] === 'cat-file' && args[1] === 'blob';
@@ -78,7 +78,7 @@ function deliver(input, exec = execute) {
   };
   if (!proofOnly && (git('branch','--show-current')!==branch || (!dev14 && git('rev-parse','HEAD')!==flow.delivery.head))) throw new Error('로컬 게시 후보가 바뀌었다.');
   const number = String(flow.delivery.pr);
-  const fields = 'number,url,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,mergedAt';
+  const fields = 'number,url,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,mergedAt,body';
   const view = () => JSON.parse(gh('pr','view',number,'--repo',repo,'--json',fields));
   const pr = view();
   const samePR = p => p.number===flow.delivery.pr && p.headRefName===branch && p.baseRefName==='main' && (dev14 ? p.isCrossRepository===false : !p.isCrossRepository);
@@ -134,6 +134,13 @@ function deliver(input, exec = execute) {
   const merged=verifyMerged(pr);
   if (merged) return merged;
   if (proofOnly) return {phase:'proof-blocked',pr:pr.number,reasons:['서버 병합 SHA·시각 근거 불충분']};
+  // 동결 계획의 후속 확인이 PR 본문 남은 검증에 모두 있어야 병합한다. 이미 병합된 PR의 증명에는 적용하지 않는다.
+  const bodyGap = p => {
+    const missing = missingRemaining(flow.plan, p.body).map(m=>m.line);
+    return missing.length ? {phase:'blocked',ready:false,pr:p.number,missing,reasons:['PR 본문 남은 검증 누락: '+missing.join(' / ')]} : null;
+  };
+  const gap = bodyGap(pr);
+  if (gap) return gap;
   // 병합된 PR의 원격 브랜치는 이미 삭제될 수 있다. 열린 PR에서만 head를 가져온다.
   // FETCH_HEAD는 다른 프로세스와 공유하므로 사용하지 않는다.
   const main = fetchMain(`refs/heads/${branch}`);
@@ -197,6 +204,8 @@ function deliver(input, exec = execute) {
   const fresh=view();
   if (fresh.state==='MERGED') return verifyMerged(fresh) ?? {phase:'ci',ready:false,reasons:['서버 병합 증명 대기']};
   if (!samePR(fresh) || fresh.headRefOid!==pr.headRefOid || fresh.baseRefOid!==main || git('ls-remote',urls[0],'refs/heads/main').split(/\s/)[0]!==main) return { phase:dev14?'ci':'revalidate',ready:false,reasons:['병합 직전 head/base 이동'] };
+  const freshGap=bodyGap(fresh);
+  if (freshGap) return freshGap;
   const finalGate=assess(fresh,getChecks());
   if (!finalGate.ready) return {phase:finalGate.blocked?'blocked':'ci',...finalGate};
   // 서버의 보호 규칙도 그대로 적용한다. admin 우회·강제 병합·브랜치 삭제는 하지 않는다.
