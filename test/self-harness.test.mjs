@@ -59,6 +59,15 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
     return session;
   }
   const run = (args, terminal = 't-lead') => main(args.split(' '), { cwd: repo, terminal, herdr });
+  const ledgerFile = join(state, 'ledger.json'), eventsFile = join(state, 'events.jsonl');
+  const stored = () => [readFileSync(ledgerFile, 'utf8'), readFileSync(eventsFile, 'utf8')];
+  const close = (id, evidence, terminal = 't-lead') => main(['flow-close', id, ...(evidence === undefined ? [] : ['--evidence', evidence])],
+    { cwd: repo, terminal, herdr });
+  const refused = async (action, pattern) => {
+    const before = stored();
+    await assert.rejects(action, pattern);
+    assert.deepEqual(stored(), before);
+  };
   const launcher = join(repo, '.agents/harness/launch.mjs');
   const viaLauncher = (...args) => spawnSync(process.execPath, [launcher, '--binding', binding, ...args],
     { cwd: repo, encoding: 'utf8', windowsHide: true });
@@ -100,6 +109,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('collect ' + task.id), /필수 검사 ID/);
   writeJson(join(research.dir, 'verification-plan.json'), plan);
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');
+  await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   const implementation = (await run('dispatch ' + task.id)).run;
   assert.equal(implementation.model, 'claude-opus-5-5');
   const target = join(task.worktree, 'tracked.txt');
@@ -110,10 +120,12 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('collect ' + task.id), /예정 경로 밖/);
   rmSync(join(task.worktree, 'outside.txt'));
   const implemented = await run('collect ' + task.id);
+  await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   writeJson(join(research.dir, 'verification-plan.json'), { ...plan, criteria: ['replaced'] });
   const qa = (await run('dispatch ' + task.id)).run;
   assert.equal(qa.model, 'gpt-6.2-sol');
   assert.notEqual(qa.terminal, implementation.terminal);
+  await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   const reportFile = join(qa.dir, 'verification.json'), receiptFile = join(task.worktree, 'target/hh-verify/latest-qa.json');
   const report = { run: qa.token, version: 2, verdict: 'PASS', candidate: implemented.candidate.fingerprint, findings: [],
     criteria: [{ id: 'AC1', status: 'passed', evidence: 'fixture contents' }],
@@ -149,10 +161,39 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('collect ' + task.id), /후보가 변경/);
   writeFileSync(target, 'candidate\n');
   assert.equal((await run('collect ' + task.id)).x_flow.phase, 'publish');
+  assert.ok((await main(['--help'])).commands.includes('flow-close'));
+  await refused(() => main(['flow-close', '--evidence', 'fixture exception'], { cwd: repo, terminal: 't-lead', herdr }), /위치 인자/);
+  await refused(() => main(['flow-close', task.id, task.id, '--evidence', 'x'], { cwd: repo, terminal: 't-lead', herdr }), /위치 인자/);
+  await refused(() => close(task.id, 'fixture exception', 't-other'), /살아 있는 Lead/);
+  assert.equal(viaLauncher('flow-close', task.id, '--evidence', 'fixture exception').status, 2);
+  await refused(() => close('HH-999', 'fixture exception'), /업무 ID/);
+  await refused(() => close(task.id), /--evidence/);
+  await refused(() => close(task.id, '   '), /--evidence/);
+  writeFileSync(target, 'changed after QA\n');
+  await refused(() => close(task.id, 'fixture exception'), /QA 이후 후보/);
+  writeFileSync(target, 'candidate\n');
+  const verifiedLedger = readFileSync(ledgerFile, 'utf8');
+  const forged = [
+    [t => { t.x_flow.delivery = { pr: 7 }; }, /PR이 연결되지 않은/],
+    [t => { t.x_flow.phase = 'ci'; }, /PR이 연결되지 않은/],
+    [t => { t.state = 'BLOCKED'; t.x_flow.phase = 'delivery-blocked'; }, /PR이 연결되지 않은/],
+    [t => { t.pending = 'qa'; }, /PR이 연결되지 않은/],
+    [t => { t.x_flow.verification.verdict = 'FAIL'; }, /독립 QA PASS/],
+    [t => { t.x_flow.verification.candidate = 'other'; }, /독립 QA PASS/],
+    [t => { delete t.x_flow.runner; }, /독립 QA PASS/],
+  ];
+  for (const [change, pattern] of forged) {
+    const ledger = JSON.parse(verifiedLedger);
+    change(ledger.tasks[task.id]);
+    writeFileSync(ledgerFile, JSON.stringify(ledger, null, 2) + '\n');
+    await refused(() => close(task.id, 'fixture exception'), pattern);
+  }
+  writeFileSync(ledgerFile, verifiedLedger);
   assert.equal(JSON.parse(viaLauncher('publisher-command', task.id).stdout).model, 'gpt-6-luna');
   const question = join(repo, '.local/question.json');
   writeJson(question, { task: task.id.toLowerCase(), question: 'Fixture decision?', source: 'isolated fixture' });
   await main(['decision','request','fixture','--file',question], { cwd: repo, terminal: 't-lead', herdr });
+  await refused(() => close(task.id, 'fixture exception'), /미해소/);
   await assert.rejects(run('publish-check ' + task.id, 't-other'), /미해소/);
   const answer = join(repo, '.local/answer.json');
   writeJson(answer, { quote: 'Fixture answer', source: 'isolated fixture input' });
@@ -165,6 +206,23 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   git(task.worktree, 'update-index', '--chmod=+x', 'tracked.txt');
   git(task.worktree, 'commit', '-m', 'different mode');
   await assert.rejects(run('publish-check ' + task.id + ' --committed', 't-other'), /tree와 독립 QA|미커밋|mode/);
+  git(task.worktree, 'reset', '--hard', base);
+  writeFileSync(target, 'candidate\n');
+  const events = stored()[1].split('\n').length;
+  const closed = await close(task.id, '  사용자 승인 fixture: PR 없는 검증 업무  ');
+  const saved = JSON.parse(readFileSync(ledgerFile, 'utf8')).tasks[task.id];
+  const last = saved.history.at(-1);
+  assert.deepEqual(closed.closure, { kind: 'policy-exception', at: last.at, terminal: 't-lead',
+    evidence: '사용자 승인 fixture: PR 없는 검증 업무', previousPhase: 'publish', qaVerdict: 'PASS' });
+  assert.deepEqual([saved.state, saved.pending, saved.awaiting, saved.x_flow.phase], ['DONE', null, null, 'closed']);
+  assert.deepEqual([last.from, last.to, last.why], ['QA', 'DONE', '정책 예외 종결: 사용자 승인 fixture: PR 없는 검증 업무']);
+  assert.deepEqual(saved.x_flow.closure, closed.closure);
+  assert.deepEqual(last.closure, closed.closure);
+  assert.equal(saved.x_flow.delivery ?? null, null);
+  assert.equal(saved.x_flow.runner.tree, implemented.candidate.tree);
+  assert.equal(stored()[1].split('\n').length, events + 1);
+  assert.equal((await run('flow-status ' + task.id, 't-other')).flow.closure.kind, 'policy-exception');
+  await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   assert.equal(launches.length, 3);
   assert.equal(JSON.parse(readFileSync(binding)).project, 'herdr-harness');
 });
