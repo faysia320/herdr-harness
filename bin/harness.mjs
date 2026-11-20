@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { runTree } from '../core/process.js';
 import { needsPreparation, preparationStatus, withPreparation } from '../core/preparation.mjs';
 import { tryRecordMetric } from '../core/metrics.mjs';
@@ -24,7 +24,8 @@ try {
     const execute = () => {
       if (JSON.stringify(binding(file)) !== JSON.stringify(b)) throw new Error('준비 대기 중 연결 설정이 바뀌었다. 새 binding의 launcher로 다시 실행한다.');
       // 순서 대기에는 실행 한도를 소비하지 않는다. 조회·결정 명령은 준비 슬롯을 잡지 않는다.
-      return runTree(b.command[0], [...b.command.slice(1), ...adapterArgs], { cwd: b.cwd, timeout: b.timeout ?? 600000, signal: controller.signal });
+      const env = { ...process.env, HERDR_HARNESS_ENTRY_BINDING: resolve(file), HERDR_HARNESS_ENTRY_PID: String(process.pid) };
+      return runTree(b.command[0], [...b.command.slice(1), ...adapterArgs], { cwd: b.cwd, env, timeout: b.timeout ?? 600000, signal: controller.signal });
     };
     let r, timing;
     try {

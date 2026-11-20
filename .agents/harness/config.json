@@ -1,0 +1,17 @@
+{
+  "project": {
+    "id": "herdr-harness",
+    "state_dir": ".local/hh-harness",
+    "worktree_dir": ".local/worktrees",
+    "remote_pattern": "faysia320/herdr-harness",
+    "terminal_prefix": "hh-"
+  },
+  "roles": {
+    "research": { "skill": "", "invoke": "" },
+    "architect": { "skill": "", "invoke": "" },
+    "implement": { "skill": "", "invoke": "" },
+    "qa": { "skill": "", "invoke": "" }
+  },
+  "execution_overrides": {},
+  "sensitive_paths": [".agents/harness", ".github", "adapters", "core", "bin", "policy", "scripts", "mod", "test", "package.json", ".gitattributes", ".gitignore"]
+}

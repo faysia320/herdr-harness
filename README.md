@@ -1,5 +1,7 @@
 # Herdr Harness
 
+이 저장소의 업무는 [자체 v2 운영 지침](.agents/harness/README.md)에 따라 등록하고 게시한다.
+
 ## 작업 흐름 v2 — smart-workspace 파일럿
 
 기존 대장은 그대로 두고 `add --workflow v2 --kind bug-fix|feature|ui|performance|refactor --authorization <사용자의 자동 게시·병합 지시>`로 만든 업무만 새 흐름을 따른다. 모델 선택·작업별 절차는 `policy/workflow.json`, 실패 분류·진행 판정은 `core/workflow.cjs`가 정본이다. Herdr의 기존 단계는 호환 표시이며 `x_flow.phase`가 게시·CI·복구 진행을 구분한다.
