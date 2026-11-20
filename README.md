@@ -447,9 +447,9 @@ DONE 업무의 worktree와 로컬 업무 브랜치는 공통 release의 `core/wo
 '{"action":"cleanup","project":"<id>","stateDir":"<상태폴더>","task":{"id":"HH-1","state":"DONE","root":"<저장소>","worktreeDir":"<worktree_dir 절대 경로>","worktree":"<업무 worktree>","branch":"<업무 브랜치>","kind":"merged","proof":{"head":"<최종 PR head>","original":"<최초 게시 head>","branch":"<PR 브랜치>"},"activity":{"current":false,"runs":[{"token":"<회차>","status":"ended","address":"t7","state":"finished","run":"<harness.run 레이블>"}]},"ignored":{"keep":["target/hh-verify/"],"discard":["dist/"]},"artifacts":{"config":{...},"vars":{"slug":"x"}},"retry":"<재시도 명령>","limits":{"contentMs":60000}}}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json cleanup
 ```
 
-정책 예외 종결 업무는 `kind: "closed"`와 `proof` 대신 `candidate: {head, tree, paths}`(QA 후보)를 넘긴다. `limits.contentMs`(1~3600000, 기본 60000)는 정리 시작부터 추적 파일 내용 확인과 폴더 순회를 끝내야 하는 시간이다.
+정책 예외 종결 업무는 `kind: "closed"`와 `proof` 대신 `candidate: {head, tree, paths}`(QA 후보)를 넘긴다. 사용자 승인 병합 종결 업무(아래 «사용자 승인 병합 종결»)는 `kind: "merged-accepted"`만 넘긴다. 사전검사·보관·비강제 remove는 같고, tip 대조 없이 브랜치는 `git branch -d`만 시도해 거부되면 `branch: {state: "kept", tip, reason}`로 보존한다. `limits.contentMs`(1~3600000, 기본 60000)는 정리 시작부터 추적 파일 내용 확인과 폴더 순회를 끝내야 하는 시간이다.
 
-- **대상**: 병합 증명(`merged`)이나 정책 예외 종결(`closed`)로 DONE이 된 업무의 등록된 linked worktree 하나다. 경로는 호출자가 등록한 `worktreeDir` 바로 아래여야 한다. main checkout, 다른 등록 worktree를 품은 경로, 잠긴 worktree, 대장에 없는 준비 잔재는 대상이 아니다. 준비 시간 초과로 남은 부분 worktree·브랜치는 지금처럼 자동 삭제하지 않는다.
+- **대상**: 병합 증명(`merged`), 정책 예외 종결(`closed`), 사용자 승인 병합 종결(`merged-accepted`)로 DONE이 된 업무의 등록된 linked worktree 하나다. 경로는 호출자가 등록한 `worktreeDir` 바로 아래여야 한다. main checkout, 다른 등록 worktree를 품은 경로, 잠긴 worktree, 대장에 없는 준비 잔재는 대상이 아니다. 준비 시간 초과로 남은 부분 worktree·브랜치는 지금처럼 자동 삭제하지 않는다.
 - **순서**: 사전검사 → 과정 문서와 `ignored.keep` 파일 재보관(`artifact-policy`의 `preserve`, `process_artifacts` 선언이 없으면 «선언 없음»으로 기록하고 지정 파일만 보관) → 예외 종결 후보의 patch 보존 → 의도 기록 → 후보 경로만 HEAD로 되돌림 → 비강제 `git worktree remove` → 병합 업무의 로컬 브랜치 삭제 → 호출자가 대장에 결과 기록. 보관본은 현재 파일·사본·manifest의 SHA-256이 같을 때만 삭제 근거가 된다.
 - **멈춤**: 다음 중 하나라도 해당하면 파일·index·등록·ref를 하나도 바꾸지 않고 `status: "refused"`와 이유·남은 자원·재시도 명령을 돌려준다.
   - 실행 중인 회차, 살아 있는 위임 터미널(회차 레이블이 같거나 없음), 터미널 조회 실패
@@ -512,6 +512,25 @@ QA가 FAIL·CONDITIONAL PASS·BLOCKED로 끝나 BLOCKED가 된 업무를 사용�
 - 상태·전이표를 바꾸지 않는다. 공통 전이표(`core/contract.js`)는 이미 BLOCKED→DONE을 허용한다. 계약 문서 표의 BLOCKED 행 «`resume_state` 또는 사람이 지정한 상태»에도 들어간다. 프로젝트 CLI 전이표가 더 좁으면 이 경로에서만 BLOCKED→DONE을 허용한다.
 - 새 값은 계약 §4가 허용한 `x_` 필드와 `x_` 사건 이름으로만 추가한다. 대장 `version`은 1 그대로이며 `x_`를 모르는 화면·CLI도 읽을 수 있다.
 - 알려진 한계: `x_closure`를 모르는 화면은 이 업무를 QA 통과 DONE으로 보인다. 계약 §1 «DONE은 로컬 독립 QA 통과다»의 예외이므로 각 저장소 GATES.md에 이 경로를 적는다. 다음 계약 버전에서 DONE 의미 문장을 함께 고친다.
+
+## 사용자 승인 병합 종결
+
+PR이 이미 main에 병합됐지만 병합 증명(`flow-prove-merged`)이 막힌 v2 업무를 사용자 승인으로 DONE 처리하는 경로다. strict를 끈 저장소나 squash 부모·민감 경로·최초 게시 기록 문제로 증명할 수 없는 정상 병합을 닫을 때 쓴다. 판정은 공통 release의 `core/merged-closure.cjs`가 하고, Lead 인증·대장 잠금·저장·정리는 각 어댑터가 맡는다.
+
+- **명령(HH)**: `node .agents/harness/launch.mjs flow-accept-merged <ID> --pr <N> --evidence "<사용자 승인 원문>" --source "<원문 출처>"`. 현재 대장의 살아 있는 Lead만 실행한다. 기록하는 터미널은 옵션이 아니라 Lead로 확인한 호출자다.
+- **확인하는 것**: release가 binding 저장소(`cwd`)에서 직접 조회한다. origin 설정 URL의 GitHub 저장소로 `gh pr view <N> --repo github.com/<owner>/<repo>`(호스트 포함, `GH_HOST`와 무관)를 실행해 번호 일치·`state=MERGED`·병합 커밋 SHA를 보고, `git ls-remote origin refs/heads/main`으로 읽은 현재 원격 main을 가져와 `git merge-base --is-ancestor <병합 커밋> <main>`이 성공해야 한다. 낡은 로컬 `origin/main`이나 호출자가 넘긴 PR 결과는 근거가 아니다. PR head 브랜치는 업무 브랜치와 같아야 하며, Lead가 PR 번호를 직접 지정(`explicit: true`, HH 명령은 항상 지정)하면 달라도 받는다.
+- **확인하지 않는 것**: strict 보호, QA 후보 지문, squash 부모, 민감 경로, QA PASS 여부, 최초 게시 기록(`flow-attach-pr`).
+- **거부**: 미병합(OPEN·CLOSED)·다른 번호·SHA 없음·gh 조회 실패, 현재 main에 없는 병합 커밋, GitHub가 아닌 origin, Lead 아님, 원문·출처 누락, 이미 DONE(기존 종결 근거를 덮어쓰지 않는다), v2가 아닌 업무. 거부하면 대장·사건·worktree를 바꾸지 않는다.
+- **대상**: DONE이 아닌 모든 v2 업무(BLOCKED, QA 게시·CI 대기, repair, 진행 중 회차가 있는 상태 포함). 진행 중 회차는 `status: ended, outcome: closed`로 끝내고 `current`를 비워 늦은 수집이 DONE을 바꾸지 못하게 한다.
+- **기록**: `state=DONE`, `pending·awaiting=null`, `x_flow.phase=closed`, `x_flow.closure={kind: "merged-accepted", pr, url, merge, main, branch, explicit, at, terminal, evidence: {quote, source}, previousState, previousPhase}`, 마지막 history `{from: 이전 상태, to: DONE, why, closure}`, 사건 `x_flow`(`closure: merged-accepted`, `pr`, `merge`). 기존 QA·게시·증명 실패 기록은 감사 근거로 남긴다. 병합 증명(`phase=merged`, `delivery.merge`)·정책 예외(`closure.kind=policy-exception`)와 구분된다.
+- **정리**: 종결 직후 같은 잠금에서 기존 worktree 정리를 `kind: "merged-accepted"`로 부른다. 병합 증명이 없으므로 브랜치는 `-d`만 시도하고 거부되면 보존한다. 정리 실패는 DONE을 되돌리지 않고 `x_cleanup`에 사유와 재시도 명령(`cleanup-worktree <ID>`)을 남긴다.
+- **SW·VDP·VP 연결**: 각 어댑터는 Lead 명령을 하나 두고, Lead 잠금 안에서 고정 release의 workflow 진입점을 부른 뒤 돌려받은 `task`를 대장에 저장하고 `event`를 append한 다음 기존 정리를 `kind: "merged-accepted"`로 호출한다. `pr`을 생략하면 연결된 `x_flow.delivery.pr`을 쓰고 브랜치 대조를 면제하지 않는다. 고정 release manifest에 모듈이 없으면 «지원하지 않는다»로 실패하므로 새 release 설치 뒤 쓴다.
+
+```powershell
+'{"action":"accept-merged","project":"<id>","stateDir":"<상태폴더>","task":{...업무 원본...},"pr":1131,"explicit":true,"evidence":{"quote":"병합된 블록 정리해","source":"Lead 대화 2026-11-21"},"terminal":"<Lead 터미널>"}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json workflow
+```
+
+- **계약 v1**: 공통 전이표를 넓히지 않는다. QA·BLOCKED가 아닌 상태(예: READY_TO_IMPLEMENT)에서의 DONE은 이 판정이 직접 기록하며 history의 `closure`로 일반 전이와 구분한다. `x_flow.closure`를 모르는 화면은 이 업무를 일반 DONE으로 보인다.
 
 ## 다음 계약 버전 후보
 

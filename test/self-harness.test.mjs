@@ -472,6 +472,90 @@ test('병합 증명 경로: flow-deliver --apply·flow-prove-merged 직후 공�
   assert.equal(archiveKeep(Object.values(fixture.ledger().tasks), new Set()).includes(b.id), false);
 });
 
+test('사용자 승인 병합 종결: flow-accept-merged는 Lead만 실행해 DONE·closure·정리를 남기고, 미병합·main 미포함·비Lead·재종결은 대장을 바꾸지 않는다', async t => {
+  const fixture = await setup(t);
+  const { repo, base, main, herdr, run, refused, sessions } = fixture;
+  await run('recover');
+  assert.ok((await main(['--help'])).commands.includes('flow-accept-merged'));
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Accepted fixture.\n');
+  const add = async slug => {
+    const task = await main(['add', '--title', slug, '--desc-file', request, '--workflow', 'v2', '--kind', 'feature', '--slug', slug,
+      '--authorization', 'Fixture authorization'], { cwd: repo, terminal: 't-lead', herdr });
+    writeFileSync(join(task.worktree, 'tracked.txt'), slug + '\n');
+    git(task.worktree, 'commit', '-am', slug);
+    return { ...task, head: git(task.worktree, 'rev-parse', 'HEAD') };
+  };
+  const quote = ['--evidence', '병합된 블록 정리해', '--source', 'Lead t244 2026-11-21'];
+  // 고정 release에 기능이 없으면(HH_TEST_PINNED_RELEASE가 이전 release) 대장을 바꾸지 않고 지원하지 않음을 알린다.
+  if (!existsSync(join(built.release, 'core/merged-closure.cjs'))) {
+    const old = await add('accepted-legacy');
+    await refused(() => main(['flow-accept-merged', old.id, '--pr', '9', ...quote], { cwd: repo, terminal: 't-lead', herdr }), /지원하지 않는다/);
+    return;
+  }
+  // 원격 GitHub 대신 PR·main 조회만 바꾼다. DONE 기록은 build한 release의 공통 판정(accept)이 만든다.
+  const api = createRequire(import.meta.url)(join(built.release, 'core/merged-closure.cjs'));
+  const remote = { 9: { state: 'MERGED', onMain: true }, 10: { state: 'OPEN' }, 11: { state: 'MERGED', onMain: false } };
+  const calls = [];
+  const acceptMerged = input => {
+    calls.push(input);
+    const pr = remote[input.pr];
+    if (pr.state !== 'MERGED') throw new Error(`PR #${input.pr}가 병합되지 않았다(${pr.state}).`);
+    if (!pr.onMain) throw new Error(`PR #${input.pr}의 병합 커밋이 현재 원격 main에 없다.`);
+    return api.accept(input.task, input, { pr: input.pr, url: 'https://github.com/faysia320/herdr-harness/pull/' + input.pr, merge: base, main: base,
+      branch: 'hh/elsewhere', mergedAt: null }, { now: input.now });
+  };
+  const accept = (id, args, terminal = 't-lead') => main(['flow-accept-merged', id, ...args], { cwd: repo, terminal, herdr, acceptMerged });
+  // a: 병합 증명이 막힌 BLOCKED 업무. 업무 브랜치가 main에 병합돼 있어 -d로 지운다.
+  const a = await add('accepted-blocked');
+  fixture.edit(ledger => Object.assign(ledger.tasks[a.id], { state: 'BLOCKED', pending: null, awaiting: 'flow-delivery-blocked',
+    x_flow: { ...ledger.tasks[a.id].x_flow, phase: 'delivery-blocked', verification: { verdict: 'PASS' }, delivery: { pr: 9 } } }));
+  git(repo, 'merge', '--no-ff', '-m', 'merge ' + a.branch, a.branch);
+  // b: 최초 게시 기록 없이 repair 중 진행 회차가 있는 업무. squash로 병합돼 로컬 tip은 미병합이다.
+  const b = await add('accepted-repair');
+  sessions.set('stage-b', { state: 'finished', labels: {} });
+  fixture.edit(ledger => Object.assign(ledger.tasks[b.id], { state: 'IMPLEMENTING', pending: null, current: { run: 0, stage: 'implement' },
+    runs: [{ stage: 'implement', token: 'tok-b', terminal: 'stage-b', status: 'running', dir: join(repo, '.local/run-b') }],
+    x_flow: { ...ledger.tasks[b.id].x_flow, phase: 'repair', verification: null } }));
+  // 거부는 대장·사건·worktree를 바꾸지 않는다.
+  await refused(() => accept(a.id, ['--pr', '9', ...quote], 't-other'), /살아 있는 Lead/);
+  await refused(() => accept(a.id, ['--pr', '10', ...quote]), /병합되지 않았다\(OPEN\)/);
+  await refused(() => accept(a.id, ['--pr', '11', ...quote]), /현재 원격 main에 없다/);
+  await refused(() => accept(a.id, quote), /--pr/);
+  await refused(() => accept(a.id, ['--pr', '9', '--evidence', '병합된 블록 정리해']), /--source/);
+  // 주입 없이 CLI 경로는 고정 release의 runtime 판정을 부른다. gh 대역이 실패하면 저장 전에 거부한다(네트워크를 쓰지 않는다).
+  const savedGh = process.env.HERDR_HARNESS_GH;
+  process.env.HERDR_HARNESS_GH = JSON.stringify([process.execPath, '-e', 'process.exit(1)']);
+  try { await refused(() => main(['flow-accept-merged', a.id, '--pr', '9', ...quote], { cwd: repo, terminal: 't-lead', herdr }), /gh pr view 9 실패/); }
+  finally { if (savedGh === undefined) delete process.env.HERDR_HARNESS_GH; else process.env.HERDR_HARNESS_GH = savedGh; }
+  assert.ok(existsSync(a.worktree) && refExists(repo, a.branch));
+  const closedA = await accept(a.id, ['--pr', '9', ...quote]);
+  assert.equal(calls.at(-1).explicit, true);
+  assert.equal(calls.at(-1).terminal, 't-lead');
+  assert.deepEqual([closedA.state, closedA.phase, closedA.cleanup.status, closedA.cleanup.branch.state, closedA.cleanup.branch.method], ['DONE', 'closed', 'done', 'deleted', '-d']);
+  assert.equal(existsSync(a.worktree), false);
+  assert.equal(refExists(repo, a.branch), false);
+  const savedA = fixture.ledger().tasks[a.id];
+  assert.deepEqual(savedA.x_flow.closure, { kind: 'merged-accepted', pr: 9, url: 'https://github.com/faysia320/herdr-harness/pull/9', merge: base, main: base,
+    branch: 'hh/elsewhere', explicit: true, at: savedA.updated, terminal: 't-lead', evidence: { quote: '병합된 블록 정리해', source: 'Lead t244 2026-11-21' },
+    previousState: 'BLOCKED', previousPhase: 'delivery-blocked' });
+  assert.deepEqual([savedA.state, savedA.awaiting, savedA.history.at(-1).from, savedA.history.at(-1).to, savedA.x_cleanup.status], ['DONE', null, 'BLOCKED', 'DONE', 'done']);
+  assert.deepEqual(savedA.x_flow.delivery, { pr: 9 });
+  const events = readFileSync(fixture.eventsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(events.some(e => e.event === 'x_flow' && e.task === a.id && e.closure === 'merged-accepted' && e.pr === 9 && e.merge === base));
+  // 재호출은 기존 종결 근거·history를 덮어쓰지 않는다.
+  await refused(() => accept(a.id, ['--pr', '9', ...quote]), /이미 DONE/);
+  const closedB = await accept(b.id, ['--pr', '9', ...quote]);
+  assert.deepEqual([closedB.state, closedB.closure.previousState, closedB.closure.previousPhase, closedB.cleanup.status], ['DONE', 'IMPLEMENTING', 'repair', 'done']);
+  assert.deepEqual([closedB.cleanup.branch.state, closedB.cleanup.branch.tip], ['kept', b.head]);
+  assert.equal(existsSync(b.worktree), false);
+  assert.equal(git(repo, 'rev-parse', 'refs/heads/' + b.branch), b.head);
+  const savedB = fixture.ledger().tasks[b.id];
+  assert.deepEqual([savedB.current, savedB.runs[0].status, savedB.runs[0].outcome], [null, 'ended', 'closed']);
+  // 진행하던 회차의 늦은 수집은 DONE을 바꾸지 못한다.
+  await refused(() => run('collect ' + b.id), /수집할 실행이 없다/);
+});
+
 const promptOf = run => readFileSync(join(run.dir, 'prompt.txt'), 'utf8');
 // 지시서의 해소 결정 JSON 줄. 결정 주입이 없으면 null이다.
 const injected = run => {
