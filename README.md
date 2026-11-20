@@ -122,7 +122,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 - 순서 대기 후에 실행 한도(binding `timeout`, 기본 600000ms)를 시작한다. 느린 저장소는 설치 계획에 `timeout: 1800000`처럼 지정한다. stderr에 대기 시간·준비 시작·실행 시간이 따로 나오며, stdout의 기존 JSON은 유지한다.
 - 한도를 넘기면 하위 프로세스까지 종료하고 124, 취소하면 하위 프로세스 종료 확인 뒤 130을 반환한다. 종료 전에는 슬롯을 반환하지 않는다. 대기 중 binding이 바뀌면 실행하지 않고 새 launcher 사용을 요구한다.
 - `node <release>/bin/harness.mjs --binding <file> preparation-status`로 점유 PID·프로젝트·시각을 읽는다. 기본 잠금은 `%LOCALAPPDATA%/HerdrHarness/preparation/active.json`이며 시험 격리에만 `HERDR_PREPARATION_DIR`를 쓴다.
-- 강제 종료로 남은 잠금은 시간만 보고 지우지 않는다. 죽은 소유자면 실패로 알리며, 소유 프로세스와 하위 Git까지 종료됐음을 확인한 뒤 해당 잠금만 복구한다. 부분 worktree·브랜치는 자동 삭제하지 않는다.
+- 강제 종료로 남은 잠금은 시간만 보고 지우지 않는다. 죽은 소유자면 실패로 알리며, 소유 프로세스와 하위 Git까지 종료됐음을 확인한 뒤 해당 잠금만 복구한다. 부분 worktree·브랜치는 자동 삭제하지 않는다. [끝난 업무 worktree 정리](#끝난-업무-worktree-정리)도 대장의 DONE 업무만 다루므로 이 잔재를 지우지 않는다.
 - 구 release로 이미 시작한 준비나 직접 Git/프로젝트 CLI를 실행한 작업은 이 슬롯에 참여하지 않는다. 최초 전환 시 기존 checkout을 끝내고 새 binding의 launcher를 사용한다. 원시 디스크 성능 문제가 해결됐거나 기존 대장의 잠금 문제가 수정됐다는 뜻은 아니다.
 
 ### 준비·설치 계측 규약
@@ -186,7 +186,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 - **선언**: 프로젝트 config에 `process_artifacts: {"paths": ["docs/projects/{slug}/"]}`처럼 업무별 과정 문서 폴더를 선언한다. 자리표시자는 `{id}`·`{slug}`·`{date}`만 쓸 수 있고, 하나 이상 들어가야 한다. 그래서 `docs/projects/README.md` 같은 공용 색인은 과정 문서로 잡히지 않는다. 선언하지 않은 저장소는 기존처럼 동작한다.
 - **커밋 여부**: 공통 기본은 `commit: false`다. 커밋해야 하는 저장소는 `commit: true`와 `reason`을 함께 둔다. 이미 main에 있고 남기기로 한 폴더는 `exempt: [{path, reason}]`로 지정한다.
 - **진행 중**: collect의 README·qa-report 게이트와 후보 지문은 worktree의 미커밋 파일을 그대로 읽는다. 과정 문서를 커밋하지 않아도 게이트는 바뀌지 않는다.
-- **보관**: 단계 수집 뒤, 그리고 worktree를 정리하기 전에 `archive`로 `<state_dir>/tasks/<ID>/artifacts/`에 복사한다. 보관은 같은 경로만 덮어쓰고, 이전 회차 보관본은 지우지 않는다. `manifest.json`에는 파일별 SHA-256을 남긴다.
+- **보관**: 단계 수집 뒤, 그리고 worktree를 정리하기 전에 `archive`로 `<state_dir>/tasks/<ID>/artifacts/`에 복사한다. [worktree 정리](#끝난-업무-worktree-정리)는 `preserve`로 같은 위치에 과정 문서와 지정 파일을 함께 보관한다. 보관은 같은 경로만 덮어쓰고, 이전 회차 보관본은 지우지 않는다. `manifest.json`에는 파일별 SHA-256을 남긴다.
 - **게시**: 커밋 전에 `violations`로 과정 문서의 추가·수정·이름 변경을 걸러 낸다. 삭제는 기존 문서 정리이므로 허용한다. 오래 남을 내용은 같은 업무 PR 안에서 옮긴다. 바뀐 계약은 Area로, 다시 쓸 조사 결론은 Resource로, 후속 작업은 Area 후속 절이나 티켓으로 보낸다.
 - **증거**: PR 본문과 티켓 NOTE에 QA 판정·회차, 실행한 검사와 종료 코드, 실패·skip·미실행·외부 미검증, 단계별 실제 CLI·모델·effort를 적는다. 병합 SHA 기준의 Project 파일 고정 링크로 증거를 대신하지 않는다.
 - **CI**: 저장소 CI는 PR 변경 목록을 같은 규칙으로 검사해 실패만 시킨다. 파일을 고치거나 지우지는 않는다. CI에는 개인 release가 없으므로 저장소 스크립트가 config 선언을 직접 읽는다. 공통 `violations`와 같은 판정이 나오는지는 저장소 시험에서 확인한다.
@@ -197,7 +197,7 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 '{"action":"violations","project":"<id>","stateDir":"<상태폴더>","config":{...},"changes":[{"status":"A","path":"docs/projects/x/README.md"}]}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json artifacts
 ```
 
-동작은 `config`, `resolve`(`vars`), `violations`(`changes`), `archive`(`task: {id, worktree, vars}`)다.
+동작은 `config`, `resolve`(`vars`), `violations`(`changes`), `archive`(`task: {id, worktree, vars}`)다. 보관 파일과 manifest는 새 임시 파일에 쓴 뒤 이름을 바꾸므로 보관 위치의 기존 하드 링크가 가리키는 원본을 바꾸지 않는다.
 
 ## 결정함 규칙
 
@@ -219,6 +219,7 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 
 - **수집 판정**: 단계 산출물과 receipt가 둘 다 없고 에이전트 터미널이 살아 있으면(`live`), collect는 실행 실패(`no-result`)로 닫지 않는다. "아직 작업 중"으로 알리고 run을 열어 둔다. 터미널이 사라졌거나, Lead가 화면을 확인하고 `--force`로 수집할 때만 실행 실패로 닫는다. 산출물이 있으면 receipt가 없어도 지금처럼 수집한다(receipt는 선택 항목이다).
 - **지시서 규칙**: 구현·QA·조사 지시서에 다음을 둔다. 백그라운드 작업을 남긴 채 턴을 끝내지 않고 끝날 때까지 기다린다. 산출물을 다 쓴 뒤 receipt를 마지막에 쓴다.
+- **수집 뒤 터미널 종료**: 자체 어댑터는 산출물을 정상 수집해 회차를 저장한 뒤 그 회차의 위임 터미널을 `hc kill`로 닫는다. 대장에 기록된 그 회차의 주소이고 `harness.task`·`harness.run` 레이블이 같을 때만이다. 에이전트 상태가 아직 `working`이면 산출물이 있어도 닫지 않는다. 위 수집 판정은 그대로이며, 결과는 회차의 `x_terminal.outcome`에 남는다. `killed`는 kill 뒤 다시 조회해 종료(`after: finished`)나 제거(`after: removed`, hc의 not_found)를 확인한 경우다. `absent`·`finished`는 이미 없거나 끝난 터미널, `kept`는 정책상 닫지 않은 경우(사유 포함)다. `still-live`(kill 뒤에도 살아 있음)와 `unknown`(kill 뒤 조회 실패)은 종료로 보고하지 않는다. kill 뒤에도 살아 있으면 Lead가 `hc get`으로 확인한 뒤 다시 닫는다. 살아 있거나 상태를 알 수 없는 위임 터미널은 [worktree 정리](#끝난-업무-worktree-정리)를 막는다. hc가 not_found로 알린 터미널은 없는 것으로 본다.
 
 ## 화면 갱신과 대장 용량
 
@@ -234,7 +235,7 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
   - 최근에 끝난 5건
   - 남은 업무가 의존하는 업무
   - 실행 중인 업무
-  - 호출자가 `keep`으로 넘긴 업무: worktree가 남아 게시·정리 전인 업무, 미해소 질문이 걸린 업무
+  - 호출자가 `keep`으로 넘긴 업무: worktree가 남아 게시·정리 전인 업무, [정리](#끝난-업무-worktree-정리)가 끝나지 않은 업무, 미해소 질문이 걸린 업무
 - **남기는 것**: 대장에는 화면용 요약만 남긴다.
   - 제목·상태·승인 근거·의존·브랜치 등 정책의 `summary` 필드
   - 마지막 실행(모델·결과)과 마지막 상태 전이
@@ -244,6 +245,59 @@ CLI는 binding으로 고정한 release를 호출한다. Python CLI도 같은 JSO
 - **조회**: `show` 같은 상세 조회는 `restore`로 원본을 읽는다. 지문이 다르면 실패한다.
 
 진입점은 `node .agents/harness/runtime.cjs <binding> ledger`이고, 동작은 `plan`·`archive`·`restore`다. `archived: true`는 목록에서 숨기는 표시일 뿐이라 JSON 크기를 줄이지 않는다.
+
+## 끝난 업무 worktree 정리
+
+DONE 업무의 worktree와 로컬 업무 브랜치는 공통 release의 `core/worktree-cleanup.cjs`가 정리한다. 저장소 CLI는 업무 경로·브랜치 이름, 실행·위임 터미널 조회 결과, 보존·폐기할 무시 파일 목록을 넘기고, 돌려받은 결과를 대장 잠금 안에서 기록한다. 매번 사람이 정리 명령을 내리지 않도록 DONE 전이 직후 호출하는 것이 기본이다. 자체 어댑터의 호출 시점과 재시도는 [자체 v2 운영 지침](.agents/harness/README.md#끝난-업무-정리)에 있다.
+
+진입점은 `node .agents/harness/runtime.cjs <binding> cleanup`이고 동작은 `cleanup` 하나다. binding의 프로젝트·상태 폴더·`cwd`(저장소 루트)가 입력과 같아야 한다. 고정 release manifest에 이 모듈이 없으면 실행하지 않고 «지원하지 않는다»로 실패한다. 새 release를 설치하기 전의 저장소는 이 실패를 받고 DONE은 그대로 둔다.
+
+```powershell
+'{"action":"cleanup","project":"<id>","stateDir":"<상태폴더>","task":{"id":"HH-1","state":"DONE","root":"<저장소>","worktreeDir":"<worktree_dir 절대 경로>","worktree":"<업무 worktree>","branch":"<업무 브랜치>","kind":"merged","proof":{"head":"<최종 PR head>","original":"<최초 게시 head>","branch":"<PR 브랜치>"},"activity":{"current":false,"runs":[{"token":"<회차>","status":"ended","address":"t7","state":"finished","run":"<harness.run 레이블>"}]},"ignored":{"keep":["target/hh-verify/"],"discard":["dist/"]},"artifacts":{"config":{...},"vars":{"slug":"x"}},"retry":"<재시도 명령>","limits":{"contentMs":60000}}}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json cleanup
+```
+
+정책 예외 종결 업무는 `kind: "closed"`와 `proof` 대신 `candidate: {head, tree, paths}`(QA 후보)를 넘긴다. `limits.contentMs`(1~3600000, 기본 60000)는 정리 시작부터 추적 파일 내용 확인과 폴더 순회를 끝내야 하는 시간이다.
+
+- **대상**: 병합 증명(`merged`)이나 정책 예외 종결(`closed`)로 DONE이 된 업무의 등록된 linked worktree 하나다. 경로는 호출자가 등록한 `worktreeDir` 바로 아래여야 한다. main checkout, 다른 등록 worktree를 품은 경로, 잠긴 worktree, 대장에 없는 준비 잔재는 대상이 아니다. 준비 시간 초과로 남은 부분 worktree·브랜치는 지금처럼 자동 삭제하지 않는다.
+- **순서**: 사전검사 → 과정 문서와 `ignored.keep` 파일 재보관(`artifact-policy`의 `preserve`, `process_artifacts` 선언이 없으면 «선언 없음»으로 기록하고 지정 파일만 보관) → 예외 종결 후보의 patch 보존 → 의도 기록 → 후보 경로만 HEAD로 되돌림 → 비강제 `git worktree remove` → 병합 업무의 로컬 브랜치 삭제 → 호출자가 대장에 결과 기록. 보관본은 현재 파일·사본·manifest의 SHA-256이 같을 때만 삭제 근거가 된다.
+- **멈춤**: 다음 중 하나라도 해당하면 파일·index·등록·ref를 하나도 바꾸지 않고 `status: "refused"`와 이유·남은 자원·재시도 명령을 돌려준다.
+  - 실행 중인 회차, 살아 있는 위임 터미널(회차 레이블이 같거나 없음), 터미널 조회 실패
+  - 보존 대상 밖의 변경·미추적 파일, `keep`·`discard` 밖의 무시 파일(예: `.env.local`), 충돌, patch에 담을 수 없는 staged 중간 내용
+  - index 플래그(`git ls-files -v`의 소문자 = assume-unchanged, `S` = skip-worktree)가 걸린 경로. 작업 사본이 index와 같아도 거부하고, 이유에 경로별 플래그와 작업 사본≠index·index≠HEAD 여부를 적는다. sparse-checkout worktree도 이 이유로 멈춘다
+  - submodule(`.gitmodules`, gitlink, worktree Git 폴더의 `modules`). Git이 비강제 `worktree remove`를 거부하므로 의도 기록 전에 멈춘다
+  - status가 작업 사본=index로 본 추적 파일의 실제 내용이 index blob과 다름(아래 «stat 캐시»). 이유에 경로를 적는다. `limits.contentMs` 안에 내용 확인·폴더 순회를 끝내지 못한 경우도 변경 여부를 모르므로 멈춘다
+  - worktree 폴더 직접 순회(아래 «폴더 순회»)에서 추적 파일이나 status가 보고해 분류한 항목으로 설명되지 않는 파일, 확인된 추적 링크가 아닌 링크·junction(`discard`·`keep` 폴더 안이나 그 폴더 자체, 예외 종결 후보 경로 포함), 최상위 `.git` 파일 외의 `.git` 이름 항목(중첩 저장소, 같은 이름의 폴더·파일)
+  - Git이 지우거나 덮어쓸 경로(되돌릴 후보 경로, 지울 과정 문서)나 그 worktree 안 상위 구성요소가 링크·junction이거나, 그 자리의 폴더에 지워도 되는 후보 파일 밖의 항목이 있음(아래 «Git 삭제 직전 확인»)
+  - worktree 전용 ref(`refs/worktree/*`, `refs/bisect/*`, `refs/rewritten/*`)와 진행 중인 Git 작업(`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge`, `rebase-apply`, `BISECT_LOG`, `sequencer`). 모두 worktree의 Git 폴더에 있어 remove와 함께 사라진다. 이유에 ref 이름과 상태 이름을 적는다
+  - `worktreeDir` 밖이거나 링크가 낀 경로, 잠긴·중첩 worktree, 다른 프로세스가 쓰는 worktree(Windows에서 이름 바꾸기 검사)
+  - 업무 브랜치 tip이 증명의 `head`·`original`과 다름, 브랜치 이름이 증명의 PR 브랜치와 다름, 브랜치 이름이 없는 옛 증명
+  - 예외 종결 worktree가 저장된 QA 후보(HEAD·후보 tree)와 다름
+  - Git 조회 실패·시간 초과(호출마다 30초, 내용 확인·폴더 순회는 남은 `limits.contentMs`)·출력 한도 초과
+- **status가 숨기는 변경**: 정리는 `git status`가 깨끗하다는 것만 믿지 않는다. 검토한 경우와 처리는 다음과 같다.
+  - assume-unchanged·skip-worktree 플래그(`core.ignoreStat`이 자동으로 거는 것 포함): 위 거부 사유로 막는다. 플래그를 풀고(`git update-index --no-assume-unchanged --no-skip-worktree -- <경로>`) 변경을 확인한 뒤 재시도한다.
+  - stat 캐시: status는 크기·mtime 같은 stat 정보가 index 기록과 같으면 파일을 읽지 않는다. 같은 길이로 고친 뒤 mtime을 되돌리면(`core.checkStat=minimal`·`core.trustctime=false`이면 더 쉽다) 수정이 보이지 않는다. 정리는 stat을 믿지 않고 사전검사와 `worktree remove` 직전에 두 번, status가 작업 사본=index로 본 추적 파일 전체를 `git hash-object --stdin-paths`(경로 속성에 따른 필터 적용)로 다시 계산해 index blob과 비교한다. 다르면 원래 바이트의 blob도 계산해 둘 다 다를 때만 변경으로 본다. 원래 바이트가 index blob과 같으면 그 바이트가 이미 저장소에 있으므로, 커밋 뒤 속성을 바꿔 생긴 정규화 차이는 거부하지 않는다. 링크 항목(mode 120000)은 링크 대상 문자열로 비교한다. 사전검사에서 걸리면 아무것도 바꾸지 않고 `refused`, 제거 직전에 걸리면 의도 기록 뒤라 `partial`이며 파일·등록·브랜치는 그대로다.
+  - 폴더 순회: status 출력에 기대는 사례별 보강 대신 같은 두 시점에 worktree 폴더를 링크를 따라가지 않고(`readdir`의 항목 종류, 모르면 `lstat`) 직접 순회해, 실제 항목 전체가 «추적 파일(내용 확인 통과) + status가 보고하고 `keep`·`discard`·과정 문서·후보로 분류한 항목»으로 설명되는지 대조한다. 설명되지 않는 파일, 확인된 추적 링크가 아닌 링크·junction, 최상위 `.git` 파일 외의 `.git` 이름 항목이 하나라도 있으면 멈춘다. 디스크의 링크·junction은 그 경로의 index mode가 120000이고, status가 그 경로를 보고하지 않으며, 내용 확인이 링크 대상 문자열=index blob을 확인한 경우에만 추적 링크로 설명된 것으로 본다. index mode만으로는 면제하지 않으므로, 예외 종결 후보가 추적 링크 경로를 폴더 junction으로 바꿨으면 그 경로가 후보 경로여도 멈춘다. 후보가 추적 링크의 대상을 바꾼 경우(실제 심볼릭 링크로 꺼내는 `core.symlinks=true`)도 같은 이유로 멈추므로 Lead가 내용을 확인해 처리한다. `discard` 폴더 안도 순회한다(내용은 지워도 되지만 링크·중첩 저장소는 거부). 폴더 자체는 내용이 아니므로 빈 폴더는 설명된 것으로 본다. `core.ignorecase`이면 경로를 대소문자 구분 없이 대조하고, 같은 폴더에 이름이 대소문자만 다른 두 번째 항목이 있으면 멈춘다(아래 «대소문자만 다른 이름»). 이 순회로 막는 경우는 다음과 같다.
+    - `.git` 이름 항목: Git은 깊이와 무관하게 `.git` 이름 항목을 건너뛴다. 추적 폴더 안에 만든 중첩 저장소(자체 커밋 보유), 추적·미추적 폴더 안의 `.git` 이름 일반 폴더에 든 파일은 status가 비어 있어도 비강제 remove가 지운다.
+    - 무시된 폴더 안: `--ignored=matching`은 무시 패턴에 맞는 폴더를 한 항목(`!! dist/`)으로만 보고하고 안을 보지 않는다.
+    - 링크·junction: Git for Windows는 junction을 폴더로 보고 비강제 `worktree remove`에서도 따라가 worktree 밖 대상의 파일을 지운다(Git만으로 재현 확인). `discard` 폴더 안의 junction과 `discard` 폴더 자체가 junction인 경우가 여기에 든다. 대상이 worktree 안이어도 거부한다. 후보 되돌리기의 `git checkout <HEAD> -- <경로>`도 그 경로의 junction을 폴더로 보고 안(worktree 밖 대상)을 지운 뒤 링크 파일을 쓴다(Git만으로 재현 확인). `core.symlinks=false` 저장소(Windows 기본)의 추적 링크는 일반 파일로 꺼내지는데, 이 파일을 junction으로 바꾸는 흔한 우회가 이 상태를 만든다. Windows 밖의 심볼릭 링크는 Git이 폴더로 보지 않으므로, 폴더에만 맞는 무시 패턴 `dist/`에 `dist` 이름의 링크가 맞지 않아 `?? dist`(미추적)로 보고되고 폴더 순회 전에 «보존 대상 밖의 항목» 사유로 멈춘다. 이유 문구만 다르고 결과(refused·보존)는 같다.
+    - 대소문자만 다른 이름: `core.ignorecase=true` 저장소의 worktree가 대소문자를 구분하는 폴더(Windows에서 `fsutil file setCaseSensitiveInfo`를 켰거나 WSL로 만든 폴더, Windows에서 만든 저장소를 Linux·컨테이너에서 연 경우)에 있으면, 추적 `a.txt` 옆의 미추적 `A.TXT`나 추적 폴더 `sub` 옆의 `SUB/keep.txt`를 Git이 같은 index 경로로 보아 status에 보고하지 않고 비강제 remove가 지운다(Windows·Linux 재현 확인). 폴더 순회는 대소문자를 무시한 같은 경로에 두 번째 항목이 오면 «대소문자만 다른 이름 <경로>(<먼저 본 경로>와 같은 index 경로)» 사유로 멈춘다. `core.ignorecase=false`면 Git이 `?? A.TXT`로 보고하므로 «보존 대상 밖의 항목» 사유로 멈춘다.
+  - Git 삭제 직전 확인: 삭제를 Git에 맡기는 경로에는 Git이 따라갈 수 있는 링크를 남기지 않는다. 의도 기록 전과 후보 되돌리기(`git checkout`) 직전에, 되돌릴 후보 경로와 지울 과정 문서 경로의 각 구성요소를 worktree 루트부터 `lstat`으로 본다. 링크·junction이 있거나, 대상 자리의 폴더 안에 후보 경로 밖 항목·링크가 있거나, 상위 구성요소가 후보 경로 밖의 파일이면 멈춘다(후보가 추적 파일을 폴더로, 추적 폴더를 파일로 바꾼 경우는 그 안이 모두 후보 경로라 진행한다). `git worktree remove` 직전에는 worktree 폴더 자체가 링크가 아닌 일반 폴더이고 실제 경로가 처음 확인한 경로와 같은지 본다(안은 바로 앞 폴더 순회가 확인한다). `worktreeDir`와 그 위 경로는 호출자가 등록한 설정이라 이 확인의 대상이 아니다.
+  - worktree 전용 ref·진행 중인 작업: `refs/worktree/*`·`refs/bisect/*`·`refs/rewritten/*`만 가리키는 커밋은 remove 뒤 이름을 잃고 prune 대상이 된다. 커밋하지 않은 병합·cherry-pick·revert·rebase·bisect 상태(충돌 해결 중 메시지·todo 목록)도 되살릴 수 없다. 사전검사와 제거 직전에 거부한다. stash는 저장소 공용 ref(`refs/stash`)라 정리 뒤에도 남는다. reflog는 작업 내용으로 보지 않는다(Git의 `worktree remove`·브랜치 삭제와 같다).
+  - 내용 확인 비용: 추적 파일 전체를 두 번 읽으므로 추적 파일 크기 합에 비례한다. 로컬 측정에서 추적 파일 12,709개 저장소 한 번이 약 4초였다. 폴더 순회는 항목 수에 비례하며 같은 한도 안에서 잰다. 읽기 전용 측정(2026-11-20, Windows·NTFS)에서 HH worktree(파일 448개) 8ms, SW worktree(파일 30,293개·폴더 4,785개) 1.2초, VDP worktree(파일 60,144개·폴더 9,227개) 2.8초였다. 한도는 `limits.contentMs`로 정하고, 넘으면 위 거부 사유로 멈춘다. DONE 직후 자동 정리는 watch-delivery 한 회(180초) 안에 들어가게 기본 60초를 쓰고, Lead 재시도처럼 시간 제약이 없는 호출은 더 긴 한도를 넘긴다.
+  - pnpm `node_modules`: 같은 측정에서 SW·VDP worktree에는 `node_modules`의 junction이 각각 1,729개·3,391개 있었다. 이런 worktree는 링크 거부 사유로 멈추므로, 공통 정리를 쓰는 저장소는 정리 전에 링크를 따라가지 않는 방법으로 `node_modules`를 지우거나 링크를 푼다.
+  - fsmonitor(hook·내장 daemon): 이벤트를 놓치면 수정이 status에서 빠진다. 정리의 모든 Git 호출은 `-c core.fsmonitor=false`로 실제 파일을 조회하고 hook을 실행하지 않는다.
+  - untracked cache: 폴더 수정 시각을 믿고 새 파일을 놓칠 수 있다. `-c core.untrackedCache=false`로 끈다.
+  - 상위 프로세스의 `GIT_DIR`·`GIT_WORK_TREE`·`GIT_INDEX_FILE` 등 저장소·index 위치 환경변수: 다른 index와 비교하면 변경이 보이지 않으므로 Git 호출 전에 지운다. 조회는 `--no-optional-locks`로 index를 고쳐 쓰지 않는다.
+  - `status.showUntrackedFiles=no`·무시 규칙: `--untracked-files=all --ignored=matching`으로 덮어써 모두 열거한다. submodule의 `ignore` 설정: submodule 자체를 거부한다.
+  - 남는 한계: 아래는 정리가 막지 않고 지울 수 있거나 확인하지 않는 경우다. 해당하는 저장소는 정리 전에 직접 확인한다.
+    - 줄 끝 변환·clean 필터 정규화: `core.autocrlf`·`text` 속성이나 clean 필터가 index blob과 같은 내용으로 정규화하는 바이트 차이(예: 작업 사본만 CRLF)는 Git이 변경으로 보지 않으므로 필터 적용 해시도 같아 정리 뒤 남지 않는다. 그런 필터를 쓰는 저장소는 정리 전에 원본 바이트를 따로 확인한다.
+    - NTFS 대체 데이터 스트림(예: `a.txt:note`): Git과 폴더 순회 모두 보지 못해 파일과 함께 지워진다. 스트림에 내용을 두는 도구를 쓰는 worktree는 정리 전에 `Get-Item <경로> -Stream *`로 확인해 옮긴다.
+    - `worktreeDir`와 그 위 경로의 링크: 호출자가 등록한 설정으로 신뢰하고 링크·junction 여부를 확인하지 않는다. 확인하는 것은 worktree 폴더 자체부터 그 안이다.
+    - reflog: 작업 내용으로 보지 않으므로 worktree의 HEAD reflog는 `worktree remove`와 함께 사라진다(Git의 기본 동작과 같다).
+- **patch**: 예외 종결처럼 커밋되지 않은 후보는 HEAD와 후보 경로만 담은 임시 index tree 사이의 tree diff(`--binary --full-index --no-renames`)로 `<state_dir>/tasks/<ID>/worktree-<후보 tree 앞 12자>.patch`에 쓴다. 기준 HEAD로 만든 별도 index에 적용한 tree가 후보 tree와 같을 때만 보존으로 인정하고 SHA-256을 기록한다. 바이트가 아니라 Git tree로 비교하므로 줄 끝 변환 차이를 변경으로 오인하지 않는다. 복원은 기준 HEAD checkout에서 `git apply --binary <patch>`로 하고, 먼저 파일 SHA-256을 결과의 `patch.sha256`과 대조한다.
+- **브랜치**: 병합 증명된 업무만 지운다. 먼저 `git branch -d -- <업무 브랜치>`를 시도한다. upstream이 없거나 squash 병합이라 거부되면 tip이 증명된 `head` 또는 `original`과 정확히 같고, 이름이 증명의 PR 브랜치와 같고, 다른 checkout이 쓰지 않고, worktree 제거가 끝났는지 다시 확인한 뒤에만 `git branch -D -- <업무 브랜치>`를 쓴다. 지운 tip과 방법(`-d`/`-D`)을 남기므로 `git branch <이름> <tip>`으로 되살릴 수 있다. DEV-14 동기화는 원격에만 push하므로 로컬 tip이 최초 게시 anchor(`original`)인 것이 정상이다. 예외 종결 업무의 브랜치는 보존한다. update-ref 직접 조작, 원격 ref 변경, 강제 worktree 제거, 재귀 삭제는 쓰지 않는다.
+- **재시도·멱등**: 첫 되돌리기·삭제 전에 경로·브랜치·예상 tip·보관·patch를 `<state_dir>/tasks/<ID>/cleanup.json`에 남긴다. 그 뒤 실패하면 `status: "partial"`이다. 재실행은 이 기록이 있는 같은 경로에서만 수렴시킨다. 등록만 남고 폴더가 없으면 비강제 remove로 등록을 해제한다. 등록 없이 폴더 골격만 남으면(Windows에서 사용 중 제거가 일부만 된 경우) 파일·링크가 하나도 없을 때만 아래부터 비재귀로 지운다. 파일이 있으면 목록을 보고하고 멈춘다. 재시도가 보존 대상을 다시 보관하면 기록(`cleanup.json`·결과·`x_cleanup`)의 `preserved.files`는 이전 지문 위에 이번 지문을 덮는다. 첫 실행에서 지운 과정 문서의 지문은 남고, 그 사이 바뀐 파일은 보관본·manifest와 같은 새 지문이 된다. 끝난 입력을 다시 주면 같은 결과를 돌려주고 새 삭제·patch 덮어쓰기가 없다. 정리한 경로에 새 worktree가 생겼거나 지운 브랜치가 다시 생기면 같은 업무의 정리로 보지 않는다.
+- **결과와 보관**: `{status: done|refused|partial, worktree, branch, preserved, patch, reasons, remaining, retry, journal}`이다. 호출자는 이를 업무의 `x_cleanup`에 기록한다. `archive-tasks`는 worktree가 남았거나 `x_cleanup.status`가 done이 아닌 업무를 keep으로 붙잡고, 정리가 끝나면 풀어 준다.
 
 ## 사용자 결정 게시·종결
 

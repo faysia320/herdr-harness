@@ -1,7 +1,7 @@
 // 과정 산출물 공통 규칙. 경로는 저장소 config가 선언하고, 커밋 여부·보관 위치·증거 항목은 공통 정책이 정한다.
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const raw = fs.readFileSync(path.join(__dirname, '../policy/artifacts.json'));
 const defaults = JSON.parse(raw);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -86,33 +86,65 @@ function noLink(base, target) {
 }
 const isLink = (p) => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
 
-// worktree의 미커밋 과정 문서를 상태 폴더로 복사한다. 이전 보관본은 지우지 않고 같은 경로만 갱신한다.
-function archive(local, input) {
-  const c = declared(local);
-  if (!safe.test(input.id ?? '')) fail('보관할 업무 ID가 올바르지 않다.');
+// 파일 하나를 보관 위치에 쓴다. 같은 폴더의 새 임시 파일에 쓴 뒤 이름을 바꾼다. 기존 파일이 하드 링크여도 그 원본은 바꾸지 않는다.
+function put(target, bytes) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = `${target}.${randomUUID()}.tmp`;
+  try { fs.writeFileSync(temp, bytes, { flag: 'wx' }); fs.renameSync(temp, target); }
+  finally { fs.rmSync(temp, { force: true }); }
+}
+
+// names(worktree 기준 '/' 경로)를 상태 폴더의 보관 위치로 복사하고 manifest에 누적한다. 이전 보관본은 지우지 않는다.
+function store(c, input, names) {
+  if (!safe.test(input.id ?? '') || /^\.+$/.test(input.id)) fail('보관할 업무 ID가 올바르지 않다.');
   if (!path.isAbsolute(input.worktree ?? '') || !path.isAbsolute(input.stateDir ?? '')) fail('worktree와 상태 폴더는 절대 경로여야 한다.');
   const dest = path.join(input.stateDir, ...c.archive.replace('{id}', input.id).split('/'));
   const manifestFile = path.join(dest, 'manifest.json');
   noLink(input.stateDir, manifestFile);
   const previous = fs.existsSync(manifestFile) ? JSON.parse(fs.readFileSync(manifestFile, 'utf8')) : { files: {} };
   const copied = {};
-  for (const rel of resolve(local, { ...input.vars, id: input.id })) {
-    const root = path.join(input.worktree, ...rel.split('/'));
-    noLink(input.worktree, root);
-    for (const abs of files(root)) {
-      const name = path.relative(input.worktree, abs).split(path.sep).join('/');
-      const bytes = fs.readFileSync(abs), target = path.join(dest, ...name.split('/'));
-      noLink(input.stateDir, target);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, bytes);
-      copied[name] = digest(bytes);
-    }
+  for (const name of names) {
+    const abs = path.join(input.worktree, ...name.split('/')), target = path.join(dest, ...name.split('/'));
+    noLink(input.worktree, abs);
+    if (!fs.lstatSync(abs).isFile()) fail(`보관할 항목이 일반 파일이 아니다: ${name}`);
+    const bytes = fs.readFileSync(abs);
+    noLink(input.stateDir, target);
+    put(target, bytes);
+    copied[name] = digest(bytes);
   }
   const manifest = { version: 1, id: input.id, at: input.at ?? new Date().toISOString(), files: { ...previous.files, ...copied } };
-  fs.mkdirSync(dest, { recursive: true });
-  fs.writeFileSync(`${manifestFile}.tmp`, `${JSON.stringify(manifest, null, 2)}\n`);
-  fs.renameSync(`${manifestFile}.tmp`, manifestFile);
-  return { dir: dest, copied: Object.keys(copied).sort(), total: Object.keys(manifest.files).length };
+  put(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  return { dir: dest, copied, total: Object.keys(manifest.files).length };
 }
 
-module.exports = { configure, resolve, violations, archive };
+// 선언한 업무별 과정 문서 폴더의 파일 목록.
+function declaredFiles(local, input) {
+  return resolve(local, { ...input.vars, id: input.id }).flatMap((rel) => {
+    const root = path.join(input.worktree, ...rel.split('/'));
+    noLink(input.worktree, root);
+    return files(root).map((abs) => path.relative(input.worktree, abs).split(path.sep).join('/'));
+  });
+}
+
+// worktree의 미커밋 과정 문서를 상태 폴더로 복사한다. 이전 보관본은 지우지 않고 같은 경로만 갱신한다.
+function archive(local, input) {
+  const c = declared(local);
+  const out = store(c, input, declaredFiles(local, input));
+  return { dir: out.dir, copied: Object.keys(out.copied).sort(), total: out.total };
+}
+
+// worktree 정리 전 보관. 선언한 과정 문서와 호출자가 지정한 파일(예: 무시된 실행 영수증)을 같은 위치에 복사한다.
+// 선언이 없는 저장소는 지정 파일만 복사한다. 이번 호출의 사본 지문(files)으로 삭제 전 보존을 확인한다.
+function preserve(local, input) {
+  const c = configure(local);
+  const extra = (input.files ?? []).map((name) => {
+    if (typeof name !== 'string' || !name || name.startsWith('/') || /^[A-Za-z]:/.test(name) || /[\\\0]/.test(name)
+      || name.split('/').some((p) => !p || p === '.' || p === '..')) fail(`보관할 파일은 worktree 상대 경로여야 한다: ${name}`);
+    return name;
+  });
+  const names = [...new Set([...(c.declared ? declaredFiles(local, input) : []), ...extra])].sort();
+  const out = store(c, input, names);
+  return { declared: c.declared, dir: out.dir, copied: Object.keys(out.copied), total: out.total, files: out.copied };
+}
+
+module.exports = { configure, resolve, violations, archive, preserve };

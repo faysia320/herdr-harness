@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, unlinkSync, linkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from '../scripts/build.mjs';
 import { run } from '../core/process.js';
 const require = createRequire(import.meta.url);
-const { configure, resolve, violations, archive } = require('../core/artifact-policy.cjs');
+const { configure, resolve, violations, archive, preserve } = require('../core/artifact-policy.cjs');
 const { artifactPolicy } = require('../adapters/runtime.cjs');
 const sw = () => ({ process_artifacts: { paths: ['docs/projects/{slug}/'] } });
 
@@ -103,4 +104,25 @@ test('binding으로 고정한 과정 산출물 규칙은 Node·Python용 JSON �
   assert.equal(artifactPolicy(file, { ...input, action: 'config' }).commit, false);
   assert.throws(() => artifactPolicy(file, { ...input, project: 'other' }), /경계/);
   assert.throws(() => artifactPolicy(file, { ...input, action: 'typo' }), /동작/);
+});
+
+test('정리 전 보관은 선언이 없으면 지정 파일만, 선언이 있으면 과정 문서와 함께 보관하고 기존 하드 링크의 원본을 바꾸지 않는다', (t) => {
+  const temp = mkdtempSync(join(tmpdir(), 'herdr-artifacts-preserve-')); t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const wt = join(temp, 'wt'), stateDir = join(temp, 'state'), receipt = 'target/hh-verify/latest-qa.json';
+  mkdirSync(join(wt, 'target/hh-verify'), { recursive: true }); mkdirSync(join(wt, 'docs/projects/x'), { recursive: true });
+  writeFileSync(join(wt, receipt), '{"qa":1}\n'); writeFileSync(join(wt, 'docs/projects/x/README.md'), 'new\n');
+  const none = preserve({}, { id: 'HH-1', worktree: wt, stateDir, files: [receipt] });
+  assert.equal(none.declared, false);
+  assert.deepEqual(none.files, { [receipt]: createHash('sha256').update('{"qa":1}\n').digest('hex') });
+  assert.equal(readFileSync(join(none.dir, receipt), 'utf8'), '{"qa":1}\n');
+  // 이미 보관 위치에 하드 링크가 있어도 새 파일로 바꿔 쓰므로 밖의 원본은 그대로다.
+  const outside = join(temp, 'outside.txt'), kept = join(stateDir, 'tasks/SW-1/artifacts/docs/projects/x/README.md');
+  writeFileSync(outside, 'keep\n'); mkdirSync(join(kept, '..'), { recursive: true }); linkSync(outside, kept);
+  const both = preserve(sw(), { id: 'SW-1', worktree: wt, stateDir, vars: { slug: 'x' }, files: [receipt] });
+  assert.deepEqual([both.declared, Object.keys(both.files).sort()], [true, ['docs/projects/x/README.md', receipt]]);
+  assert.equal(readFileSync(outside, 'utf8'), 'keep\n');
+  assert.equal(readFileSync(kept, 'utf8'), 'new\n');
+  for (const bad of ['../x', '/abs', 'a\\b', 'C:/x', 'a/./b', '']) assert.throws(() => preserve({}, { id: 'HH-1', worktree: wt, stateDir, files: [bad] }), /상대 경로/);
+  assert.throws(() => preserve({}, { id: '..', worktree: wt, stateDir, files: [receipt] }), /업무 ID/);
+  assert.throws(() => preserve({}, { id: 'HH-1', worktree: wt, stateDir, files: ['docs/projects/x'] }), /일반 파일/);
 });

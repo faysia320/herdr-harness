@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { activeRun, collect, createWorktree, dispatch } from './stages.mjs';
+import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, command, config, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
 
@@ -14,7 +15,7 @@ const optionsByCommand = {
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string' },
   'publish-check': { committed: 'boolean' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
-  'flow-close': { evidence: 'string' }, 'archive-tasks': { apply: 'boolean' },
+  'flow-close': { evidence: 'string' }, 'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
 
 function viewPr(ctx, n) {
@@ -34,15 +35,18 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
   });
 }
 
-export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile } = {}) {
+// delivery는 시험에서 병합 증명 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery를 쓴다.
+export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery } = {}) {
   const [name, ...args] = argv;
   if (name === '--help' || !name) return { commands: Object.keys(optionsByCommand) };
   check(Object.hasOwn(optionsByCommand, name), '알 수 없는 명령: ' + name);
   const optionSpec = Object.fromEntries(Object.entries(optionsByCommand[name]).map(([k, type]) => [k, { type }]));
   const { values: a, positionals: p } = parseArgs({ args, options: optionSpec, allowPositionals: true });
-  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close'].includes(name);
+  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close',
+    'cleanup-worktree'].includes(name);
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
+  ctx.delivery = delivery ?? ctx.flow;
   if (bindingFile !== undefined) check(bindingFile && samePath(bindingFile, ctx.file), '자체 launch.mjs로 현재 checkout의 binding을 전달해야 한다.');
   const mutate = handler => update(ctx, terminal, handler);
   if (name === 'recover') return update(ctx, terminal, ledger => {
@@ -120,8 +124,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
   if (name === 'archive-tasks') {
     const archive = (ledger, apply) => {
       const decisions = new Set(ctx.decisions({ ledger, action: 'list' }).map(d => d.task?.toUpperCase()));
-      const keep = Object.values(ledger.tasks).filter(t => (t.worktree && existsSync(t.worktree)) ||
-        decisions.has(t.id)).map(t => t.id);
+      const keep = archiveKeep(Object.values(ledger.tasks), decisions);
       return adapter.ledgerArchive(ctx.file, { action: apply ? 'archive' : 'plan', project, stateDir: ctx.stateDir, ledger, options: { keep } });
     };
     if (!a.apply) return archive(await readLedger(ctx), false);
@@ -145,6 +148,11 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     if (name === 'flow-resume') return resume(ctx, ledger, task, a);
     if (name === 'flow-close') return close(ctx, ledger, task, a, terminal);
     withoutDecision(ctx, ledger, task);
+    if (name === 'cleanup-worktree') {
+      check(!task.x_archive, '보관된 업무는 요약만 남아 정리 근거를 확인할 수 없다. show로 보관본을 확인한 뒤 Lead가 직접 처리한다.');
+      check(task.state === 'DONE', 'DONE 업무만 정리한다.');
+      return { id: task.id, cleanup: cleanupWorktree(ctx, ledger, task, { retry: true }) };
+    }
     if (name === 'flow-attach-pr') {
       const { committed: anchor } = publicationCheck(ctx, ledger, task.id, true);
       const number = Number(a.pr);
@@ -185,7 +193,7 @@ async function deliver(ctx, ledger, task, name, a) {
   const cwd = proofOnly ? ctx.root : task.worktree;
   if (!proofOnly) verifyCommit(ctx, task);
   assertBinding(ctx);
-  const result = ctx.flow({ action: 'delivery', cwd, flow, branch: task.branch,
+  const result = ctx.delivery({ action: 'delivery', cwd, flow, branch: task.branch,
     ...(proofOnly ? { proofOnly: true } : { apply: Boolean(a.apply) }),
     dev14: { candidate: task.candidate, mergeAuthorized: Boolean(a.apply), sensitivePaths: config.sensitive_paths },
   });
@@ -200,7 +208,7 @@ async function deliver(ctx, ledger, task, name, a) {
     await transition(ctx, task, 'BLOCKED', result.reasons?.join(' / ') ?? '병합 조건 확인 필요', 'flow-delivery-blocked');
   } else return { id: task.id, ...result };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: task.x_flow.phase, pr: flow.delivery.pr, merge: result.merge });
-  return { id: task.id, ...result };
+  return { id: task.id, ...result, ...(task.state === 'DONE' ? { cleanup: cleanupWorktree(ctx, ledger, task) } : {}) };
 }
 
 // PR 없이 독립 QA PASS 후보를 정책 예외로 종결한다. 병합 증명(phase=merged, delivery.merge)과 구분되도록 phase=closed와 closure를 남긴다.
@@ -222,7 +230,7 @@ async function close(ctx, ledger, task, a, terminal) {
   flow.closure = closure;
   entry.closure = { ...closure };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'closed', closure: closure.kind });
-  return { id: task.id, state: task.state, phase: flow.phase, closure };
+  return { id: task.id, state: task.state, phase: flow.phase, closure, cleanup: cleanupWorktree(ctx, ledger, task) };
 }
 
 async function resume(ctx, ledger, task, a) {
@@ -268,7 +276,10 @@ async function resume(ctx, ledger, task, a) {
 if (process.argv[1] && resolve(process.argv[1]) === cli) {
   try {
     const bindingFile = process.env.HERDR_HARNESS_ENTRY_PID === String(process.ppid) ? process.env.HERDR_HARNESS_ENTRY_BINDING ?? '' : '';
-    console.log(JSON.stringify(await main(process.argv.slice(2), { bindingFile }), null, 2));
+    const result = await main(process.argv.slice(2), { bindingFile });
+    console.log(JSON.stringify(result, null, 2));
+    // 재시도 명령은 정리가 끝나지 않았으면 nonzero로 끝낸다. DONE 전이 명령의 종료 코드는 정리 결과로 바꾸지 않는다.
+    if (process.argv[2] === 'cleanup-worktree' && result.cleanup?.status !== 'done') process.exitCode = 1;
   }
   catch (error) { console.error(error.message); process.exitCode = 2; }
 }

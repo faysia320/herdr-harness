@@ -123,12 +123,13 @@ function deliver(input, exec = execute) {
       if (!policy.strict) reasons.push('strict main 보호 근거 불충분');
       if (!passed || ['CHANGES_REQUESTED','REVIEW_REQUIRED'].includes(p.reviewDecision) ||
           (policy.reviewRequired && p.reviewDecision!=='APPROVED')) reasons.push('최종 PR 필수 CI·리뷰 근거 불충분');
-      const proof={pr:p.number,url:p.url,head:p.headRefOid,merge:m,base,tree,original:publication.original,
+      // PR 브랜치 이름도 증명에 묶는다. 저장소 정리는 이 이름과 head가 같은 로컬 업무 브랜치만 지운다.
+      const proof={pr:p.number,url:p.url,head:p.headRefOid,branch:p.headRefName,merge:m,base,tree,original:publication.original,
         candidate:dev14.candidate.fingerprint,mainContainsMerge:true,exactCandidate,exactTree,requiredChecksPassed:passed};
       return reasons.length ? {phase:'proof-blocked',...proof,reasons} : {phase:'merged',...proof};
     }
     if (parents.length!==1 || parents[0]!==flow.delivery.base || git('rev-parse',`${m}^{tree}`)!==flow.delivery.tree) throw new Error('병합은 발생했지만 부모·tree 증명이 다르다. 후속 확인 필요');
-    return { phase:'merged', pr:p.number, url:p.url, head:pr.headRefOid, merge:m, base:parents[0], tree:flow.delivery.tree };
+    return { phase:'merged', pr:p.number, url:p.url, head:pr.headRefOid, branch:p.headRefName, merge:m, base:parents[0], tree:flow.delivery.tree };
   };
   const merged=verifyMerged(pr);
   if (merged) return merged;

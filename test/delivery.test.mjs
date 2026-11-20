@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { build } from '../scripts/build.mjs';
 const { deliver }=createRequire(import.meta.url)('../core/delivery.cjs');
 const H='a'.repeat(40), B='b'.repeat(40), M='c'.repeat(40), T='d'.repeat(40);
 function fixture({pending=false,drift=false,reject=false,merged=false,wrongTree=false,deletedBranch=false,ruleset=null}={}) {
@@ -57,4 +62,19 @@ test('SW처럼 ruleset을 쓰면 strict 필수 CI와 우회 없는 규칙을 요
    assert.equal(f.calls.some(x=>x[0]==='gh'&&x[2]==='merge'),false);
  }
  const f=fixture({ruleset:{strict:true,bypass:false}});assert.equal(deliver(f.input,f.exec).phase,'merged');
+});
+
+test('병합 증명에 PR 브랜치 이름을 남긴다',()=>{
+ const f=fixture();assert.equal(deliver(f.input,f.exec).branch,'codex/test');
+});
+
+test('watch-delivery는 flow-deliver --apply의 정리 결과를 그대로 내보내고 ci가 아니면 끝난다',t=>{
+ const dir=mkdtempSync(join(tmpdir(),'herdr-watch-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const built=build(),stub=join(dir,'adapter.mjs'),file=join(dir,'harness-binding.json');
+ const cleanup={status:'refused',reasons:['살아 있는 위임 터미널이 있다: t9'],retry:'node .agents/harness/launch.mjs cleanup-worktree HH-001'};
+ writeFileSync(stub,`console.log(JSON.stringify({id:'HH-001',phase:'merged',argv:process.argv.slice(2),cleanup:${JSON.stringify(cleanup)}}));`);
+ writeFileSync(file,JSON.stringify({version:1,project:'fixture',release:built.release,manifestHash:built.manifestHash,cwd:dir,command:[process.execPath,stub]}));
+ const r=spawnSync(process.execPath,['bin/watch-delivery.mjs',file,'HH-001','1'],{encoding:'utf8',windowsHide:true,timeout:60000});
+ assert.equal(r.status,0,r.stderr);
+ assert.deepEqual(JSON.parse(r.stdout),{id:'HH-001',phase:'merged',argv:['flow-deliver','HH-001','--apply'],cleanup});
 });

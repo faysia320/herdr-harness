@@ -31,6 +31,20 @@ PR을 만들지 않기로 승인된 업무는 flow-close ID --evidence "승인 �
 
     node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(대화 2026-01-01): PR 없는 검증 업무"
 
+## 끝난 업무 정리
+
+DONE이 되면 같은 Lead 잠금 안에서 공통 [worktree 정리](../../README.md#끝난-업무-worktree-정리)를 한 번 부른다. 호출 시점은 flow-deliver ID --apply(watch-delivery 포함)와 flow-prove-merged ID가 병합을 증명했을 때, flow-close ID가 예외 종결했을 때다. 미병합·차단·조회 전용 결과에는 부르지 않는다. 명령 응답에 cleanup 항목이 붙고 대장의 x_cleanup과 x_cleanup 사건에 같은 결과가 남는다. 결과가 이전과 같으면 다시 기록하지 않는다.
+
+- 정리가 거부되거나 실패해도 DONE·병합 증명·예외 종결은 되돌리지 않고 명령의 종료 코드도 바꾸지 않는다. cleanup에는 status(done·refused·partial·failed), 사유, 남은 worktree·브랜치, 재시도 명령이 있다. failed는 binding·release 문제처럼 공통 정리를 실행하지 못한 경우다.
+- 병합 업무는 worktree를 지운 뒤 로컬 업무 브랜치를 -d, 거부되면 증명 조건을 다시 확인해 -D로 지운다. 예외 종결 업무는 미커밋 후보를 .local/hh-harness/tasks/ID/worktree-*.patch로 보존하고 브랜치를 남긴다.
+- config.json의 cleanup.keep_ignored(target/hh-verify/)는 상태 폴더의 tasks/ID/artifacts/에 보관한 뒤 지우고, cleanup.discard_ignored(dist/, mod/harness/contract.js, mod/harness/decisions.js)는 생성물로 보고 그대로 지운다. 그 밖의 무시 파일이 있으면 정리를 거부한다.
+- 정리는 status가 깨끗하다는 것만 믿지 않고 사전검사와 worktree remove 직전에 추적 파일 전체의 내용 해시를 index blob과 비교하고, worktree 폴더를 링크를 따라가지 않고 순회해 모든 항목이 추적 파일이나 위 keep·discard·과정 문서로 설명되는지 대조한다. .git 이름 항목(중첩 저장소), 확인된 추적 링크(index mode 120000이고 status가 보고하지 않으며 링크 대상=index blob)가 아닌 링크·junction(discard 폴더 안, 예외 종결 후보 경로 포함), worktree 전용 ref(refs/worktree·refs/bisect·refs/rewritten), 진행 중인 병합·rebase 등이 있으면 지우지 않는다. 후보 되돌리기(git checkout)와 worktree remove처럼 Git이 경로를 지우는 단계 직전에는 대상 경로와 worktree 안 상위 구성요소가 링크·junction이 아닌지 lstat으로 다시 보고, 아니면 멈춘다. 이 확인의 한도는 config.json의 cleanup.content_ms(60000ms)다. DONE 직후 자동 정리가 watch-delivery 한 회(180초) 안에 끝나게 한 값이다. 한도를 넘으면 지우지 않고 refused로 남긴다. 아래 재시도 명령은 cleanup.retry_content_ms(600000ms)를 쓴다.
+- 이미 DONE인 업무, 거부·부분 완료된 정리는 Lead가 아래 명령으로 다시 실행한다. 보관된 업무(x_archive)와 열린 결정이 있는 업무는 거부한다. 정리가 끝나지 않으면 종료 코드 1이다.
+
+      node .agents/harness/launch.mjs cleanup-worktree HH-123
+
+collect는 단계 보고를 정상 수집해 회차를 저장한 뒤 그 회차의 위임 터미널을 hc kill로 닫는다. 대장에 기록된 주소이고 harness.task·harness.run 레이블이 그 회차와 같을 때만이다. Lead 터미널, 다른 업무 터미널, 레이블 불일치, 조회 실패, 아직 working인 에이전트는 닫지 않고 회차의 x_terminal에 사유를 남긴다(outcome=kept). kill 뒤에는 응답과 무관하게 다시 조회한다. 종료나 제거(not_found)를 확인하면 killed(after=finished·removed), 여전히 live면 still-live, 조회에 실패하면 unknown이다. 종료 실패는 수집 결과를 되돌리지 않는다. 게시자 세션은 대장에 회차·레이블이 없어 정체를 확인할 수 없으므로 자동 종료 대상이 아니다. Lead가 flow-attach-pr 뒤 직접 닫는다. 게시자 세션이 worktree를 cwd로 잡고 있으면 Windows에서는 정리가 «사용 중»으로 거부된다.
+
 GitHub Actions 검사 이름은 harness-ci (ubuntu-latest)와 harness-ci (windows-latest)다. 서버에서 검사 이름과 GitHub Actions App을 필수로 지정하고 strict up-to-date와 우회 없는 보호를 확인해야 자동 병합할 수 있다.
 
 결정 요청은 decision request KEY --file JSON으로 등록한다. 실제 사용자 답변과 출처는 decision resolve KEY --file JSON --revision N으로 기록한다. 설치된 Herdr 패널은 이 저장소의 업무·결정함과 현재 Lead를 읽는다.
