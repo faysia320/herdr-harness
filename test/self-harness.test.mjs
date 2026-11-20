@@ -7,7 +7,7 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { build, root } from '../scripts/build.mjs';
 import { adapter, git, samePath } from '../.agents/harness/repository.mjs';
-import { suiteInvocation } from '../.agents/harness/stages.mjs';
+import { suiteInvocation } from '../.agents/harness/suite.mjs';
 
 const frozenRelease = process.env.HH_TEST_PINNED_RELEASE;
 const built = frozenRelease ? { release: frozenRelease, manifestHash: frozenRelease.split(/[\\/]/).at(-1) } : build();
@@ -124,17 +124,27 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('collect ' + task.id), /중복/);
   writeJson(reportFile, report);
   await assert.rejects(run('collect ' + task.id), /latest-qa.json/);
-  const log = JSON.stringify({ argv: suiteInvocation({ binding: built }), exit: 0, run: qa.token, tree: implemented.candidate.tree }) + '\nfixture output\n';
-  writeFileSync(join(qa.dir, 'hh-suite.log'), log);
+  const tap = tests => ['TAP version 13', '# tests ' + tests, '# suites 0', '# pass ' + tests, '# fail 0',
+    '# cancelled 0', '# skipped 0', '# todo 0', '# duration_ms 5.5', ''].join('\n');
+  const saveLog = (stdout, stderr = '') => {
+    const result = { argv: suiteInvocation({ binding: built }), exit: 0, run: qa.token, tree: implemented.candidate.tree,
+      stdoutLength: stdout.length, tests: 1 };
+    const log = [JSON.stringify(result), stdout, stderr].join('\n');
+    writeFileSync(join(qa.dir, 'hh-suite.log'), log);
+    return { id: 'hh-suite', state: 'passed', exit: 0, tests: 1, logDigest: adapter.hash(log) };
+  };
   const receipt = { run: qa.token, version: 1, role: 'qa', stable: true, base, scope: 'changed-paths',
-    tree: implemented.candidate.tree, completedAt: new Date().toISOString(),
-    checks: [{ id: 'hh-suite', state: 'passed', exit: 0, logDigest: adapter.hash(log) }],
+    tree: implemented.candidate.tree, completedAt: new Date().toISOString(), checks: [saveLog(tap(1))],
     releaseHash: built.manifestHash, terminal: qa.terminal };
   writeJson(receiptFile, { ...receipt, terminal: implementation.terminal });
   await assert.rejects(run('collect ' + task.id), /현재 QA 세션/);
   writeJson(receiptFile, { ...receipt, checks: [{ id: 'hh-suite', state: 'passed' }] });
   await assert.rejects(run('collect ' + task.id), /영수증·로그/);
-  writeJson(receiptFile, receipt);
+  writeJson(receiptFile, { ...receipt, checks: [saveLog(tap(0))] });
+  await assert.rejects(run('collect ' + task.id), /영수증·로그/);
+  writeJson(receiptFile, { ...receipt, checks: [saveLog('fixture without a test summary\n', tap(1))] });
+  await assert.rejects(run('collect ' + task.id), /영수증·로그/);
+  writeJson(receiptFile, { ...receipt, checks: [saveLog(tap(1))] });
   writeFileSync(target, 'changed after dispatch\n');
   await assert.rejects(run('collect ' + task.id), /후보가 변경/);
   writeFileSync(target, 'candidate\n');

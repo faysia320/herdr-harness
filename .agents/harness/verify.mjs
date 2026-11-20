@@ -2,7 +2,8 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { atomic, readLedger, taskById } from './ledger.mjs';
 import { adapter, candidate, check, configPath, context, now, project, samePath } from './repository.mjs';
-import { activeRun, receiptPath, suiteInvocation } from './stages.mjs';
+import { activeRun, receiptPath } from './stages.mjs';
+import { suiteEnvironment, suiteInvocation, suiteTestCount } from './suite.mjs';
 
 try {
   const [file, id] = process.argv.slice(2);
@@ -22,15 +23,22 @@ try {
   const log = join(run.dir, 'hh-suite.log');
   const argv = suiteInvocation(ctx);
   const { runTree } = await import(pathToFileURL(join(ctx.binding.release, 'core/process.js')).href);
-  const result = await runTree(argv[0], argv.slice(1), { cwd: task.worktree, timeout: 45 * 60 * 1000 });
-  const contents = [JSON.stringify({ argv, exit: result.code, run: run.token, tree: before.tree }), result.stdout, result.stderr].join('\n');
+  // 재실행을 시작하면 같은 회차의 이전 영수증은 로그 지문이 맞지 않아 수집되지 않는다.
+  atomic(log, JSON.stringify({ argv, run: run.token, tree: before.tree, status: 'running' }) + '\n');
+  const result = await runTree(argv[0], argv.slice(1), {
+    cwd: task.worktree, timeout: 45 * 60 * 1000, env: suiteEnvironment(process.env),
+  });
+  const tests = suiteTestCount(result.stdout);
+  const summary = { argv, exit: result.code, run: run.token, tree: before.tree, stdoutLength: result.stdout.length, tests };
+  const contents = [JSON.stringify(summary), result.stdout, result.stderr].join('\n');
   atomic(log, contents);
   check(result.code === 0, '필수 검사 실패 또는 미완료: ' + log);
+  check(tests, '실제로 실행하고 통과한 필수 시험 건수를 확인할 수 없다: ' + log);
   const after = candidate(ctx, task);
   check(before.fingerprint === after.fingerprint, '검사 도중 후보가 바뀌었다.');
   const receipt = { version: 1, role: 'qa', run: run.token, terminal: me, releaseHash: ctx.binding.manifestHash,
     stable: true, base: task.base, scope: 'changed-paths', tree: after.tree, completedAt: now(),
-    checks: [{ id: 'hh-suite', state: 'passed', exit: 0, log, logDigest: adapter.hash(contents) }] };
+    checks: [{ id: 'hh-suite', state: 'passed', exit: 0, tests, log, logDigest: adapter.hash(contents) }] };
   atomic(join(task.worktree, receiptPath), JSON.stringify(receipt, null, 2) + '\n');
   console.log(JSON.stringify(receipt, null, 2));
 } catch (error) { console.error(error.message); process.exitCode = 2; }

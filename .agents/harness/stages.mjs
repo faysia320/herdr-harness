@@ -3,10 +3,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { artifact, save, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, config, git, now, project } from './repository.mjs';
+import { suiteInvocation, suiteTestCount } from './suite.mjs';
 
 export const receiptPath = 'target/hh-verify/latest-qa.json';
-export const suiteCommand = ['node', 'scripts/build.mjs', '&&', 'node', '--test', 'test/*.test.mjs', 'mod/harness/*.test.mjs'];
-export const suiteInvocation = ctx => [process.execPath, join(ctx.binding.release, 'bin/heavy.mjs'), '--', ...suiteCommand];
 const stateForStage = { research: 'RESEARCHING', architect: 'RESEARCHING', implement: 'IMPLEMENTING', qa: 'QA' };
 const allowedDispatch = { research: ['QUEUED', 'RESEARCHING'], architect: ['RESEARCHING'], implement: ['READY_TO_IMPLEMENT'], qa: ['QA'] };
 const isText = s => typeof s === 'string' && s.trim().length > 0;
@@ -166,10 +165,18 @@ export async function collect(ctx, ledger, task) {
       const receipt = ctx.flow({ action: 'verify-receipt', cwd: task.worktree, since: run.started, base: task.base, receipt: receiptPath });
       const raw = artifact(join(task.worktree, receiptPath), run);
       const log = readFileSync(join(run.dir, 'hh-suite.log'), 'utf8');
-      const resultLine = JSON.parse(log.split('\n', 1)[0]);
+      const split = log.indexOf('\n');
+      check(split > 0, '현재 QA 세션의 필수 검사 영수증·로그가 필요하다.');
+      const resultLine = JSON.parse(log.slice(0, split));
+      const { stdoutLength } = resultLine;
+      check(Number.isSafeInteger(stdoutLength) && stdoutLength > 0 && log[split + 1 + stdoutLength] === '\n',
+        '현재 QA 세션의 필수 검사 영수증·로그가 필요하다.');
+      const stdout = log.slice(split + 1, split + 1 + stdoutLength);
+      const tests = suiteTestCount(stdout);
       const suite = receipt.checks[0];
       check(raw.terminal === (terminal?.address ?? run.terminal) && raw.releaseHash === ctx.binding.manifestHash &&
         receipt.checks.length === 1 && suite.id === 'hh-suite' && suite.state === 'passed' && suite.exit === 0 &&
+        tests && suite.tests === tests && resultLine.tests === tests &&
         suite.logDigest === adapter.hash(log) && resultLine.exit === 0 && resultLine.run === run.token && resultLine.tree === current.tree &&
         JSON.stringify(resultLine.argv) === JSON.stringify(suiteInvocation(ctx)), '현재 QA 세션이 고정 release로 실행한 필수 검사 영수증·로그가 필요하다.');
       result.flow.runner = receipt;

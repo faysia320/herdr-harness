@@ -2,6 +2,8 @@
 
 자체 업무는 저장소의 .agents/harness/config.json을 읽는 공통 launcher로 시작한다. 업무 상태와 보고서는 .local/hh-harness/, 격리 checkout은 .local/worktrees/에 둔다. Lead가 등록된 Herdr 터미널에서만 업무 상태를 쓴다.
 
+운영 Lead는 [Lead 인계와 업무 재개](LEAD.md)를 먼저 읽는다.
+
 ## 연결과 등록
 
 활성 설치의 manifest를 확인하고 자체 binding과 Herdr 목록 항목만 추가한다. 기존 프로젝트 binding과 설치된 mod 파일은 그대로 사용한다.
@@ -17,7 +19,7 @@
     node .agents/harness/launch.mjs next --go
     node .agents/harness/launch.mjs collect HH-001
 
-위임은 동결한 AC·검사와 보고서 위치를 전달한다. QA의 PASS에는 독립 회차의 보고서와 함께 고정 release를 사용한 후보 tree별 실행 영수증이 필요하다. 복구는 recover로 현재 연결된 실행을 조회하고, 차단 업무는 flow-resume ID --evidence "달라진 조건"으로 재개한다.
+위임은 동결한 AC·검사와 보고서 위치를 전달한다. QA의 PASS에는 독립 회차의 보고서와 함께 고정 release를 사용한 후보 tree별 실행 영수증이 필요하다. runner는 시험 worker 표지를 제거한 환경에서 고정 시험 명령을 실행하고 양수의 전체 통과 건수가 기록된 경우에만 영수증을 발급한다. 수집기는 해당 회차의 로그에서 같은 건수를 다시 확인한다. 복구는 recover로 현재 연결된 실행을 조회하고, 차단 업무는 flow-resume ID --evidence "달라진 조건"으로 재개한다.
 
 ## 게시와 병합
 
