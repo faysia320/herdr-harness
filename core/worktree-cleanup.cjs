@@ -1,6 +1,6 @@
 // 끝난 업무의 worktree와 로컬 업무 브랜치 정리 공통 규칙. 저장소의 경로·브랜치 규칙, 실행 조회, 대장 쓰기는 호출자가 맡는다.
 // 순서: 실행·경로·Git 상태 사전검사 → 과정 문서·지정 파일 재보관 → (예외 종결) 후보 patch 보존 → 의도 기록 → 후보 경로 되돌리기
-// → 비강제 worktree remove → (병합 증명) 로컬 업무 브랜치 삭제. 맞지 않는 조건이 있으면 그 단계 전에 멈추고 이유를 돌려준다.
+// → 비강제 worktree remove → (병합 증명) 로컬 업무 브랜치 삭제·(사용자 승인 병합 종결) -d 시도. 맞지 않는 조건이 있으면 그 단계 전에 멈추고 이유를 돌려준다.
 // 강제 worktree 제거·재귀 삭제·update-ref·원격 ref 변경은 하지 않는다. 준비 시간 초과로 남은 부분 worktree는 대상이 아니다.
 // status가 숨길 수 있는 변경(index 플래그·fsmonitor·untracked cache·환경변수로 바꾼 index)과 submodule은 사전검사에서 막는다.
 // stat 캐시가 숨기는 변경은 사전검사와 worktree remove 직전에 추적 파일 전체의 내용 해시를 index blob과 비교해 막는다.
@@ -282,7 +282,7 @@ function validate(input) {
   } else if (kind === 'closed') {
     const c = input.candidate ?? {};
     if (!oid.test(c.head ?? '') || !oid.test(c.tree ?? '') || !Array.isArray(c.paths)) fail('예외 종결 업무의 QA 후보가 올바르지 않다.');
-  } else fail('병합 증명(merged)이나 정책 예외 종결(closed) 업무만 정리한다.');
+  } else if (kind !== 'merged-accepted') fail('병합 증명(merged)·정책 예외 종결(closed)·사용자 승인 병합 종결(merged-accepted) 업무만 정리한다.');
   const name = path.basename(input.worktree);
   if (!safe.test(name) || /^\.+$/.test(name)) fail('worktree 폴더 이름이 올바르지 않다.');
   const dir = real(input.worktreeDir);
@@ -458,6 +458,16 @@ function removeWorktree(s) {
   if (registered || left) fail(`worktree 제거를 확인하지 못했다(git 종료 ${r.code}${r.err ? `: ${r.err}` : ''}; 등록 ${registered ? '남음' : '없음'}, 폴더 ${left ? '남음' : '없음'}). 강제 삭제는 하지 않는다.`);
 }
 
+// 사용자 승인 병합 종결 업무는 병합 증명이 없으므로 -d만 시도한다. Git이 거부하면(squash 등으로 미병합인 tip) 브랜치를 보존한다.
+function acceptedBranch(s) {
+  const tip = revParse(s.root, `refs/heads/${s.branch}`);
+  if (!tip) return { name: s.branch, state: 'absent' };
+  const soft = run(s.root, ['branch', '-d', '--', s.branch]);
+  if (soft.code !== 0) return { name: s.branch, state: 'kept', tip, reason: `git branch -d 거부: ${soft.err}` };
+  if (revParse(s.root, `refs/heads/${s.branch}`)) fail(`업무 브랜치 삭제를 확인하지 못했다: ${s.branch}`);
+  return { name: s.branch, state: 'deleted', tip, method: '-d', at: s.at };
+}
+
 // 병합 증명된 업무 브랜치만 지운다. 먼저 -d를 시도하고, 거부되면 tip·이름·사용처·worktree 제거를 다시 확인한 뒤에만 -D를 쓴다.
 function removeBranch(s, journal) {
   const ref = `refs/heads/${s.branch}`;
@@ -589,7 +599,8 @@ function cleanup(input) {
     if (s.kind === 'closed') report.branch = { name: s.branch, state: 'kept', reason: '정책 예외 종결 업무의 브랜치는 보존한다.' };
     else {
       acted = true;
-      const result = removeBranch(s, { branch: journal.branchResult });
+      const result = s.kind === 'merged-accepted' ? (journal.branchResult?.state === 'deleted' && !revParse(s.root, `refs/heads/${s.branch}`)
+        ? journal.branchResult : acceptedBranch(s)) : removeBranch(s, { branch: journal.branchResult });
       report.branch = result;
       if (JSON.stringify(journal.branchResult) !== JSON.stringify(result)) save({ ...journal, branchResult: result });
     }
@@ -607,7 +618,7 @@ function cleanup(input) {
     // 입력 검사에서 멈춰도 호출자가 넘긴 경로·브랜치가 남아 있는지 알린다.
     const { worktree, root, branch, kind } = s ?? input ?? {};
     if (path.isAbsolute(worktree ?? '') && lexists(worktree)) report.remaining.push(worktree);
-    if (kind === 'merged' && path.isAbsolute(root ?? '') && typeof branch === 'string' && branch && revParse(root, `refs/heads/${branch}`))
+    if (['merged', 'merged-accepted'].includes(kind) && path.isAbsolute(root ?? '') && typeof branch === 'string' && branch && revParse(root, `refs/heads/${branch}`))
       report.remaining.push(`refs/heads/${branch}`);
   } catch (e) { report.reasons.push(`남은 자원 조회 실패: ${e.message}`); }
   return report;

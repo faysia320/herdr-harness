@@ -15,7 +15,8 @@ const optionsByCommand = {
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string', decision: 'string', revision: 'string' },
   'publish-check': { committed: 'boolean' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
-  'flow-close': { evidence: 'string' }, 'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
+  'flow-close': { evidence: 'string' }, 'flow-accept-merged': { pr: 'string', evidence: 'string', source: 'string' },
+  'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
 
 function viewPr(ctx, n) {
@@ -39,18 +40,20 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
 const remaining = (ctx, plan) => scoped(ctx) ? ctx.flow({ action: 'remaining', plan }) : null;
 
 // delivery·prView는 시험에서 병합 증명·PR 조회 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery와 gh를 쓴다.
-export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery, prView } = {}) {
+// acceptMerged도 같은 시험용 주입 지점이다(임시 저장소에 GitHub 원격이 없다). CLI는 고정 release의 accept-merged 판정을 쓴다.
+export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery, prView, acceptMerged } = {}) {
   const [name, ...args] = argv;
   if (name === '--help' || !name) return { commands: Object.keys(optionsByCommand) };
   check(Object.hasOwn(optionsByCommand, name), '알 수 없는 명령: ' + name);
   const optionSpec = Object.fromEntries(Object.entries(optionsByCommand[name]).map(([k, type]) => [k, { type }]));
   const { values: a, positionals: p } = parseArgs({ args, options: optionSpec, allowPositionals: true });
   const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close',
-    'cleanup-worktree'].includes(name);
+    'flow-accept-merged', 'cleanup-worktree'].includes(name);
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
   ctx.delivery = delivery ?? ctx.flow;
   ctx.viewPr = prView ?? (n => viewPr(ctx, n));
+  ctx.acceptMerged = acceptMerged ?? ctx.flow;
   if (bindingFile !== undefined) check(bindingFile && samePath(bindingFile, ctx.file), '자체 launch.mjs로 현재 checkout의 binding을 전달해야 한다.');
   const mutate = handler => update(ctx, terminal, handler);
   if (name === 'recover') return update(ctx, terminal, ledger => {
@@ -159,6 +162,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     if (name === 'collect') return collect(ctx, ledger, task);
     if (name === 'flow-resume') return resume(ctx, ledger, task, a);
     if (name === 'flow-close') return close(ctx, ledger, task, a, terminal);
+    if (name === 'flow-accept-merged') return closeMerged(ctx, ledger, task, a, terminal);
     withoutDecision(ctx, ledger, task);
     if (name === 'cleanup-worktree') {
       check(!task.x_archive, '보관된 업무는 요약만 남아 정리 근거를 확인할 수 없다. show로 보관본을 확인한 뒤 Lead가 직접 처리한다.');
@@ -276,6 +280,23 @@ async function close(ctx, ledger, task, a, terminal) {
   entry.closure = { ...closure };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'closed', closure: closure.kind });
   return { id: task.id, state: task.state, phase: flow.phase, closure, cleanup: cleanupWorktree(ctx, ledger, task) };
+}
+
+// 이미 main에 병합된 PR의 업무를 사용자 승인으로 종결한다. PR·원격 main 확인과 DONE 기록은 고정 release가 만들고(core/merged-closure.cjs),
+// 이 어댑터는 Lead 잠금 안에서 저장하고 정리를 부른다. Lead가 PR 번호를 직접 지정하므로 PR 브랜치가 업무 브랜치와 달라도 받는다.
+async function closeMerged(ctx, ledger, task, a, terminal) {
+  check(/^[1-9][0-9]*$/.test(a.pr ?? ''), '--pr에 병합된 PR 번호가 필요하다.');
+  check(a.evidence?.trim() && a.source?.trim(), '--evidence에 사용자 승인 원문, --source에 그 출처가 필요하다.');
+  check(!task.x_archive, '보관된 업무는 요약만 남아 종결할 수 없다.');
+  assertBinding(ctx);
+  const result = ctx.acceptMerged({ action: 'accept-merged', task, pr: Number(a.pr), explicit: true,
+    evidence: { quote: a.evidence, source: a.source }, terminal, now: now() });
+  check(result.task?.id === task.id && result.task.state === 'DONE', '공통 판정 결과가 이 업무의 종결이 아니다.');
+  const { at: _, project: __, ...event } = result.event;
+  ledger.tasks[task.id] = result.task;
+  save(ctx, ledger, event);
+  const done = ledger.tasks[task.id];
+  return { id: done.id, state: done.state, phase: done.x_flow.phase, closure: done.x_flow.closure, cleanup: cleanupWorktree(ctx, ledger, done) };
 }
 
 // 복구 근거로 남길 해소 결정. 이 업무에 연결돼 있고 지정한 revision이 현재 해소 기록과 같아야 한다.

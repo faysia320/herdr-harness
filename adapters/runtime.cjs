@@ -107,6 +107,20 @@ function workflow(file, input) {
   }
   if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base,input.receipt);
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
+  // 사용자 승인 병합 종결. PR·원격 main 조회는 binding의 저장소(cwd)에서 release가 직접 한다. 호출자는 Lead 잠금 안에서
+  // 돌려받은 task·event를 저장하고 worktree 정리를 부른다. pr을 생략하면 연결된 PR을 쓰고 브랜치 대조를 면제하지 않는다.
+  if (input.action === 'accept-merged') {
+    const manifest = JSON.parse(fs.readFileSync(path.join(b.release, 'manifest.json'), 'utf8'));
+    if (!Object.hasOwn(manifest.files, 'core/merged-closure.cjs')) throw new Error('고정 release가 사용자 승인 병합 종결을 지원하지 않는다. 새 release를 설치한 뒤 재시도한다.');
+    if (input.task?.project !== undefined && input.task.project !== input.project) throw new Error('업무 프로젝트가 연결과 다르다.');
+    const cwd = typeof b.cwd === 'string' ? b.cwd : input.cwd;
+    if (!path.isAbsolute(cwd ?? '')) throw new Error('PR 조회 위치(binding cwd)는 절대 경로여야 한다.');
+    const api = require(path.join(b.release, 'core/merged-closure.cjs'));
+    const given = input.pr !== undefined && input.pr !== null;
+    const pr = Number(given ? input.pr : input.task?.x_flow?.delivery?.pr);
+    const request = { ...input, pr, explicit: given && input.explicit === true };
+    return api.accept(input.task, request, api.verify(cwd, pr), { now: input.now });
+  }
   throw new Error('지원하지 않는 workflow 동작');
 }
 module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, worktreeCleanup, decisionClosure, workflow };

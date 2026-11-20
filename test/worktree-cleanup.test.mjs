@@ -832,3 +832,45 @@ test('binding으로 고정한 정리 진입점은 Node·JSON stdin에서 같고,
   assert.throws(() => worktreeCleanup(file, request), /지원하지 않는다/);
   assert.ok(statSync(f.state).isDirectory());
 });
+
+test('사용자 승인 병합 종결: worktree는 같은 사전검사로 지우고 브랜치는 -d만 시도해 미병합 tip이면 보존하며 재실행은 같은 결과다', (t) => {
+  const f = fixture(t);
+  // 병합 커밋으로 main에 들어간 브랜치는 -d가 지운다.
+  const a = checkout(f, 'hh-7-accepted');
+  const merged = commitIn(a, 'a.txt', 'merged\n');
+  outputs(a);
+  git(f.root, 'merge', '-q', '--no-ff', '-m', 'merge', a.branch);
+  const first = cleanup(input(f, a, { kind: 'merged-accepted' }));
+  assert.equal(first.status, 'done', first.reasons.join('\n'));
+  assert.deepEqual(first.branch, { name: a.branch, state: 'deleted', tip: merged, method: '-d', at: '2026-11-20T00:00:00.000Z' });
+  assert.equal(existsSync(a.worktree), false);
+  assert.equal(refExists(f, a.branch), false);
+  assert.deepEqual(Object.keys(first.preserved.files), ['target/hh-verify/latest-qa.json']);
+  assert.deepEqual(cleanup(input(f, a, { kind: 'merged-accepted', at: '2026-11-21T00:00:00.000Z' })), first);
+});
+
+test('사용자 승인 병합 종결: squash로 로컬 tip이 미병합이면 worktree만 지우고 브랜치 SHA를 보존하며, dirty는 거부한다', (t) => {
+  const f = fixture(t);
+  const w = checkout(f, 'hh-8-squash');
+  const head = commitIn(w, 'a.txt', 'squashed\n');
+  git(f.root, 'merge', '--squash', '-q', w.branch);
+  git(f.root, 'commit', '-q', '-m', 'squash');
+  // 작업 사본에 커밋하지 않은 변경이 있으면 아무것도 지우지 않는다.
+  writeFileSync(join(w.worktree, 'gone.txt'), 'dirty\n');
+  const before = snapshot(f, w);
+  const refused = cleanup(input(f, w, { kind: 'merged-accepted' }));
+  assert.equal(refused.status, 'refused');
+  assert.match(refused.reasons.join('\n'), /변경 gone\.txt/);
+  assert.deepEqual(refused.remaining, [w.worktree, 'refs/heads/' + w.branch]);
+  assert.deepEqual(snapshot(f, w), before);
+  git(w.worktree, 'checkout', '--', 'gone.txt');
+  const done = cleanup(input(f, w, { kind: 'merged-accepted' }));
+  assert.equal(done.status, 'done', done.reasons.join('\n'));
+  assert.equal(existsSync(w.worktree), false);
+  assert.deepEqual([done.branch.state, done.branch.tip], ['kept', head]);
+  assert.match(done.branch.reason, /git branch -d 거부/);
+  assert.equal(git(f.root, 'rev-parse', 'refs/heads/' + w.branch), head);
+  const again = cleanup(input(f, w, { kind: 'merged-accepted', at: '2026-11-21T00:00:00.000Z' }));
+  assert.deepEqual(again, done);
+  assert.equal(git(f.root, 'rev-parse', 'refs/heads/' + w.branch), head);
+});
