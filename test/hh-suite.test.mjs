@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { suiteEnvironment, suiteTestCount } from '../.agents/harness/suite.mjs';
+import { suiteEnvironment, suiteInvocation, suiteTestCount } from '../.agents/harness/suite.mjs';
+import { createRequire } from 'node:module';
 
 test('HH suite executes actual tests when started inside a Node test worker', t => {
   const dir = mkdtempSync(join(tmpdir(), 'hh-suite-'));
@@ -33,4 +34,13 @@ test('HH suite rejects zero, missing, incomplete or skipped test results', () =>
     summary.replace('# skipped 0', '# skipped 1'),
     summary.replace('# pass 1', '# pass 0'),
   ]) assert.equal(suiteTestCount(output), undefined);
+});
+
+test('HH QA runner의 Windows hh-suite 명령은 저장소 QA 영수증 정책의 명령과 같다', async () => {
+  const { heavyArgv } = await import('../core/qa-receipt-runner.mjs');
+  const { loadPolicy } = createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+  const policy = loadPolicy(new URL('../policy/qa-receipt.json', import.meta.url));
+  const release = join(tmpdir(), 'pinned-release');
+  // verify.mjs는 같은 엔진의 Windows 결과로 기존 hh-suite.log를 쓰고, 수집기는 이 argv를 대조한다.
+  assert.deepEqual(heavyArgv(join(release, 'bin/heavy.mjs'), policy.checks['hh-suite'].steps), suiteInvocation({ binding: { release } }));
 });

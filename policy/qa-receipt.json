@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "output": "target/hh-verify/receipts",
+  "exempt_pr_max": 7,
+  "platforms": {
+    "windows": { "runner": "host" },
+    "linux": { "runner": "docker", "image": "docker.io/library/node@sha256:69c6e263db01e9946c7743bbbe9f7b1ba0df384d27ec09e08e5832d6acd3daf3" }
+  },
+  "checks": {
+    "hh-suite": {
+      "result": "tap",
+      "steps": [
+        ["node", "scripts/build.mjs"],
+        ["node", "--test", "--test-reporter=tap", "test/*.test.mjs", "mod/harness/*.test.mjs"]
+      ]
+    }
+  },
+  "required": [
+    { "checks": ["hh-suite"], "platforms": ["windows", "linux"] }
+  ]
+}

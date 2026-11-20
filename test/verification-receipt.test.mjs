@@ -25,3 +25,17 @@ test('QA runner 증거는 같은 후보·시각·완료 결과만 통과시키�
  save({...receipt,base:'wrong'});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
  save(receipt);writeFileSync(join(cwd,'a.txt'),'two\n');assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
 });
+test('미커밋 QA 후보의 v2 지문은 게시 커밋과 같고 무시 경로의 QA 산출물은 후보에 들어가지 않는다',t=>{
+ const {candidateBinding}=createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+ const cwd=mkdtempSync(join(tmpdir(),'herdr-receipt-v2-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+ const git=(...args)=>{const out=execFileSync('git',args,{cwd,windowsHide:true,encoding:'utf8',stdio:'pipe'});return out.includes('\0')?out:out.trim();};
+ git('init','-q');git('config','user.name','v2');git('config','user.email','v2@example.invalid');git('config','core.autocrlf','false');
+ writeFileSync(join(cwd,'.gitignore'),'target/hh-verify/\n');writeFileSync(join(cwd,'a.txt'),'one\n');writeFileSync(join(cwd,'gone.txt'),'x\n');
+ git('add','-A');git('commit','-q','-m','base');const base=git('rev-parse','HEAD');
+ writeFileSync(join(cwd,'a.txt'),'two\n');rmSync(join(cwd,'gone.txt'));writeFileSync(join(cwd,'new.txt'),'new\n');
+ mkdirSync(join(cwd,'target/hh-verify/receipts/r1'),{recursive:true});writeFileSync(join(cwd,'target/hh-verify/receipts/r1/receipt.json'),'{}');
+ const qa=candidateBinding(git,base,base,candidateTree(cwd));
+ assert.deepEqual([qa.count,qa.paths],[3,['a.txt','gone.txt','new.txt']]);
+ git('add','-A');git('commit','-q','-m','publish');
+ assert.equal(candidateBinding(git,base,base,git('rev-parse','HEAD')).digest,qa.digest);
+});

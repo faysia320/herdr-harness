@@ -15,7 +15,7 @@ import { closeTerminal } from '../.agents/harness/stages.mjs';
 const frozenRelease = process.env.HH_TEST_PINNED_RELEASE;
 const built = frozenRelease ? { release: frozenRelease, manifestHash: frozenRelease.split(/[\\/]/).at(-1) } : build();
 const prefix = ['.agents/harness', 'adapters/runtime.cjs', '.gitignore', 'package.json', 'bin/harness.mjs',
-  'core/process.js', 'core/preparation.mjs', 'core/metrics.mjs'];
+  'core/process.js', 'core/preparation.mjs', 'core/metrics.mjs', 'core/qa-receipt-policy.cjs', 'core/dev14.cjs', 'policy/qa-receipt.json'];
 // 검증 계획 실행 위치 분류·해소 결정 주입 표지. HH_TEST_PINNED_RELEASE가 이전 release면 기존 계획 형식으로 분기한다.
 const scopedRelease = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs')).planScopeVersion === 1;
 const writeJson = (file, value) => {
@@ -269,7 +269,9 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await refused(() => close(task.id, 'fixture exception'), /QA 이후 해소된 결정/);
   const reviewed = await run('flow-resume ' + task.id + ' --decision fixture --revision 2 --evidence no-plan-impact');
   assert.deepEqual([reviewed.state, reviewed.phase, reviewed.reviewed.id, reviewed.reviewed.revision], ['QA', 'publish', 'fixture', 2]);
-  assert.equal((await run('publish-check ' + task.id, 't-other')).allowed, true);
+  const allowed = await run('publish-check ' + task.id, 't-other');
+  // QA runner가 이 회차의 QA 실행 영수증을 남기지 않았으면 envelope 줄을 돌려주지 않는다.
+  assert.deepEqual([allowed.allowed, allowed.qaReceipt], [true, undefined]);
   git(task.worktree, 'add', '--', 'tracked.txt');
   git(task.worktree, 'commit', '-m', 'verified candidate');
   const proof = await run('publish-check ' + task.id + ' --committed', 't-other');
@@ -612,7 +614,13 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   // 게시 인계: publish-check와 flow-status가 남은 검증 줄과 이 업무의 결정을 돌려준다.
   const line = 'copy-check (AC2) | 환경: 배포 후 Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조';
   const remainingItem = { id: 'copy-check', criteria: ['AC2'], environment: '배포 후 Galaxy Chrome', verify: '제목을 복사해 Teams에 붙여넣고 원문과 대조', line };
+  // QA runner가 같은 회차에 남긴 QA 실행 영수증 줄(무시 경로)을 게시자에게 그대로 넘긴다.
+  const envelope = '<!-- herdr-qa-receipt:v2 ' + Buffer.from('{"kind":"herdr-qa-receipt"}').toString('base64url') + ' -->';
+  const envelopeFile = join(task.worktree, 'target/hh-verify/receipts', qa2.token, 'envelope.txt');
+  mkdirSync(dirname(envelopeFile), { recursive: true });
+  writeFileSync(envelopeFile, envelope + '\n');
   const check = await run('publish-check ' + task.id, 't-other');
+  assert.deepEqual(check.qaReceipt, { file: envelopeFile, line: envelope });
   assert.deepEqual(check.remainingVerification, [remainingItem]);
   assert.deepEqual(projected(check.decisions), [browser, early]);
   assert.deepEqual((await run('flow-status ' + task.id, 't-other')).remainingVerification, [remainingItem]);
@@ -633,7 +641,8 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
     '## 남은 검증\n<div title="internal fixture\n- [ ] ' + line + '\n">Template</div>\n'])
     await refused(() => attach(body), new RegExp('남은 검증.*' + line.replace(/[|()]/g, '\\$&') + '.*목록 항목'));
   // 정상 게시 예: 인라인 코드의 리터럴 주석 표식은 주석이 아니므로 뒤의 목록 줄이 그대로 보인다.
-  const attached = await attach('## 검증\r\nQA PASS. 템플릿 표식 `<!--`는 지웠다.\r\n\r\n## 남은 검증\r\n- [ ] copy-check (AC2) | 환경: 배포 후  Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조\r\n');
+  // 남은 검증 목록 뒤 줄 맨 앞의 QA 실행 영수증 주석은 목록 판정을 바꾸지 않는다.
+  const attached = await attach('## 검증\r\nQA PASS. 템플릿 표식 `<!--`는 지웠다.\r\n\r\n## 남은 검증\r\n- [ ] copy-check (AC2) | 환경: 배포 후  Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조\r\n\r\n' + envelope + '\r\n');
   assert.deepEqual([attached.phase, attached.pr], ['ci', 5]);
   // 병합 판정에는 동결 계획이 그대로 넘어가 공통 delivery가 병합 직전 본문을 다시 대조한다.
   const inputs = [];

@@ -6,6 +6,8 @@ import { adapter, candidate, check, config, git, now, project } from './reposito
 import { suiteInvocation, suiteTestCount } from './suite.mjs';
 
 export const receiptPath = 'target/hh-verify/latest-qa.json';
+// QA 실행 영수증 v2의 저장소 정책. output/<QA 회차>/envelope.txt가 PR 본문에 넣을 줄이다.
+export const policyPath = 'policy/qa-receipt.json';
 const stateForStage = { research: 'RESEARCHING', architect: 'RESEARCHING', implement: 'IMPLEMENTING', qa: 'QA' };
 const allowedDispatch = { research: ['QUEUED', 'RESEARCHING'], architect: ['RESEARCHING'], implement: ['READY_TO_IMPLEMENT'], qa: ['QA'] };
 const isText = s => typeof s === 'string' && s.trim().length > 0;
