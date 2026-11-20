@@ -81,6 +81,23 @@ collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 �
 - 연결 뒤 본문이 바뀌어 `flow-deliver`가 `phase: blocked`, `missing`을 돌려주면 본문을 고친 뒤 다시 확인한다. `--apply`·`watch-delivery`에서 막혀 BLOCKED(`delivery-blocked`)가 됐으면 본문을 고친 뒤 `flow-resume HH-123 --evidence "PR 본문 남은 검증 복구"`로 CI 확인에 돌려보낸다.
 - 이미 병합된 PR의 증명(`flow-prove-merged`)은 본문을 대조하지 않는다.
 
+## QA 실행 영수증 발급과 PR 본문
+
+HH의 필수 CI(`harness-ci (ubuntu-latest)`, `harness-ci (windows-latest)`)는 전체 시험 대신 PR 본문의 QA 실행 영수증 줄만 검증한다([공통 규칙](../../README.md#qa-실행-영수증과-ci-검증)). PR #7 이하만 면제다. 영수증 줄이 없으면 PR은 병합되지 않으므로 게시 전에 줄을 확보한다.
+
+1. QA PASS 뒤 `publish-check HH-123`의 `qaReceipt.line`을 확인한다. 이 저장소의 QA runner(verify.mjs)가 Windows·Docker Linux 검사를 통과했을 때 그 QA 회차의 `target/hh-verify/receipts/<QA token>/envelope.txt`에 남긴 줄이다.
+2. `qaReceipt`가 없으면(HH-005 병합 전의 QA runner로 PASS했거나 회차 폴더가 지워졌다) `publish-check HH-123`이 허용하는지(업무 worktree 후보 = QA 후보) 확인한 뒤 업무 worktree에서 같은 runner로 발급한다. 원본 checkout(main)의 runner·정책을 쓴다. Windows와 Linux 전체 suite를 한 번씩 실행하고 OS마다 heavy 슬롯을 잡으므로 heavy로 다시 감싸지 않는다. Docker Desktop이 실행 중이어야 한다.
+
+   ```powershell
+   node <원본 checkout>/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <QA 회차> --heavy <고정 release>/bin/heavy.mjs --policy <원본 checkout>/policy/qa-receipt.json
+   ```
+
+   exit 0이면 출력의 `out`/envelope.txt가 본문에 넣을 줄이다. exit 1(FAIL)은 결함이므로 `flow-resume --stage implement`로 되돌린다. exit 3(BLOCKED)은 `reasons`의 Docker·이미지 문제를 해결한 뒤 같은 명령을 다시 실행한다.
+3. 게시자에게 envelope 줄을 넘겨 «남은 검증» 목록 뒤, 줄 맨 앞에 그대로 넣게 한다. 게시자는 그 본문으로 PR을 처음 만든다. 줄 없이 만든 PR은 첫 CI가 실패로 남아 같은 head의 병합 판정이 그 결과를 읽을 수 있다.
+4. CI가 «QA 영수증 거부»로 실패하면 사유를 본다. «없다·형식·해독»은 본문 줄을 고치고(`gh pr edit N --body-file <본문 파일>`, edited 이벤트로 재검사), «후보 지문 불일치»는 main이 후보 경로를 바꿨거나 PR 커밋이 QA 후보와 달라진 것이므로 현재 후보를 다시 QA하거나 2의 명령으로 다시 발급해 줄을 바꾼다. «필수 검사 결과 없음·정책과 다른 명령»은 main의 정책이 바뀐 경우이므로 다시 발급한다. 전체 시험으로 돌아가는 폴백은 없다.
+
+HH-005 자체의 PR은 그 QA의 matrix-live 회차가 `target/hh-verify/receipts/<QA token>/envelope.txt`를 남긴다. 병합 전 원본 checkout에는 새 publish-check가 없으므로 이 파일을 직접 읽어 3을 따른다.
+
 ## PR 없는 업무의 정책 예외 종결
 
 사용자가 PR·병합 없이 끝내도록 승인한 업무만 대상이다. `flow-status`에서 state=QA, phase=publish, 독립 QA PASS, 연결된 PR 없음을 확인하고 `decision list`에 열린 결정이 없는지 본다. 근거에는 승인 출처와 이 업무에 적용하는 이유를 적는다.

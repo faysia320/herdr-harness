@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { activeRun, collect, createWorktree, dispatch, scoped } from './stages.mjs';
+import { activeRun, collect, createWorktree, dispatch, policyPath, scoped } from './stages.mjs';
 import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, command, config, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
@@ -209,7 +209,19 @@ function publicationCheck(ctx, ledger, id, committed) {
     check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
   }
   const left = remaining(ctx, task.x_flow.plan);
-  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}) };
+  const envelope = qaReceipt(ctx, task);
+  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}),
+    ...(envelope ? { qaReceipt: envelope } : {}) };
+}
+
+// PASS한 QA 회차의 runner가 남긴 QA 실행 영수증 줄. 게시자는 PR 본문 «남은 검증» 뒤 줄 맨 앞에 그대로 넣는다.
+// 게시 판정에는 쓰지 않는다. 후보·검사 대조는 PR의 필수 CI가 한다.
+function qaReceipt(ctx, task) {
+  const qa = task.runs.filter(r => r.stage === 'qa' && r.outcome === 'PASS').at(-1);
+  const policy = [task.worktree, ctx.root].map(dir => join(dir, policyPath)).find(existsSync);
+  if (!qa || !policy) return null;
+  const file = join(task.worktree, readJson(policy).output, qa.token, 'envelope.txt');
+  return existsSync(file) ? { file, line: readFileSync(file, 'utf8').trim() } : null;
 }
 
 async function deliver(ctx, ledger, task, name, a) {

@@ -111,4 +111,4 @@ function checksAtHead(gh, repo, head, required, configured) {
   });
 }
 
-module.exports = { verifyPublication, syncHistory, candidateInTree, checksAtHead };
+module.exports = { verifyPublication, syncHistory, candidateInTree, checksAtHead, changes };

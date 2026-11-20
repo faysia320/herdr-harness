@@ -1,4 +1,7 @@
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
+
+const { tapSummary, tapPassed } = createRequire(import.meta.url)('../../core/qa-receipt-policy.cjs');
 
 const suiteCommand = ['node', 'scripts/build.mjs', '&&', 'node', '--test', '--test-reporter=tap',
   'test/*.test.mjs', 'mod/harness/*.test.mjs'];
@@ -9,10 +12,8 @@ export function suiteEnvironment(env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'NODE_TEST_CONTEXT'));
 }
 
+// QA 실행 영수증 v2와 같은 TAP 요약 판정이다. 양수의 전체 통과이고 실패·취소·건너뜀·todo가 0일 때만 건수를 돌려준다.
 export function suiteTestCount(stdout) {
-  if (!/(?:^|\r?\n)TAP version 13\r?\n/.test(stdout)) return;
-  const summary = /(?:^|\r?\n)# tests (\d+)\r?\n# suites \d+\r?\n# pass (\d+)\r?\n# fail 0\r?\n# cancelled 0\r?\n# skipped 0\r?\n# todo 0\r?\n# duration_ms \d+(?:\.\d+)?(?:\r?\n)*$/.exec(stdout);
-  if (!summary) return;
-  const tests = Number(summary[1]);
-  if (Number.isSafeInteger(tests) && tests > 0 && tests === Number(summary[2])) return tests;
+  const summary = tapSummary(stdout);
+  if (tapPassed(summary)) return summary.tests;
 }

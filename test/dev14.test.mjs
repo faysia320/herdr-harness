@@ -141,3 +141,57 @@ test('임의 head·틀린 QA 지문·후보 외 파일이 든 실제 squash는 �
   assert.equal(p.exactTree,false); assert.equal(p.exactCandidate,false);
   assert.deepEqual([f.state.pushes,f.state.merges],[0,0]);
 });
+
+// QA 실행 영수증 v2의 후보 지문. CI는 merge-base(main, PR head)에서 head까지의 raw 행으로 다시 계산한다.
+test('QA 후보 지문은 독립 main 동기화·rebase 뒤에도 같고 후보 경로·기준이 바뀌면 달라진다',t=>{
+  const { candidateBinding }=createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+  const cwd=fs.mkdtempSync(join(tmpdir(),'herdr-binding-'));
+  t.after(()=>fs.rmSync(cwd,{recursive:true,force:true,maxRetries:3}));
+  const run=args=>{const r=spawnSync('git',args,{cwd,encoding:'utf8',windowsHide:true});if(r.status)throw Error(args.join(' ')+': '+r.stderr);return r.stdout.includes('\0')?r.stdout:r.stdout.trim();};
+  const git=(...args)=>run(args);
+  git('init','-q','-b','main'); git('config','user.name','Binding Fixture'); git('config','user.email','binding@example.invalid'); git('config','core.autocrlf','false');
+  // mode는 index에서만 바꾼다. Linux(filemode=true)에서도 작업 사본 실행 비트를 변경으로 보지 않게 한다.
+  git('config','core.filemode','false');
+  const write=(file,text)=>{fs.mkdirSync(join(cwd,file,'..'),{recursive:true});fs.writeFileSync(join(cwd,file),text);};
+  for(const file of ['keep.txt','old.txt','tool.sh','dir/a.txt']) write(file,file+'\n');
+  git('add','-A'); git('commit','-q','-m','base');
+  const B=git('rev-parse','HEAD');
+  git('switch','-q','-c','topic');
+  write('keep.txt','changed\n'); git('rm','-q','old.txt'); git('mv','dir/a.txt','dir/b.txt');
+  fs.writeFileSync(join(cwd,'payload with spaces.bin'),Buffer.from([0,13,10,255]));
+  write('한글 이름.txt','값\n');
+  git('add','-A'); git('update-index','--chmod=+x','tool.sh'); git('update-index','--chmod=+x','payload with spaces.bin');
+  git('commit','-q','-m','candidate');
+  const H0=git('rev-parse','HEAD');
+  const qa=candidateBinding(git,B,B,H0);
+  // 수정·삭제·이동(삭제+추가)·바이너리·mode·한글 경로가 모두 행으로 남는다.
+  assert.deepEqual(qa.paths,['dir/a.txt','dir/b.txt','keep.txt','old.txt','payload with spaces.bin','tool.sh','한글 이름.txt']);
+  assert.equal(qa.count,7);
+  const advance=(file,text)=>{git('switch','-q','main');write(file,text);git('add','-A');git('commit','-q','-m','advance '+file);git('switch','-q','topic');return git('rev-parse','main');};
+  const sync=main=>{const head=git('rev-parse','HEAD');const merged=git('commit-tree',git('merge-tree','--write-tree',head,main),'-p',head,'-p',main,'-m','sync');git('reset','-q','--hard',merged);return merged;};
+  const ci=(head,main)=>candidateBinding(git,B,git('merge-base',main,head),head);
+  // PR이 main보다 뒤처져 있어도(동기화 전) merge-base가 B라 같다.
+  let main=advance('docs/one.md','one\n');
+  assert.equal(ci(H0,main).digest,qa.digest);
+  // 독립 main 변경을 두 번 동기화해도 같다.
+  const S1=sync(main);
+  assert.equal(ci(S1,main).digest,qa.digest);
+  main=advance('docs/two.md','two\n');
+  const S2=sync(main);
+  assert.deepEqual([ci(S2,main).digest,ci(S2,main).count],[qa.digest,qa.count]);
+  // 겹치지 않는 rebase도 같다.
+  const rebased=git('commit-tree',git('merge-tree','--write-tree',main,H0),'-p',main,'-m','rebased');
+  assert.equal(ci(rebased,main).digest,qa.digest);
+  // 영수증 기준 base가 다르면 같은 행이어도 지문이 다르다.
+  assert.notEqual(candidateBinding(git,main,main,rebased).digest,qa.digest);
+  // main이 후보 경로를 바꾸면 그 행의 이전 blob이 달라져 무효다.
+  main=advance('keep.txt','upstream\n');
+  const conflict=git('commit-tree',git('rev-parse',S2+'^{tree}'),'-p',S2,'-p',main,'-m','sync keeps candidate bytes');
+  assert.notEqual(ci(conflict,main).digest,qa.digest);
+  // QA 뒤 PR에 파일을 더하거나 후보 파일을 바꾸면 무효다.
+  git('reset','-q','--hard',S2); write('extra.txt','late\n'); git('add','-A'); git('commit','-q','-m','late');
+  assert.equal(ci(git('rev-parse','HEAD'),git('rev-parse','HEAD~1^2')).count,8);
+  git('reset','-q','--hard',S2); write('keep.txt','edited after QA\n'); git('commit','-qam','edit');
+  assert.notEqual(ci(git('rev-parse','HEAD'),git('rev-parse','HEAD~1^2')).digest,qa.digest);
+  assert.throws(()=>candidateBinding(git,'main',B,H0),/SHA/);
+});

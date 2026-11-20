@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { build } from '../scripts/build.mjs';
 const { deliver }=createRequire(import.meta.url)('../core/delivery.cjs');
+const { encodeEnvelope }=createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
 const H='a'.repeat(40), B='b'.repeat(40), M='c'.repeat(40), T='d'.repeat(40);
 function fixture({pending=false,drift=false,reject=false,merged=false,wrongTree=false,deletedBranch=false,ruleset=null,plan,bodies=[]}={}) {
  const calls=[]; let didMerge=merged, views=0;
@@ -76,6 +77,9 @@ test('후속 확인이 있는 계획은 첫 조회와 병합 직전 PR 본문에
  const merges=f=>f.calls.filter(x=>x[0]==='gh'&&x[2]==='merge').length;
  let f=fixture({plan,bodies:[body,body,body]});assert.equal(deliver(f.input,f.exec).phase,'merged');assert.equal(merges(f),1);
  assert.ok(f.calls.some(x=>x[0]==='gh'&&x[1]==='pr'&&x[2]==='view'&&x.at(-1).split(',').includes('body')));
+ // 남은 검증 뒤 줄 맨 앞에 넣은 QA 실행 영수증 주석(CRLF)은 목록 판정을 바꾸지 않는다.
+ const withReceipt=body+'\r\n'+encodeEnvelope({kind:'herdr-qa-receipt',version:2,run:'qa'})+'\r\n';
+ f=fixture({plan,bodies:[withReceipt,withReceipt,withReceipt]});assert.equal(deliver(f.input,f.exec).phase,'merged');assert.equal(merges(f),1);
  // 본문이 없거나 환경·방법 한 줄이 빠지면 병합하지 않고 빠진 줄을 돌려준다.
  // 템플릿 HTML 주석 안에만 있는 줄은 PR 화면에 보이지 않으므로 누락이다.
  // HTML 속성이나 요소 안에만 있는 줄도 화면에 보이지 않는다.
