@@ -27,6 +27,10 @@ Lead는 publish-check ID를 확인한 뒤 공통 launcher의 publisher-command I
 
 Lead는 flow-attach-pr ID --pr N으로 실제 PR을 대장에 연결한다. flow-deliver ID는 현재 후보와 CI·보호 규칙을 확인한다. flow-deliver ID --apply 또는 watch-delivery ID는 열린 결정이 없고 공통 DEV-14 조건이 충족됐을 때만 squash한다. 이미 병합된 PR은 flow-prove-merged ID로 읽기 전용 증명을 확인한다. 최초 게시 anchor, 최종 head의 CI, squash 부모와 tree, GitHub main 포함이 확인되면 대장이 DONE으로 바뀐다.
 
+PR을 만들지 않기로 승인된 업무는 flow-close ID --evidence "승인 출처와 적용 이유"로 정책 예외 종결한다. 등록된 Lead만 실행하며, 업무가 독립 QA PASS 후 publish 단계에 있고 활성 실행·열린 결정·연결된 PR이 없으며 현재 후보가 QA 후보와 같을 때만 DONE이 된다. 대장에는 phase=closed와 x_flow.closure(kind=policy-exception, 시각, Lead 터미널, 근거, 직전 phase, QA 판정)가 남아 병합 증명(phase=merged)과 구분된다. PR이 이미 연결된 업무는 병합 증명 절차를 따른다.
+
+    node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(대화 2026-01-01): PR 없는 검증 업무"
+
 GitHub Actions 검사 이름은 harness-ci (ubuntu-latest)와 harness-ci (windows-latest)다. 서버에서 검사 이름과 GitHub Actions App을 필수로 지정하고 strict up-to-date와 우회 없는 보호를 확인해야 자동 병합할 수 있다.
 
 결정 요청은 decision request KEY --file JSON으로 등록한다. 실제 사용자 답변과 출처는 decision resolve KEY --file JSON --revision N으로 기록한다. 설치된 Herdr 패널은 이 저장소의 업무·결정함과 현재 Lead를 읽는다.

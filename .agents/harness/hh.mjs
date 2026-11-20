@@ -14,7 +14,7 @@ const optionsByCommand = {
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string' },
   'publish-check': { committed: 'boolean' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
-  'archive-tasks': { apply: 'boolean' },
+  'flow-close': { evidence: 'string' }, 'archive-tasks': { apply: 'boolean' },
 };
 
 function viewPr(ctx, n) {
@@ -40,7 +40,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
   check(Object.hasOwn(optionsByCommand, name), '알 수 없는 명령: ' + name);
   const optionSpec = Object.fromEntries(Object.entries(optionsByCommand[name]).map(([k, type]) => [k, { type }]));
   const { values: a, positionals: p } = parseArgs({ args, options: optionSpec, allowPositionals: true });
-  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume'].includes(name);
+  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close'].includes(name);
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
   if (bindingFile !== undefined) check(bindingFile && samePath(bindingFile, ctx.file), '자체 launch.mjs로 현재 checkout의 binding을 전달해야 한다.');
@@ -143,6 +143,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     if (name === 'dispatch') return dispatch(ctx, ledger, task);
     if (name === 'collect') return collect(ctx, ledger, task);
     if (name === 'flow-resume') return resume(ctx, ledger, task, a);
+    if (name === 'flow-close') return close(ctx, ledger, task, a, terminal);
     withoutDecision(ctx, ledger, task);
     if (name === 'flow-attach-pr') {
       const { committed: anchor } = publicationCheck(ctx, ledger, task.id, true);
@@ -200,6 +201,28 @@ async function deliver(ctx, ledger, task, name, a) {
   } else return { id: task.id, ...result };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: task.x_flow.phase, pr: flow.delivery.pr, merge: result.merge });
   return { id: task.id, ...result };
+}
+
+// PR 없이 독립 QA PASS 후보를 정책 예외로 종결한다. 병합 증명(phase=merged, delivery.merge)과 구분되도록 phase=closed와 closure를 남긴다.
+async function close(ctx, ledger, task, a, terminal) {
+  const flow = task.x_flow;
+  const evidence = a.evidence?.trim();
+  check(evidence, '--evidence에 정책 예외 승인 출처와 적용 이유가 필요하다.');
+  check(flow?.version === 2 && task.state === 'QA' && !task.current && task.pending === null &&
+    flow.phase === 'publish' && !flow.delivery, 'PR이 연결되지 않은 게시 대기 업무만 예외 종결한다.');
+  check(flow.verification?.verdict === 'PASS' && task.candidate?.fingerprint && flow.verification.candidate === task.candidate.fingerprint &&
+    flow.runner?.tree && flow.runner.tree === task.candidate.tree, '독립 QA PASS와 실행 영수증이 저장 후보와 일치해야 한다.');
+  publicationCheck(ctx, ledger, task.id, false);
+  const previousPhase = flow.phase;
+  task.pending = null;
+  flow.phase = 'closed';
+  await transition(ctx, task, 'DONE', '정책 예외 종결: ' + evidence);
+  const entry = task.history.at(-1);
+  const closure = { kind: 'policy-exception', at: entry.at, terminal, evidence, previousPhase, qaVerdict: flow.verification.verdict };
+  flow.closure = closure;
+  entry.closure = { ...closure };
+  save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'closed', closure: closure.kind });
+  return { id: task.id, state: task.state, phase: flow.phase, closure };
 }
 
 async function resume(ctx, ledger, task, a) {

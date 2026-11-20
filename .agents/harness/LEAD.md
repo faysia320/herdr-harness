@@ -33,3 +33,15 @@ node .agents/harness/launch.mjs flow-status HH-001
 node .agents/harness/launch.mjs flow-resume HH-001 --evidence "업무 checkout의 영수증 및 로컬 ignore 제외와 기존 후보 경로 보존을 확인함"
 node .agents/harness/launch.mjs dispatch HH-001
 ```
+
+## PR 없는 업무의 정책 예외 종결
+
+사용자가 PR·병합 없이 끝내도록 승인한 업무만 대상이다. `flow-status`에서 state=QA, phase=publish, 독립 QA PASS, 연결된 PR 없음을 확인하고 `decision list`에 열린 결정이 없는지 본다. 근거에는 승인 출처와 이 업무에 적용하는 이유를 적는다.
+
+```powershell
+node .agents/harness/launch.mjs flow-status HH-123
+node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(대화 2026-01-01): 별도 PR을 만들지 않는 검증 업무"
+node .agents/harness/launch.mjs show HH-123
+```
+
+결과는 DONE, phase=closed와 `x_flow.closure.kind=policy-exception`이다. QA 미통과, 활성 실행, 열린 결정, PR 연결, QA 이후 후보 변경이 있으면 거부되고 대장은 바뀌지 않는다.
