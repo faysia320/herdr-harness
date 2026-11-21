@@ -437,8 +437,8 @@ test('status가 보여 주지 않는 .git 이름 항목·중첩 저장소·링�
     undo();
   };
   const link = p => symlinkSync(o.outside, join(w.worktree, p), 'junction');
-  // 폐기 목록(dist/) 안의 링크, 폐기 폴더 자체가 링크, 보존 목록 안의 링크, Git이 폴더로 따라가 보여 주는 미추적 링크
-  kept(() => link('dist/link'), /링크·junction dist\/link\./, () => unlinkSync(join(w.worktree, 'dist/link')));
+  // 폐기 폴더 자체가 링크, 보존 목록 안의 링크, Git이 폴더로 따라가 보여 주는 미추적 링크
+  // (폐기 폴더 안의 링크는 정리기가 링크만 지운다: 아래 node_modules 시험)
   rmSync(join(w.worktree, 'dist'), { recursive: true });
   // 폐기 폴더 자체가 링크: Windows의 junction은 Git이 폴더로 보아 «!! dist/»로 보고하므로 폴더 순회가 «링크·junction dist»로 멈춘다.
   // 다른 OS의 심볼릭 링크는 무시 패턴 dist/(폴더에만 맞음)에 맞지 않아 «?? dist»로 보고되므로 분류가 먼저 «미추적 dist»로 멈춘다.
@@ -544,17 +544,18 @@ test('폴더 순회는 worktree remove 직전에도 다시 해 사전검사 뒤 
   const o = outsideDir(f);
   const value = input(f, w, { kind: 'merged', proof: { head, original: null, branch: w.branch } });
   const preserve = policy.preserve;
-  policy.preserve = (...args) => { const kept = preserve(...args); symlinkSync(o.outside, join(w.worktree, 'dist/link'), 'junction'); return kept; };
+  // 보존 목록 안(폐기 폴더 밖)에 늦게 생긴 junction. 폐기 폴더(dist/)는 정리기가 먼저 직접 지운다.
+  policy.preserve = (...args) => { const kept = preserve(...args); symlinkSync(o.outside, join(w.worktree, 'target/hh-verify/link'), 'junction'); return kept; };
   let late;
   try { late = cleanup(value); } finally { policy.preserve = preserve; }
   assert.equal(late.status, 'partial');
-  assert.match(late.reasons.join('\n'), /링크·junction dist\/link/);
+  assert.match(late.reasons.join('\n'), /링크·junction target\/hh-verify\/link/);
   assert.ok(o.intact());
-  assert.equal(readFileSync(join(w.worktree, 'dist/out.js'), 'utf8'), 'generated\n');
+  assert.equal(readFileSync(join(w.worktree, 'target/hh-verify/latest-qa.json'), 'utf8'), '{"qa":"receipt"}\n');
   assert.match(git(f.root, 'worktree', 'list', '--porcelain'), /hh-7-late-link/);
   assert.ok(refExists(f, w.branch));
   assert.deepEqual(late.remaining, [w.worktree, 'refs/heads/' + w.branch]);
-  unlinkSync(join(w.worktree, 'dist/link'));
+  unlinkSync(join(w.worktree, 'target/hh-verify/link'));
   const done = cleanup(value);
   assert.equal(done.status, 'done', done.reasons.join('\n'));
   assert.equal(existsSync(w.worktree), false);
@@ -873,4 +874,51 @@ test('사용자 승인 병합 종결: squash로 로컬 tip이 미병합이면 wo
   const again = cleanup(input(f, w, { kind: 'merged-accepted', at: '2026-11-21T00:00:00.000Z' }));
   assert.deepEqual(again, done);
   assert.equal(git(f.root, 'rev-parse', 'refs/heads/' + w.branch), head);
+});
+
+test('브랜치의 /를 +로 바꾼 worktree 폴더 이름(codex+one)을 정리하고, 점만 있는 이름·경로 밖 이름은 계속 거부한다', (t) => {
+  const f = fixture(t);
+  const w = { worktree: join(f.dir, 'codex+one'), branch: 'codex/one' };
+  git(f.root, 'worktree', 'add', '-q', '-b', w.branch, w.worktree, f.base);
+  const done = cleanup(input(f, w, { kind: 'merged-accepted' }));
+  assert.equal(done.status, 'done', done.reasons.join('\n'));
+  assert.equal(existsSync(w.worktree), false);
+  assert.doesNotMatch(git(f.root, 'worktree', 'list', '--porcelain'), /codex\+one/);
+  for (const bad of ['..', 'a b', 'x;y']) {
+    const r = cleanup(input(f, { worktree: join(f.dir, bad), branch: 'hh/bad' }, { kind: 'merged-accepted' }));
+    assert.equal(r.status, 'refused', bad);
+    assert.match(r.reasons.join('\n'), /worktree 폴더 이름이 올바르지 않다|worktree_dir 바로 아래/);
+  }
+});
+
+test('config가 폐기로 선언한 node_modules/ 안의 junction·심볼릭 링크는 Git 제거 전에 정리기가 링크만 지우고 링크 대상 내용은 보존한다', (t) => {
+  const f = fixture(t), w = checkout(f, 'feat+pnpm');
+  writeFileSync(join(f.root, '.git/info/exclude'), 'node_modules/\n');
+  const o = outsideDir(f);
+  mkdirSync(join(o.outside, 'deep'));
+  writeFileSync(join(o.outside, 'deep/inner.txt'), 'store inner\n');
+  const modules = join(w.worktree, 'node_modules');
+  mkdirSync(join(modules, '.pnpm/dep@1/node_modules'), { recursive: true });
+  mkdirSync(join(modules, '.bin'));
+  writeFileSync(join(modules, '.bin/tool'), 'shim\n');
+  writeFileSync(join(modules, '.modules.yaml'), 'layout\n');
+  // pnpm처럼 최상위 패키지와 .pnpm 안 의존성이 worktree 밖 store를 가리킨다. Windows는 junction, 다른 OS는 디렉터리 심볼릭 링크다.
+  const type = process.platform === 'win32' ? 'junction' : 'dir';
+  const links = [join(modules, 'pkg'), join(modules, '.pnpm/dep@1/node_modules/dep')];
+  for (const l of links) symlinkSync(o.outside, l, type);
+  assert.match(git(w.worktree, 'status', '--porcelain', '--ignored=matching'), /^!! node_modules\/$/m);
+  const before = readdirSync(o.outside).sort();
+  // Linux의 Git은 링크를 따라가지 않아 맡겨도 통과하므로, 정리기가 링크 자체를 직접 지웠는지 unlink 기록으로 확인한다.
+  const fsMod = require('node:fs'), unlink = fsMod.unlinkSync, removed = [];
+  fsMod.unlinkSync = (p, ...rest) => { removed.push(p); return unlink(p, ...rest); };
+  let done;
+  try { done = cleanup(input(f, w, { kind: 'merged-accepted', ignored: { keep: [], discard: ['dist/', 'node_modules/'] } })); }
+  finally { fsMod.unlinkSync = unlink; }
+  assert.equal(done.status, 'done', done.reasons.join('\n'));
+  assert.equal(existsSync(w.worktree), false);
+  assert.doesNotMatch(git(f.root, 'worktree', 'list', '--porcelain'), /feat\+pnpm/);
+  for (const l of links) assert.ok(removed.includes(l), `${l}\n${removed.join('\n')}`);
+  assert.ok(o.intact());
+  assert.equal(readFileSync(join(o.outside, 'deep/inner.txt'), 'utf8'), 'store inner\n');
+  assert.deepEqual(readdirSync(o.outside).sort(), before);
 });
