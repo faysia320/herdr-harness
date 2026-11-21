@@ -160,6 +160,19 @@ test('research 공통 문구는 실행 위치·QA 실행 수단·후속 확인 �
  assert.match(instructions(planned,'architect',fingerprint),/independent-qa 검사가 QA 환경에서 선언된 실행 수단으로 실제 실행되는지/);
  assert.doesNotMatch(instructions(planned,'implement',fingerprint),/후속 확인 항목은/);
 });
+test('각 단계 지시는 속도 우선 판정 기준을 담고 수리 회차는 지적된 결함만 고치게 한다',()=>{
+ const base=create('feature','사용자 승인');
+ const repair=collect(flow(),report('code'),fingerprint).flow;
+ const cases=[
+   [base,'research',/방어 로직과 검사 범위를 필요 이상 늘리지 않는다\. 방지 비용이 사후 수정 비용보다 크면 남는 한계로 적는다/],
+   [base,'architect',/방어 로직과 검사 범위를 필요 이상 늘리지 않는다\. 방지 비용이 사후 수정 비용보다 크면 남는 한계로 적는다/],
+   [base,'implement',/계획 범위만 구현하고 방어 로직을 필요 이상 늘리지 않는다/],
+   [repair,'implement',/수리 회차는 지적된 실제 결함만 고치고 범위를 넓히지 않는다/],
+   [base,'qa',/FAIL과 High 결함은 AC 정상 경로 실패, 데이터 유실, 병합·운영 차단 같은 실제 운영 위험으로 한정한다\. 인위적 경계 사례는 QA 보고의 관찰·남는 한계로 적고 findings와 판정에 넣지 않는다/],
+   [repair,'qa',/FAIL과 High 결함은 AC 정상 경로 실패/]];
+ for(const [f,stage,pattern] of cases) assert.match(instructions(f,stage,fingerprint),pattern,`${stage}/${f.phase}`);
+ assert.doesNotMatch(instructions(base,'implement',fingerprint),/수리 회차는/);
+});
 test('해소 결정은 인용 JSON 데이터로 넣고 조회 결과가 없으면 0건으로 바꾸지 않는다',()=>{
  const flow=create('feature','사용자 승인');
  const decision={id:'browser-check',task:'VP-1',question:'언제 확인?',selection:'배포 후 실기기 확인',quote:'배포 후 "실기기"로\n확인할게요',source:'Herdr 하네스 모드 사용자 선택',revision:2,resolvedAt:'2026-11-20T00:00:00Z'};
