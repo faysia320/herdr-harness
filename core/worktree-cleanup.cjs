@@ -1,7 +1,7 @@
 // 끝난 업무의 worktree와 로컬 업무 브랜치 정리 공통 규칙. 저장소의 경로·브랜치 규칙, 실행 조회, 대장 쓰기는 호출자가 맡는다.
 // 순서: 실행·경로·Git 상태 사전검사 → 과정 문서·지정 파일 재보관 → (예외 종결) 후보 patch 보존 → 의도 기록 → 후보 경로 되돌리기
-// → 비강제 worktree remove → (병합 증명) 로컬 업무 브랜치 삭제·(사용자 승인 병합 종결) -d 시도. 맞지 않는 조건이 있으면 그 단계 전에 멈추고 이유를 돌려준다.
-// 강제 worktree 제거·재귀 삭제·update-ref·원격 ref 변경은 하지 않는다. 준비 시간 초과로 남은 부분 worktree는 대상이 아니다.
+// → 폐기 폴더 직접 삭제(링크는 링크만) → 비강제 worktree remove → (병합 증명) 로컬 업무 브랜치 삭제·(사용자 승인 병합 종결) -d 시도. 맞지 않는 조건이 있으면 그 단계 전에 멈추고 이유를 돌려준다.
+// 강제 worktree 제거·링크를 따라가는 재귀 삭제(폐기 폴더는 lstat 삭제만)·update-ref·원격 ref 변경은 하지 않는다. 준비 시간 초과로 남은 부분 worktree는 대상이 아니다.
 // status가 숨길 수 있는 변경(index 플래그·fsmonitor·untracked cache·환경변수로 바꾼 index)과 submodule은 사전검사에서 막는다.
 // stat 캐시가 숨기는 변경은 사전검사와 worktree remove 직전에 추적 파일 전체의 내용 해시를 index blob과 비교해 막는다.
 // 같은 두 시점에 worktree 폴더를 직접 순회해 Git이 보여 주지 않는 항목(.git 이름 항목·링크·junction·대소문자만 다른 이름)과 worktree 전용 ref·진행 중 작업을 막는다.
@@ -18,6 +18,8 @@ const VERSION = 1;
 const CONTENT_MS = 60000;
 const oid = /^[0-9a-f]{40}$/;
 const safe = /^[A-Za-z0-9._-]+$/;
+// worktree 폴더 이름은 브랜치의 '/'를 '+'로 바꾼 이름(codex+one)도 받는다. 경로 구분자와 점만 있는 이름은 계속 막는다.
+const folder = /^[A-Za-z0-9._+-]+$/;
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const fail = (message) => { throw new Error(message); };
 const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
@@ -173,8 +175,10 @@ const overdue = (s) => `추적 파일 내용 확인·폴더 순회가 시간 한
 // 그래서 설명되지 않는 파일, 추적 링크가 아닌 링크·junction, 최상위 .git 파일 외의 .git 이름 항목은 하나라도 있으면 거부한다.
 // 디스크의 링크·junction은 index mode가 120000이고 status가 그 경로를 보고하지 않으며 내용 확인(sameContent)이 링크 대상=index blob을
 // 확인한 경우에만 추적 링크로 본다. index mode만으로 면제하면 추적 링크 경로를 밖 폴더 junction으로 바꾼 후보가 통과한다(후보 경로여도 거부).
-// discard 폴더 안도 순회한다(내용은 지워도 되지만 링크·중첩 저장소는 거부). 폴더 자체는 내용이 아니므로 빈 폴더는 설명된 것으로 본다.
-function accounted(s, entries, links) {
+// discard 폴더 안도 순회한다(중첩 저장소는 거부). 폴더 자체는 내용이 아니므로 빈 폴더는 설명된 것으로 본다.
+// 정리기가 Git보다 먼저 직접 지우는 폐기 폴더(loose, purge 참고) 안의 링크·junction은 링크 자체만 지우므로 허용한다.
+// 그 밖의 위치와 폐기 폴더 자체가 링크인 경우는 그대로 거부한다. worktree remove 직전 순회는 loose 없이 다시 본다.
+function accounted(s, entries, links, loose = []) {
   const caseless = run(s.worktree, ['config', '--bool', 'core.ignorecase']).out.trim() === 'true';
   const key = (p) => (caseless ? p.toLowerCase() : p);
   const modes = new Map(git(s.worktree, ['ls-files', '-s', '-z']).split('\0').filter(Boolean)
@@ -195,6 +199,7 @@ function accounted(s, entries, links) {
       const t = d.isFile() || d.isDirectory() || d.isSymbolicLink() ? d : fs.lstatSync(path.join(abs, d.name));
       if (d.name.toLowerCase() === '.git') { if (p !== '.git' || !t.isFile()) odd.push(`.git 이름 항목 ${p}`); }
       else if (t.isSymbolicLink()) {
+        if (loose.some((d) => k.startsWith(key(d)))) continue;
         if (modes.get(k) !== '120000') odd.push(`링크·junction ${p}`);
         else if (listed.has(k) || !verified.has(k)) odd.push(`링크·junction ${p}(index의 추적 링크와 다름)`);
       }
@@ -206,6 +211,39 @@ function accounted(s, entries, links) {
   walk(s.worktree, '');
   if (odd.length) fail(`status에 나오지 않거나 지우면 worktree 밖까지 닿는 항목이 있다: ${odd.slice(0, 20).join(', ')}`
     + `${odd.length > 20 ? ` 외 ${odd.length - 20}건` : ''}. 내용을 확인해 옮기거나 링크를 푼 뒤 재시도한다.`);
+}
+
+// Git이 통째로 무시된 폴더로 보고하고(status «!! dir/») 저장소 설정이 폐기(ignored.discard)로 선언한 폴더. 안에 추적 경로나
+// 보존(keep) 대상이 있으면 제외한다. 이 폴더는 worktree remove 전에 정리기가 직접 지운다(pnpm node_modules의 junction 등).
+function looseDirs(s, entries) {
+  const tracked = git(s.worktree, ['ls-files', '-z']).split('\0').filter(Boolean);
+  return entries.filter((e) => e.x === '!' && e.path.endsWith('/') && !covered(e.path, s.keep) && covered(e.path, s.discard)
+    && !tracked.some((p) => p.startsWith(e.path)) && !s.keep.some((k) => k.startsWith(e.path))).map((e) => e.path);
+}
+
+// 폐기 폴더를 링크를 따라가지 않고(lstat) 지운다. 링크·junction은 링크 자체만 지워 대상(worktree 밖 pnpm store 등)의 내용은
+// 건드리지 않고, 일반 폴더만 내려가 아래부터 비운다. 경로와 상위 구성요소가 링크·junction으로 바뀌었으면 지우지 않고 멈춘다.
+function purge(s, dirs) {
+  const drop = (abs) => {
+    for (const name of fs.readdirSync(abs)) {
+      const p = path.join(abs, name);
+      if (fs.lstatSync(p).isDirectory()) drop(p);
+      else try { fs.unlinkSync(p); } catch (e) { if (e.code !== 'EPERM') throw e; fs.chmodSync(p, 0o666); fs.unlinkSync(p); }
+    }
+    fs.rmdirSync(abs);
+  };
+  for (const d of dirs) {
+    let abs = s.worktree, gone = false;
+    for (const part of d.replace(/\/$/, '').split('/')) {
+      abs = path.join(abs, part);
+      let st;
+      try { st = fs.lstatSync(abs); } catch (e) { if (e.code !== 'ENOENT') throw e; gone = true; break; }
+      if (!st.isDirectory()) fail(`폐기 폴더 경로가 일반 폴더가 아니다(링크 포함): ${d}`);
+    }
+    if (gone) continue;
+    if (!inside(s.real, real(abs))) fail(`폐기 폴더가 worktree 밖을 가리킨다: ${d}`);
+    drop(abs);
+  }
 }
 
 // Git(checkout)이나 정리가 경로를 지우거나 덮어쓰기 직전에, 그 경로와 worktree 안 상위 구성요소를 링크를 따라가지 않고(lstat) 확인한다.
@@ -284,7 +322,7 @@ function validate(input) {
     if (!oid.test(c.head ?? '') || !oid.test(c.tree ?? '') || !Array.isArray(c.paths)) fail('예외 종결 업무의 QA 후보가 올바르지 않다.');
   } else if (kind !== 'merged-accepted') fail('병합 증명(merged)·정책 예외 종결(closed)·사용자 승인 병합 종결(merged-accepted) 업무만 정리한다.');
   const name = path.basename(input.worktree);
-  if (!safe.test(name) || /^\.+$/.test(name)) fail('worktree 폴더 이름이 올바르지 않다.');
+  if (!folder.test(name) || /^\.+$/.test(name)) fail('worktree 폴더 이름이 올바르지 않다.');
   const dir = real(input.worktreeDir);
   if (real(path.dirname(input.worktree)) !== dir) fail(`worktree가 등록된 worktree_dir 바로 아래가 아니다: ${input.worktree}`);
   const ignored = input.ignored ?? {};
@@ -543,7 +581,8 @@ function cleanup(input) {
       const entries = status(s.worktree);
       const allowed = new Set(s.kind === 'closed' ? (journal?.patch?.paths ?? s.candidate.paths.map((p) => p.path)) : []);
       const parts = classify(s, entries, folders, allowed);
-      accounted(s, entries, sameContent(s, entries));
+      const loose = looseDirs(s, entries);
+      accounted(s, entries, sameContent(s, entries), loose);
       const keepFiles = parts.keep.flatMap((p) => keptFiles(s.worktree, p));
       const kept = artifacts.preserve(input.artifacts?.config ?? {}, { id: s.id, worktree: s.worktree, stateDir: s.stateDir, vars: input.artifacts?.vars, files: keepFiles, at });
       proven(s, kept, [...keepFiles, ...parts.artifact]);
@@ -573,6 +612,8 @@ function cleanup(input) {
       acted = true;
       if (patch) revert(s, patch);
       for (const name of parts.artifact) fs.unlinkSync(path.join(s.worktree, ...name.split('/')));
+      // 폐기 폴더는 Git에 맡기지 않고 직접 지운다(Git for Windows의 비강제 remove는 junction을 따라가 밖 내용까지 지운다).
+      purge(s, loose);
       hiddenIndex(s.worktree);
       ownState(s.worktree);
       const last = status(s.worktree);
