@@ -25,6 +25,12 @@ const fail = (message) => { throw new Error(message); };
 const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
 const inside = (parent, child) => { const r = path.relative(parent, child); return Boolean(r) && !r.startsWith('..') && !path.isAbsolute(r); };
 const covered = (p, list) => list.some((d) => (d.endsWith('/') ? p.startsWith(d) : p === d));
+// 폐기 선언. 중간에 '/'가 없는 폴더 이름(node_modules/, dist/)은 저장소 루트 접두사에 더해, Git이 통째로 무시된 폴더로 보고한 행
+// («!! apps/x/node_modules/»)의 마지막 성분이 같으면 어느 깊이든 맞는다. 그 폴더 안의 개별 무시 파일이나 다른 이름의 조상으로는 넓히지 않는다.
+// 여러 성분의 폴더 선언(apps/x/cache/)과 파일 선언은 루트 기준 그대로다.
+const named = (d) => d.endsWith('/') && !d.slice(0, -1).includes('/');
+const discarded = (p, list) => covered(p, list)
+  || (p.endsWith('/') && list.some((d) => named(d) && p.slice(0, -1).split('/').pop() === d.slice(0, -1)));
 
 // Git 호출마다 시간·출력 한도를 둔다. 한도 초과·시간 초과도 실패다(깨끗한 상태로 보지 않는다).
 // status가 변경을 숨기지 않도록 fsmonitor·untracked cache를 쓰지 않고, 조회가 index를 고쳐 쓰지 않게 한다.
@@ -215,10 +221,12 @@ function accounted(s, entries, links, loose = []) {
 
 // Git이 통째로 무시된 폴더로 보고하고(status «!! dir/») 저장소 설정이 폐기(ignored.discard)로 선언한 폴더. 안에 추적 경로나
 // 보존(keep) 대상이 있으면 제외한다. 이 폴더는 worktree remove 전에 정리기가 직접 지운다(pnpm node_modules의 junction 등).
+// 폐기 선언에 맞는 폴더라도 안에 보존 대상이 있으면 Git 제거로 넘기지 않고 classify가 거부한다(보관 없이 지워지지 않게).
+const keptInside = (s, dir) => s.keep.some((k) => k.startsWith(dir));
 function looseDirs(s, entries) {
   const tracked = git(s.worktree, ['ls-files', '-z']).split('\0').filter(Boolean);
-  return entries.filter((e) => e.x === '!' && e.path.endsWith('/') && !covered(e.path, s.keep) && covered(e.path, s.discard)
-    && !tracked.some((p) => p.startsWith(e.path)) && !s.keep.some((k) => k.startsWith(e.path))).map((e) => e.path);
+  return entries.filter((e) => e.x === '!' && e.path.endsWith('/') && !covered(e.path, s.keep) && discarded(e.path, s.discard)
+    && !tracked.some((p) => p.startsWith(e.path)) && !keptInside(s, e.path)).map((e) => e.path);
 }
 
 // 폐기 폴더를 링크를 따라가지 않고(lstat) 지운다. 링크·junction은 링크 자체만 지워 대상(worktree 밖 pnpm store 등)의 내용은
@@ -369,7 +377,8 @@ function classify(s, entries, folders, allowed) {
   for (const e of entries) {
     if (e.x === '!') {
       if (covered(e.path, s.keep)) keep.push(e.path);
-      else if (!covered(e.path, s.discard)) unexpected.push(`무시됨 ${e.path}`);
+      else if (!discarded(e.path, s.discard)) unexpected.push(`무시됨 ${e.path}`);
+      else if (e.path.endsWith('/') && keptInside(s, e.path)) unexpected.push(`보존 대상이 든 폐기 폴더 ${e.path}`);
     } else if (/U/.test(e.x + e.y) || (e.x === 'A' && e.y === 'A') || (e.x === 'D' && e.y === 'D')) unexpected.push(`충돌 ${e.path}`);
     else if (e.x === '?' && covered(e.path, folders)) artifact.push(e.path);
     else if (allowed.has(e.path)) {
