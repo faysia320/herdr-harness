@@ -922,3 +922,91 @@ test('config가 폐기로 선언한 node_modules/ 안의 junction·심볼릭 링
   assert.equal(readFileSync(join(o.outside, 'deep/inner.txt'), 'utf8'), 'store inner\n');
   assert.deepEqual(readdirSync(o.outside).sort(), before);
 });
+
+// 폐기 선언 'node_modules/'처럼 중간에 '/'가 없는 폴더 이름은 Git이 통째로 무시된 폴더로 보고한 행이면 어느 깊이든 맞는다(pnpm workspace).
+const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+function modulesAt(w, rel, store) {
+  const dir = join(w.worktree, rel, 'node_modules');
+  mkdirSync(join(dir, '.bin'), { recursive: true });
+  writeFileSync(join(dir, '.bin/tool'), 'shim\n');
+  const link = join(dir, 'pkg');
+  symlinkSync(store, link, linkType);
+  return link;
+}
+
+test('이름 폐기 선언 node_modules/ 하나로 루트·apps/x·plugins/y/client의 node_modules 안 링크만 지우고 store 내용은 보존한다', (t) => {
+  const f = fixture(t), w = checkout(f, 'feat+workspace');
+  writeFileSync(join(f.root, '.git/info/exclude'), 'node_modules/\n');
+  const o = outsideDir(f);
+  const links = ['', 'apps/x', 'plugins/y/client'].map((rel) => modulesAt(w, rel, o.outside));
+  const shown = git(w.worktree, 'status', '--porcelain', '--ignored=matching');
+  for (const row of ['node_modules/', 'apps/x/node_modules/', 'plugins/y/client/node_modules/']) assert.ok(shown.split('\n').includes('!! ' + row), shown);
+  const before = readdirSync(o.outside).sort();
+  const fsMod = require('node:fs'), unlink = fsMod.unlinkSync, removed = [];
+  fsMod.unlinkSync = (p, ...rest) => { removed.push(p); return unlink(p, ...rest); };
+  let done;
+  try { done = cleanup(input(f, w, { kind: 'merged-accepted', ignored: { keep: [], discard: ['node_modules/'] } })); }
+  finally { fsMod.unlinkSync = unlink; }
+  assert.equal(done.status, 'done', done.reasons.join('\n'));
+  assert.equal(existsSync(w.worktree), false);
+  assert.doesNotMatch(git(f.root, 'worktree', 'list', '--porcelain'), /feat\+workspace/);
+  for (const l of links) assert.ok(removed.includes(l), `${l}\n${removed.join('\n')}`);
+  assert.ok(o.intact());
+  assert.deepEqual(readdirSync(o.outside).sort(), before);
+});
+
+test('이름 폐기 선언은 Git이 무시하지 않은 같은 이름 폴더, 추적 파일이 든 폴더의 개별 무시 파일, 보존 대상이 든 폴더를 정리하지 않는다', (t) => {
+  const f = fixture(t);
+  const o = outsideDir(f);
+  const refusedCase = (name, exclude, setup, pattern, keep = []) => {
+    const w = checkout(f, name);
+    writeFileSync(join(f.root, '.git/info/exclude'), exclude);
+    setup(w);
+    const before = snapshot(f, w);
+    const r = cleanup({ ...input(f, w, { kind: 'merged-accepted', ignored: { keep, discard: ['node_modules/'] } }), id: 'HH-9-' + name });
+    assert.equal(r.status, 'refused', name);
+    assert.match(r.reasons.join('\n'), pattern);
+    assert.deepEqual(snapshot(f, w), before);
+    assert.ok(refExists(f, w.branch));
+    assert.ok(o.intact());
+  };
+  // 루트만 무시하는 규칙이면 apps/x/node_modules는 미추적으로 보고된다.
+  refusedCase('plain', '/node_modules/\n', (w) => { mkdirSync(join(w.worktree, 'apps/x/node_modules'), { recursive: true }); writeFileSync(join(w.worktree, 'apps/x/node_modules/file'), 'mine\n'); },
+    /미추적 apps\/x\/node_modules\/file/);
+  // 추적 파일이 있으면 Git은 폴더가 아니라 개별 무시 파일을 보고하고, 이름 선언은 그 파일로 넓히지 않는다.
+  refusedCase('tracked', 'node_modules/\n', (w) => {
+    mkdirSync(join(w.worktree, 'apps/x/node_modules'), { recursive: true });
+    writeFileSync(join(w.worktree, 'apps/x/node_modules/file'), 'tracked\n');
+    git(w.worktree, 'add', '-f', '--', 'apps/x/node_modules/file');
+    git(w.worktree, 'commit', '-q', '-m', 'track');
+    writeFileSync(join(w.worktree, 'apps/x/node_modules/extra'), 'ignored sibling\n');
+    symlinkSync(o.outside, join(w.worktree, 'apps/x/node_modules/pkg'), linkType);
+  }, /무시됨 apps\/x\/node_modules\/extra/);
+  // 통째로 무시된 폴더여도 안에 keep 대상이 있으면 보관 없이 Git 제거로 넘기지 않는다(루트·중첩 모두).
+  for (const rel of ['', 'apps/x/']) {
+    refusedCase('keep' + rel.length, 'node_modules/\n', (w) => { mkdirSync(join(w.worktree, rel, 'node_modules'), { recursive: true }); writeFileSync(join(w.worktree, rel, 'node_modules/file'), 'keep me\n'); },
+      new RegExp(`보존 대상이 든 폐기 폴더 ${rel.replace('/', '\/')}node_modules\/`), [`${rel}node_modules/file`]);
+  }
+});
+
+test('이름 폐기 선언 dist/는 중첩 dist에도 맞고, 여러 성분 폴더 선언과 파일 선언은 루트 기준 그대로다', (t) => {
+  const f = fixture(t);
+  const write = (w, rel, text = 'generated\n') => { mkdirSync(join(w.worktree, rel, '..'), { recursive: true }); writeFileSync(join(w.worktree, rel), text); };
+  writeFileSync(join(f.root, '.git/info/exclude'), 'cache/\ngen.js\n');
+  const nested = checkout(f, 'nested-dist');
+  write(nested, 'dist/out.js');
+  write(nested, 'apps/x/dist/out.js');
+  write(nested, 'apps/cache/a');
+  write(nested, 'mod/gen.js');
+  const ok = cleanup({ ...input(f, nested, { kind: 'merged-accepted', ignored: { keep: [], discard: ['dist/', 'apps/cache/', 'mod/gen.js'] } }), id: 'HH-9-ok' });
+  assert.equal(ok.status, 'done', ok.reasons.join('\n'));
+  for (const [name, rel, pattern] of [['deep-path', 'x/apps/cache/a', /무시됨 x\/apps\/cache\//], ['deep-file', 'x/mod/gen.js', /무시됨 x\/mod\/gen\.js/]]) {
+    const w = checkout(f, name);
+    write(w, rel);
+    const before = snapshot(f, w);
+    const r = cleanup({ ...input(f, w, { kind: 'merged-accepted', ignored: { keep: [], discard: ['dist/', 'apps/cache/', 'mod/gen.js'] } }), id: 'HH-9-' + name });
+    assert.equal(r.status, 'refused', name);
+    assert.match(r.reasons.join('\n'), pattern);
+    assert.deepEqual(snapshot(f, w), before);
+  }
+});
