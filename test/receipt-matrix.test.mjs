@@ -73,3 +73,60 @@ if (live) test('matrix-live: 현재 후보를 실제 Windows·Docker Linux에서
   assert.equal(ci.exit, 0, ci.stderr);
   assert.ok(ci.ms < 60000);
 });
+
+// HH-008: 기준 main에 과정 문서가 커밋된 저장소. 발급기는 B 대비 실제 변경에만 과정 산출물 정책을 적용하고, CI는 실제 게시 커밋을 센다.
+// 바뀌지 않은 추적 문서는 양쪽 모두 행을 만들지 않는다. 실제 삭제(D)는 허용이라 양쪽에 남는다. 게시 금지인 수정·신규를 PR에 넣으면 CI가 거부한다(현재 정책 유지).
+test('과정 문서가 커밋된 main: 발급기와 CI 검증기가 같은 후보를 세고 과정 문서 삭제·수정·신규는 현재 정책대로 처리한다', async t => {
+  const cases = [
+    { name: 'unchanged', publish: [], qa: [['A', 'feature.txt']], ci: 'pass' },
+    { name: 'deleted', edit: c => rmSync(join(c, 'docs/projects/task/note.md')), publish: ['docs/projects/task/note.md'],
+      qa: [['D', 'docs/projects/task/note.md'], ['A', 'feature.txt']], ci: 'pass' },
+    { name: 'modified-local', edit: c => writeFileSync(join(c, 'docs/projects/task/note.md'), 'edited\n'), publish: [], qa: [['A', 'feature.txt']], ci: 'pass' },
+    { name: 'modified-published', edit: c => writeFileSync(join(c, 'docs/projects/task/note.md'), 'edited\n'), publish: ['docs/projects/task/note.md'],
+      qa: [['A', 'feature.txt']], ci: 'fail' },
+    { name: 'exempt-modified', edit: c => writeFileSync(join(c, 'docs/projects/kept/note.md'), 'edited\n'), publish: ['docs/projects/kept/note.md'],
+      qa: [['A', 'feature.txt'], ['M', 'docs/projects/kept/note.md']], ci: 'pass' },
+    { name: 'new-local', edit: c => { mkdirSync(join(c, 'docs/projects/new')); writeFileSync(join(c, 'docs/projects/new/note.md'), 'new\n'); }, publish: [],
+      qa: [['A', 'feature.txt']], ci: 'pass' },
+    { name: 'new-published', edit: c => { mkdirSync(join(c, 'docs/projects/new')); writeFileSync(join(c, 'docs/projects/new/note.md'), 'new\n'); },
+      publish: ['docs/projects/new/note.md'], qa: [['A', 'feature.txt']], ci: 'fail' },
+  ];
+  const temp = mkdtempSync(join(tmpdir(), 'hh-process-docs-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const policy = { version: 1, output: 'target/qa', exempt_pr_max: 0, platforms: { windows: { runner: 'host' } },
+    checks: { version: { result: 'exit', steps: [['node', '--version']] } }, required: [{ platforms: ['windows'], checks: ['version'] }] };
+  const exec = async () => ({ code: 0, stdout: '', stderr: '' });
+  for (const c of cases) {
+    const cwd = join(temp, c.name);
+    mkdirSync(join(cwd, 'policy'), { recursive: true });
+    const git = gitIn(cwd);
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'docs'); git('config', 'user.email', 'docs@example.invalid'); git('config', 'core.autocrlf', 'false');
+    writeFileSync(join(cwd, '.gitignore'), '/target/\n');
+    writeFileSync(join(cwd, 'policy/qa-receipt.json'), JSON.stringify(policy));
+    mkdirSync(join(cwd, '.agents/harness'), { recursive: true });
+    writeFileSync(join(cwd, '.agents/harness/config.json'), JSON.stringify({ process_artifacts: { paths: ['docs/projects/{slug}/'],
+      exempt: [{ path: 'docs/projects/kept/', reason: 'fixture' }] } }));
+    for (const dir of ['task', 'kept', 'other']) {
+      mkdirSync(join(cwd, 'docs/projects', dir), { recursive: true });
+      writeFileSync(join(cwd, 'docs/projects', dir, 'note.md'), 'original\n');
+    }
+    git('add', '-A'); git('commit', '-q', '-m', 'base with committed process docs');
+    const base = git('rev-parse', 'HEAD');
+    git('switch', '-q', '-c', 'candidate');
+    writeFileSync(join(cwd, 'feature.txt'), 'change\n');
+    c.edit?.(cwd);
+    const issued = await issueReceipt({ worktree: cwd, base, run: c.name, heavy: join(root, 'bin/heavy.mjs'), hostOs: 'windows', exec });
+    assert.equal(issued.status, 'PASS', c.name + ': ' + issued.reasons.join('\n'));
+    const rows = git('diff', '--name-status', '--no-renames', base, issued.tree).split('\n').map(line => line.split('\t'));
+    assert.deepEqual(rows.sort(), c.qa.sort(), c.name);
+    assert.equal(issued.candidate.count, c.qa.length, c.name);
+    // 실제 게시: 기능 파일과 이 사례가 게시하는 과정 문서만 커밋한다. 나머지 로컬 편집은 작업 사본에 남는다.
+    git('add', '--', 'feature.txt', ...c.publish); git('commit', '-q', '-m', 'publish');
+    const ci = rehearseCi(cwd, issued.out, issued.envelope, base, git('rev-parse', 'HEAD'), base);
+    const verdict = JSON.parse(ci.stdout);
+    assert.equal(verdict.status, c.ci, c.name + ': ' + ci.stderr);
+    assert.equal(ci.exit, c.ci === 'pass' ? 0 : 1, c.name);
+    if (c.ci === 'pass') assert.deepEqual(verdict.candidate, issued.candidate, c.name);
+    else assert.match(ci.stderr, /후보 지문 불일치/, c.name);
+  }
+});
