@@ -113,6 +113,18 @@ node <release>/bin/harness.mjs --binding <상태폴더>/harness-binding.json pol
 node scripts/rollback.mjs <store>
 ```
 
+이 저장소의 자체 binding은 release launcher를 직접 호출하지 않고, binding의 `cwd`인 등록 checkout의 `.agents/harness/launch.mjs`에 같은 binding 경로를 넘겨 `whoami`와 `policy`를 확인한다. 상태 폴더 경로만 실제 값으로 바꾼다.
+
+```powershell
+$bindingPath = (Resolve-Path -LiteralPath '<상태폴더>/harness-binding.json').Path
+$pin = Get-Content -Raw -LiteralPath $bindingPath | ConvertFrom-Json
+$launcher = Join-Path $pin.cwd '.agents/harness/launch.mjs'
+node $launcher --binding $bindingPath whoami
+node $launcher --binding $bindingPath policy
+```
+
+두 명령이 종료 코드 0으로 끝나고 `whoami`의 `project`·`root`가 binding의 프로젝트·`cwd`와 같으며, 두 출력의 `releaseHash`가 binding의 `manifestHash`와 같아야 한다. `policy` 출력의 `execution`·`workflow`가 이 release에서 적용되는 실행·작업 흐름 정책이다.
+
 rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경이 있으면 덮어쓰지 않고 거부한다. 새 질문이나 사용자 설정은 되돌리지 않는다. 로컬 백업에는 이전 개인 파일 내용이 있으므로 store를 Git에 넣지 않는다.
 
 ### 작업 폴더 준비와 실행 한도
