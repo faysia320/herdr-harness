@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { runTree } from './process.js';
 
 const require = createRequire(import.meta.url);
-const { candidateTree } = require('./verification-receipt.cjs');
+const { publishTree } = require('./verification-receipt.cjs');
 const contract = require('./qa-receipt-policy.cjs');
 export const runnerId = { id: 'herdr-qa-receipt', version: 1 };
 export const hostName = () => contract.hostNames[process.platform] ?? process.platform;
@@ -131,7 +131,8 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const startedAt = now();
-  const tree = candidateTree(worktree);
+  // 후보는 B 대비 실제 변경에 과정 산출물 게시 정책을 적용한 tree다. CI가 게시 커밋에서 다시 세는 행과 같다.
+  const tree = publishTree(worktree, commit);
   const binding = contract.candidateBinding(git, commit, commit, tree);
   const ctx = { worktree, policy, run, heavy, exec, timeout, hostOs, out, tree,
     env: Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'NODE_TEST_CONTEXT')) };
@@ -167,7 +168,7 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
       break;
     }
   }
-  if (status === 'PASS' && candidateTree(worktree) !== tree) {
+  if (status === 'PASS' && publishTree(worktree, commit) !== tree) {
     status = 'BLOCKED';
     reasons.push('검사 도중 후보가 바뀌었다. 후보를 고정한 뒤 다시 발급한다.');
   }

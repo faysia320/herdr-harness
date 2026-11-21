@@ -341,7 +341,9 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 
 ### 후보 지문
 
-영수증의 `base`(QA 기준 커밋 B)와, B에서 QA 후보 tree까지의 `git diff --raw --no-renames` 행(경로, 양쪽 mode·blob, 상태)을 경로 바이트순으로 정렬해 SHA-256한 값이다. 이동은 삭제·추가 두 행이다. 미커밋 후보는 `candidateTree`(임시 index에 staged·미커밋·무시되지 않는 신규 파일을 담은 tree)로 계산하므로 같은 tree의 게시 커밋(부모 B)과 지문이 같다.
+영수증의 `base`(QA 기준 커밋 B)와, B에서 QA 후보 tree까지의 `git diff --raw --no-renames` 행(경로, 양쪽 mode·blob, 상태)을 경로 바이트순으로 정렬해 SHA-256한 값이다. 이동은 삭제·추가 두 행이다. 미커밋 후보는 `publishTree`(임시 index에 staged·미커밋·무시되지 않는 신규 파일을 담은 tree)로 계산하므로 같은 tree의 게시 커밋(부모 B)과 지문이 같다.
+
+과정 문서는 B 대비 실제 변경에만 과정 산출물 게시 정책을 적용한다. B에 이미 커밋돼 있고 바뀌지 않은 문서는 행을 만들지 않고, 실제 삭제와 보존 예외의 변경은 그대로 세며, 게시 금지인 신규는 빼고 수정은 B 내용으로 되돌린다(그 문서를 PR에 넣으면 지문 불일치로 거부된다. config에 선언이 없으면 `docs/tasks/`·`docs/projects/`를 과정 문서로 본다).
 
 CI는 같은 행을 `merge-base(실제 main, PR head)`에서 PR head까지 다시 계산한다. strict 갱신·DEV-14 동기화·겹치지 않는 rebase로 독립적인 main 변경이 들어와도 후보 경로의 양쪽 mode·blob은 그대로이므로 유효하다. main이 후보 경로를 바꿨거나 QA 뒤 PR 변경이 달라지면(경로 추가·삭제, 내용·mode 변경) 무효다. B가 PR head의 조상이 아니어도 무효다. CI는 DEV-14 동기화 계보나 최초 게시 커밋을 따로 확인하지 않는다.
 

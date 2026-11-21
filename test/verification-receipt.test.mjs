@@ -39,3 +39,19 @@ test('미커밋 QA 후보의 v2 지문은 게시 커밋과 같고 무시 경로�
  git('add','-A');git('commit','-q','-m','publish');
  assert.equal(candidateBinding(git,base,base,git('rev-parse','HEAD')).digest,qa.digest);
 });
+test('v2 후보 publishTree는 B 대비 실제 변경에만 과정 문서 정책을 적용하고 선언 없는 저장소는 docs/tasks·docs/projects를 기본으로 본다',t=>{
+ const {publishTree}=createRequire(import.meta.url)('../core/verification-receipt.cjs');
+ const cwd=mkdtempSync(join(tmpdir(),'herdr-receipt-publish-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+ const git=(...args)=>execFileSync('git',args,{cwd,windowsHide:true,encoding:'utf8',stdio:'pipe'}).trim();
+ git('init','-q');git('config','user.name','p');git('config','user.email','p@example.invalid');git('config','core.autocrlf','false');
+ for(const f of ['keep','edit','gone'])mkdirSync(join(cwd,'docs/tasks',f),{recursive:true}),writeFileSync(join(cwd,'docs/tasks',f,'a.md'),'one\n');
+ writeFileSync(join(cwd,'a.txt'),'one\n');git('add','-A');git('commit','-q','-m','base');const base=git('rev-parse','HEAD');
+ writeFileSync(join(cwd,'a.txt'),'two\n');writeFileSync(join(cwd,'docs/tasks/edit/a.md'),'two\n');rmSync(join(cwd,'docs/tasks/gone/a.md'));
+ mkdirSync(join(cwd,'docs/projects/new'),{recursive:true});writeFileSync(join(cwd,'docs/projects/new/a.md'),'new\n');
+ const index=readFileSync(join(cwd,'.git/index')),tree=publishTree(cwd,base);
+ assert.deepEqual(readFileSync(join(cwd,'.git/index')),index);
+ // 바뀌지 않은 추적 문서는 행이 없고, 수정·신규는 게시 대상이 아니며, 삭제는 실제 행 그대로 남는다.
+ assert.deepEqual(git('diff','--name-status','--no-renames',base,tree).split('\n'),['M\ta.txt','D\tdocs/tasks/gone/a.md']);
+ // v1 candidateTree(HH 수집기·정리 경로)는 기존처럼 두 문서 폴더 전체를 뺀다.
+ assert.match(git('diff','--name-status',base,candidateTree(cwd)),/D\tdocs\/tasks\/keep\/a\.md/);
+});
