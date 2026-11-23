@@ -61,7 +61,9 @@ test('사본 목록: 발급기·검증기와 그 의존이 모두 들어 있고 
 });
 
 test('release 없는 발급: 사본 CLI가 OR 정책에서 이 PC host만 실행해 영수증을 내고, 사본 검증기가 PR을 통과·거부한다', t => {
-  const r = repo(t, orPolicy({ windows: { runner: 'host' }, linux: { runner: 'host' } }), { vendor: true });
+  // 소비 저장소 정책이 검사별 timeout_ms를 지정해도 사본 발급기·검증기가 그대로 받는다.
+  const timed = { ...orPolicy({ windows: { runner: 'host' }, linux: { runner: 'host' } }), checks: { smoke: { ...smoke, timeout_ms: 600000 } } };
+  const r = repo(t, timed, { vendor: true });
   const slots = join(r.dir, 'slots');
   const run = (script, args) => spawnSync(process.execPath, [join(r.cwd, 'tools/hh/bin', script), ...args],
     { cwd: r.cwd, encoding: 'utf8', windowsHide: true, timeout: 120000,
@@ -91,7 +93,11 @@ test('release 없는 발급: 사본 CLI가 OR 정책에서 이 PC host만 실행
   const blocked = run('qa-receipt.mjs', ['--base', r.base, '--run', 'and']);
   assert.equal(blocked.status, 3, blocked.stderr);
   assert.match(blocked.stderr, new RegExp(`BLOCKED: ${other}/smoke`));
-  assert.equal(existsSync(join(r.cwd, 'target/receipts/and/receipt.json')), false);
+  assert.equal(existsSync(join(r.cwd, 'target/receipts/and/receipt.json')), false);  // 잘못된 timeout_ms는 사본 발급기도 정책 오류로 거부한다.
+  r.write('policy/qa-receipt.json', JSON.stringify({ ...timed, checks: { smoke: { ...smoke, timeout_ms: 0 } } }));
+  const invalid = run('qa-receipt.mjs', ['--base', r.base, '--run', 'bad']);
+  assert.notEqual(invalid.status, 0, invalid.stderr);
+  assert.match(invalid.stderr, /timeout_ms/);
 });
 
 // heavy·docker 호출만 흉내 내고 Git 후보 계산과 파일 쓰기는 실제로 한다.

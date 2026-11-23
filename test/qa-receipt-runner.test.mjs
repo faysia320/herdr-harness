@@ -97,6 +97,23 @@ test('PASS: 정책의 두 OS를 heavy 슬롯에서 하나씩 실행하고 영수
   assert.deepEqual(docs.receipt.results.map(x => x.platform + '/' + x.check), ['windows/suite', 'windows/docs', 'linux/suite']);
 });
 
+test('검사별 timeout_ms: 지정한 검사의 heavy 실행에만 쓰고 생략한 검사는 기본 45분이다', async t => {
+  const value = structuredClone(policy);
+  value.checks.docs.timeout_ms = 4500000;
+  value.required = [{ checks: ['suite', 'docs'], platforms: ['windows', 'linux'] }];
+  const r = repo(t, value), f = fake({ windows: () => ({ code: 0, stdout: tap(1), stderr: '' }) });
+  const result = await issue(r, f);
+  assert.equal(result.status, 'PASS', result.reasons.join('\n'));
+  const runs = f.calls.filter(c => c.command === process.execPath)
+    .map(c => c.args[2] === 'docker' ? ['linux', c.args[c.args.indexOf('--name') + 1].split('-').pop(), c.options.timeout]
+      : ['windows', c.args.includes('docs.mjs') ? 'docs' : 'suite', c.options.timeout]);
+  assert.deepEqual(runs, [['windows', 'suite', 2700000], ['windows', 'docs', 4500000], ['linux', 'suite', 2700000], ['linux', 'docs', 4500000]]);
+  // 호출자가 넘긴 timeout은 정책값이 없는 검사의 기본값으로만 쓴다.
+  const g = fake({ windows: () => ({ code: 0, stdout: tap(1), stderr: '' }) });
+  await issue(r, g, { timeout: 1000 });
+  assert.deepEqual(g.calls.filter(c => c.command === process.execPath).map(c => c.options.timeout), [1000, 4500000, 1000, 4500000]);
+});
+
 test('BLOCKED·FAIL은 영수증을 남기지 않고 같은 회차를 다시 시작하면 이전 PASS부터 지운다', async t => {
   const r = repo(t);
   const fresh = async (scenario, extra) => {

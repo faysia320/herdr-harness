@@ -70,7 +70,7 @@ async function hostCheck(ctx, platform, check) {
   if (ctx.hostOs !== platform) throw new Blocked(`이 PC(${ctx.hostOs})에서는 ${platform} 호스트 검사를 실행할 수 없다.`);
   const argv = heavyArgv(ctx.heavy, ctx.policy.checks[check].steps);
   const started = Date.now();
-  const r = await ctx.exec(argv[0], argv.slice(1), { cwd: ctx.worktree, env: ctx.env, timeout: ctx.timeout });
+  const r = await ctx.exec(argv[0], argv.slice(1), { cwd: ctx.worktree, env: ctx.env, timeout: ctx.policy.checks[check].timeout_ms ?? ctx.timeout });
   return { argv, ...r, ms: Date.now() - started, env: { os: platform, release: osRelease(), arch: arch(), node: version('node'), git: version('git') } };
 }
 
@@ -99,7 +99,7 @@ async function dockerCheck(ctx, platform, check) {
     '--mount', `"type=bind,source=${input},target=/input,readonly"`, image, 'node', '/input/phase.cjs'];
   const started = Date.now();
   try {
-    const r = await ctx.exec(argv[0], argv.slice(1), { cwd: ctx.worktree, env: ctx.env, timeout: ctx.timeout });
+    const r = await ctx.exec(argv[0], argv.slice(1), { cwd: ctx.worktree, env: ctx.env, timeout: ctx.policy.checks[check].timeout_ms ?? ctx.timeout });
     let env = null;
     const line = /^HH-QA-ENV (.+)$/m.exec(r.stderr)?.[1];
     try { env = line ? JSON.parse(line) : null; } catch { env = null; }
