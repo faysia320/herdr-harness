@@ -186,6 +186,7 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 
 - **병렬도 상한**: `resources.env`(`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, `VITEST_MAX_THREADS`, `VITEST_MAX_FORKS`)를 에이전트가 실행하는 명령의 환경으로 준다. Codex는 `shell_environment_policy.set`, Claude는 `--settings`의 `env`로 전달한다. 명령에 명시한 옵션(예: `--maxWorkers=50%`)은 이 환경보다 우선한다.
 - **무거운 작업 슬롯**: 모든 저장소가 함께 쓰는 동시 `resources.heavy_slots`개 슬롯이다. 지시를 받은 에이전트는 전체 시험·빌드를 `node <release>/bin/heavy.mjs -- <명령>`으로 실행한다. 슬롯이 차 있으면 빌 때까지 기다린 뒤 시작한다. 점유 정보는 `%LOCALAPPDATA%/HerdrHarness/heavy-slots/slot-N.json`에 있다. 점유 프로세스가 사라진 슬롯은 다음 대기자가 회수한다. `node <release>/bin/heavy.mjs status`로 현재 점유를 본다.
+- **Rust 컴파일 캐시**: 이 PC는 `cargo install sccache --locked`로 설치한 sccache 0.19.0(`C:/Users/이진영/.cargo/bin/sccache.exe`)을 저장소가 함께 쓴다. 캐시 위치와 크기 상한은 사용자 환경 변수 `SCCACHE_DIR=E:\sccache`, `SCCACHE_CACHE_SIZE=20G`로 정한다. 저장소 검사 실행기가 `RUSTC_WRAPPER=sccache`와 `CARGO_INCREMENTAL=0`을 넣고, sccache가 없으면 경고만 남기고 진행한다. worktree별 전용 target은 그대로 두고 컴파일 결과만 공유한다. `sccache --show-stats`로 적중률과 캐시 크기를 본다. 실행기 변경은 각 저장소 업무(예: SW-0161)에서 한다.
 - **단계 규칙**: `instructions.all`은 모든 단계에, `instructions.<단계>`는 해당 단계에만 Codex `developer_instructions`, Claude `--append-system-prompt`로 전달한다. QA 규칙은 세 가지다.
   - 후보와 무관한 실패는 단독 재실행으로 «불안정» 또는 «기존·환경 실패»로 분류하고 FAIL 사유로 쓰지 않는다.
   - 환경 실패가 난 장시간 명령은 조건이 같으면 다시 실행하지 않고 «재위임 전 필요 조건»을 남긴다.
