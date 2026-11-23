@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "note": "QA 영수증 발급기·검증기를 release 없이 다른 저장소에서 실행하는 데 필요한 파일. 상대 위치를 유지해 한 폴더(예: tools/hh) 아래에 복사한다. 저장소 정책 policy/qa-receipt.json은 저장소 루트에 따로 둔다.",
+  "files": [
+    "package.json",
+    "bin/qa-receipt.mjs",
+    "bin/verify-qa-receipt.mjs",
+    "bin/heavy.mjs",
+    "core/qa-receipt-runner.mjs",
+    "core/qa-receipt-policy.cjs",
+    "core/process.js",
+    "core/verification-receipt.cjs",
+    "core/dev14.cjs",
+    "core/artifact-policy.cjs",
+    "core/heavy-slots.mjs",
+    "core/metrics.mjs",
+    "policy/artifacts.json",
+    "policy/execution.json"
+  ]
+}

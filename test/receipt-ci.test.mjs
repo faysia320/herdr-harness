@@ -143,6 +143,23 @@ test('도입 전 PR은 번호 기준으로 영수증만 면제하고, 정책 파
   assert.match(broken.stderr, /정책 오류/);
 });
 
+test('CI 검증 OR 정책: anyPlatform 규칙은 한 OS 결과만으로 통과하고 결과가 없으면 거부한다', t => {
+  const f = fixture(t);
+  f.checkout(f.H0);
+  // 정책은 PR merge checkout의 작업 파일에서 읽는다. 후보 지문은 Git 커밋으로 계산하므로 영향이 없다.
+  f.write('policy/qa-receipt.json', JSON.stringify({ ...policy, platforms: { windows: { runner: 'host' }, linux: { runner: 'host' } },
+    required: [{ checks: ['suite'], platforms: ['windows', 'linux'], anyPlatform: true }] }));
+  const linux = { os: 'linux', node: 'v22.23.5', git: '2.39.5' };
+  for (const [results, environments] of [[[f.receipt.results[0]], { windows: f.receipt.environments.windows }], [[f.receipt.results[1]], { linux }]]) {
+    const ok = f.verify({ text: f.body({ ...f.receipt, results, environments }) });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.json.status, 'pass');
+  }
+  const none = f.verify({ text: f.body({ ...f.receipt, results: [] }) });
+  assert.equal(none.status, 1, none.stdout);
+  assert.match(none.stderr, /플랫폼 하나\(windows\|linux\)에서 suite 통과 필요/);
+});
+
 test('HH workflow: 두 필수 검사 이름을 유지하고 PR 이벤트(본문 수정 포함)에서 영수증 검증만 실행한다', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
   assert.match(workflow, /name: harness-ci \(\$\{\{ matrix\.os \}\}\)/);
