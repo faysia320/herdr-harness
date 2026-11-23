@@ -54,6 +54,19 @@ test('정책 검증: 기본 규칙·선언된 ID·셸 특수문자 없는 명령
   }
 });
 
+test('정책 검증: 검사별 timeout_ms는 생략 또는 1~2147483647 정수 ms만 받는다', () => {
+  for (const ok of [undefined, 1, 4500000, 2147483647]) {
+    const p = policy();
+    if (ok !== undefined) p.checks.suite.timeout_ms = ok;
+    assert.equal(validatePolicy(p).checks.suite.timeout_ms, ok);
+  }
+  for (const bad of [0, -1, 1.5, '4500000', null, 2147483648, Infinity]) {
+    const p = policy();
+    p.checks.docs.timeout_ms = bad;
+    assert.throws(() => validatePolicy(p), /timeout_ms.*docs/, String(bad));
+  }
+});
+
 test('변경 경로 규칙: 기본 규칙과 걸린 경로 규칙의 합집합, 폴더 경계·삭제 경로를 구분한다', () => {
   const p = policy();
   const base = [{ platform: 'windows', check: 'suite' }, { platform: 'linux', check: 'suite' }];

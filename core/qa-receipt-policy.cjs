@@ -34,6 +34,9 @@ function validatePolicy(p) {
     if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(id) || !['tap', 'exit'].includes(spec?.result) ||
       !Array.isArray(spec.steps) || !spec.steps.length || !spec.steps.every(step => Array.isArray(step) && step.length && step.every(t => typeof t === 'string' && token.test(t))))
       fail('검사는 ID, result(tap·exit), 셸 특수문자 없는 steps 명령 배열이 필요하다: ' + id);
+    // 검사별 실행 제한(ms). 생략하면 발급기 기본값(45분)이다. 실행기(runTree)가 받는 setTimeout 범위로 제한한다.
+    if (spec.timeout_ms !== undefined && !(Number.isSafeInteger(spec.timeout_ms) && spec.timeout_ms > 0 && spec.timeout_ms <= 2147483647))
+      fail('timeout_ms는 1~2147483647 사이 정수(ms)여야 한다: ' + id);
   }
   if (!Array.isArray(p.required) || !p.required.some(rule => rule?.paths === undefined)) fail('경로 조건 없는 기본 required 규칙이 필요하다.');
   for (const rule of p.required) {
