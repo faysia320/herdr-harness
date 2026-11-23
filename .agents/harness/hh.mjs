@@ -6,7 +6,7 @@ import { activeRun, collect, createWorktree, dispatch, policyPath, scoped } from
 import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
 import { reclaimTerminals } from './terminals.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
-import { adapter, candidate, check, command, config, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
+import { adapter, candidate, check, command, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
 
 const cli = fileURLToPath(import.meta.url);
 const prFields = 'number,url,state,isCrossRepository,isDraft,headRefName,headRefOid,baseRefName,body';
@@ -42,8 +42,8 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
   });
 }
 
-// 동결 계획의 후속 확인 목록. 이전 release에는 이 기능이 없으므로 호출하지 않는다.
-const remaining = (ctx, plan) => scoped(ctx) ? ctx.flow({ action: 'remaining', plan }) : null;
+// 동결 계획의 후속 확인과 QA가 남긴 한계(limitations) 목록. 이전 release에는 이 기능이 없으므로 호출하지 않는다.
+const remaining = (ctx, flow) => scoped(ctx) ? ctx.flow({ action: 'remaining', plan: flow?.plan, verification: flow?.verification ?? undefined }) : null;
 
 // delivery·prView는 시험에서 병합 증명·PR 조회 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery와 gh를 쓴다.
 // acceptMerged도 같은 시험용 주입 지점이다(임시 저장소에 GitHub 원격이 없다). CLI는 고정 release의 accept-merged 판정을 쓴다.
@@ -131,7 +131,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       .map(t => ({ id: t.id, stage: t.pending, dependenciesReady: t.depends.every(id => ledger.tasks[id]?.state === 'DONE') }));
     const task = taskById(ledger, p[0]);
     if (name === 'flow-status') {
-      const left = remaining(ctx, task.x_flow?.plan);
+      const left = remaining(ctx, task.x_flow);
       return { id: task.id, state: task.state, pending: task.pending, flow: task.x_flow, ...(left ? { remainingVerification: left } : {}) };
     }
     if (!task.x_archive) return task;
@@ -183,7 +183,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       check(pr.number === number && pr.state === 'OPEN' && pr.isCrossRepository === false && !pr.isDraft &&
         pr.headRefName === task.branch && pr.headRefOid === anchor.head && pr.baseRefName === 'main', '원격 PR이 최초 게시 후보와 다르다.');
       // 후속 확인 0건·기존 계획은 본문을 요구하지 않는다. 연결 뒤 본문을 지우면 병합 직전 게이트(core/delivery.cjs)가 다시 막는다.
-      const missing = scoped(ctx) ? ctx.flow({ action: 'pr-remaining', plan: task.x_flow.plan, body: pr.body ?? null }) : [];
+      const missing = scoped(ctx) ? ctx.flow({ action: 'pr-remaining', plan: task.x_flow.plan, body: pr.body ?? null, verification: task.x_flow.verification ?? undefined }) : [];
       check(!missing.length, 'PR 본문 «남은 검증»에 publish-check의 remainingVerification 줄이 빠졌다: ' + missing.map(m => m.line).join(' / ') +
         ' (각 line을 HTML·코드 블록보다 앞에 "- [ ] " 목록 항목으로 적는다)');
       task.x_flow.delivery = { pr: number, url: pr.url, ...anchor, original: anchor };
@@ -218,7 +218,7 @@ function publicationCheck(ctx, ledger, id, committed) {
     const current = candidate(ctx, task);
     check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
   }
-  const left = remaining(ctx, task.x_flow.plan);
+  const left = remaining(ctx, task.x_flow);
   const envelope = qaReceipt(ctx, task);
   return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}),
     ...(envelope ? { qaReceipt: envelope } : {}) };
@@ -248,7 +248,7 @@ async function deliver(ctx, ledger, task, name, a) {
   assertBinding(ctx);
   const result = ctx.delivery({ action: 'delivery', cwd, flow, branch: task.branch,
     ...(proofOnly ? { proofOnly: true } : { apply: Boolean(a.apply) }),
-    dev14: { candidate: task.candidate, mergeAuthorized: Boolean(a.apply), sensitivePaths: config.sensitive_paths },
+    dev14: { candidate: task.candidate, mergeAuthorized: Boolean(a.apply) },
   });
   if ((proofOnly || a.apply) && result.phase === 'merged') {
     task.x_flow.phase = 'merged';

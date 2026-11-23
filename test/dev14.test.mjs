@@ -12,7 +12,8 @@ const url='https://github.com/fixture/dev14.git';
 
 // Only GitHub responses are simulated. Git computes the graph, merge trees, file
 // modes and binary blobs and pushes normally to a disposable bare repository.
-function fixture(t, mainPath='docs/readme.md') {
+// opts.file은 후보가 추가하는 파일, opts.baseFiles는 기준 커밋에 미리 두는 파일이다. mainPath가 null이면 main을 움직이지 않는다.
+function fixture(t, mainPath='docs/readme.md', opts={}) {
   const root=fs.mkdtempSync(join(tmpdir(),'herdr-dev14-')), remote=join(root,'remote.git'), cwd=join(root,'repo');
   t.after(()=>fs.rmSync(root,{recursive:true,force:true,maxRetries:3}));
   fs.mkdirSync(cwd);
@@ -25,17 +26,19 @@ function fixture(t, mainPath='docs/readme.md') {
   git('init','--bare',remote); git('init','-b','main');
   git('config','user.name','Dev14 Fixture'); git('config','user.email','dev14@example.invalid');
   git('config','core.autocrlf','false');
-  fs.writeFileSync(join(cwd,'old.txt'),'delete me'); git('add','old.txt'); git('commit','-m','base');
+  fs.writeFileSync(join(cwd,'old.txt'),'delete me');
+  for (const file of opts.baseFiles??[]) { fs.mkdirSync(join(cwd,file,'..'),{recursive:true}); fs.writeFileSync(join(cwd,file),'base '+file); }
+  git('add','-A'); git('commit','-m','base');
   const base=git('rev-parse','HEAD');
   git('switch','-c','topic');
   const bytes=Buffer.from([0,13,10,255,42]);
-  const binary='payload with spaces.bin';
-  fs.writeFileSync(join(cwd,binary),bytes); git('rm','old.txt'); git('add','--',binary);
+  const binary=opts.file??'payload with spaces.bin';
+  fs.mkdirSync(join(cwd,binary,'..'),{recursive:true}); fs.writeFileSync(join(cwd,binary),bytes); git('rm','old.txt'); git('add','--',binary);
   git('update-index','--chmod=+x','--',binary); git('commit','-m','QA candidate');
   const head=git('rev-parse','HEAD'), tree=git('rev-parse','HEAD^{tree}');
   const candidate={head,x_base:base,paths:[
     {path:'old.txt',status:'DELETED',mode:null,sha256:null},
-    {path:binary,status:'A',mode:'100755',sha256:sha(bytes)}]};
+    {path:binary,status:'A',mode:'100755',sha256:sha(bytes)}].sort((a,b)=>a.path<b.path?-1:1)};
   candidate.fingerprint=sha(JSON.stringify({head,base,paths:candidate.paths.map(p=>[p.path,p.status,p.mode,p.sha256])}));
   git('push',remote,'topic','main');
   const mainDir=join(root,'main');
@@ -44,11 +47,11 @@ function fixture(t, mainPath='docs/readme.md') {
     const dest=join(mainDir,file); fs.mkdirSync(join(dest,'..'),{recursive:true}); fs.writeFileSync(dest,'upstream');
     git('-C',mainDir,'add','--',file); git('-C',mainDir,'commit','-m','advance'); git('-C',mainDir,'push',remote,'main');
   }
-  advance(mainPath);
+  if (mainPath) advance(mainPath);
   const flow={version:2,phase:'ci',authorization:'조건부 병합',verification:{verdict:'PASS',candidate:candidate.fingerprint},delivery:{pr:7,head,base,tree}};
   const input={cwd,branch:'topic',flow,dev14:{candidate,mergeAuthorized:true},apply:true};
   const tip=branch=>fs.readFileSync(join(remote,'refs','heads',branch),'utf8').trim();
-  const state={merged:null,finalHead:null,passed:false,wrongCI:false,review:'APPROVED',pushes:0,merges:0};
+  const state={merged:null,finalHead:null,passed:false,wrongCI:false,review:'APPROVED',pushes:0,merges:0,strict:true,views:0,onView:null,beforeMerge:null};
   function squash(override) {
     const h=tip('topic'), b=tip('main');
     const m=git('commit-tree',override??git('merge-tree','--write-tree',b,h),'-p',b,'-m','squash');
@@ -66,10 +69,12 @@ function fixture(t, mainPath='docs/readme.md') {
       }
       return run(local,allow,args[0]==='cat-file');
     }
-    const call=args.join(' '), h=state.finalHead??tip('topic'), b=tip('main');
+    const call=args.join(' ');
+    if (call.startsWith('pr view')) state.onView?.(++state.views);
+    const h=state.finalHead??tip('topic'), b=tip('main');
     const link='https://fixture.invalid/jobs/42';
     if (call.startsWith('repo view')) return result({nameWithOwner:'fixture/dev14'});
-    if (call.startsWith('api ') && call.includes('/branches/main/protection')) return result({required_status_checks:{strict:true,checks:[{context:'CI',app_id:42}]},enforce_admins:{enabled:true}});
+    if (call.startsWith('api ') && call.includes('/branches/main/protection')) return result({required_status_checks:{strict:state.strict,checks:[{context:'CI',app_id:42}]},enforce_admins:{enabled:true}});
     if (call.endsWith('/rules/branches/main')) return result([]);
     if (call.includes('/check-runs?')) return result([{check_runs:[{name:'CI',app:{id:state.wrongApp?99:42},head_sha:state.wrongCI?head:h,status:'completed',conclusion:'success',details_url:link}]}]);
     if (call.includes('/status?')) return result({sha:h,statuses:[]});
@@ -78,11 +83,16 @@ function fixture(t, mainPath='docs/readme.md') {
       headRefName:'topic',headRefOid:h,baseRefName:'main',baseRefOid:b,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',
       reviewDecision:state.review,statusCheckRollup:state.noChecks?[]:[{status:state.passed?'COMPLETED':'IN_PROGRESS',conclusion:state.passed?'SUCCESS':null}],
       mergeCommit:state.merged&&{oid:state.merged},mergedAt:state.merged&&'2026-11-19T01:00:00Z'});
-    if (call.startsWith('pr merge')) { assert.equal(args.at(-1),h); state.merges++; squash(); return result({}); }
+    if (call.startsWith('pr merge')) {
+      state.beforeMerge?.();
+      // 서버는 --match-head-commit이 현재 head와 다르면 병합하지 않는다.
+      if (args.at(-1)!==tip('topic')) return {code:1,text:''};
+      state.merges++; squash(); return result({});
+    }
     throw Error('unexpected call: '+call);
   }
   function result(data) {return {text:JSON.stringify(data),code:0};}
-  return {query:(patch={})=>deliver({...input,...patch},exec),input,state,advance,tip,git,remote,head,base,binary,squash,mainDir};
+  return {query:(patch={},wrap=exec=>exec)=>deliver({...input,...patch},wrap(exec)),input,state,advance,tip,git,remote,head,base,binary,squash,mainDir};
 }
 
 test('독립 main 이동 두 번, 새 head CI·리뷰·권한을 확인하고 한 번만 squash한다',t=>{
@@ -109,24 +119,103 @@ test('독립 main 이동 두 번, 새 head CI·리뷰·권한을 확인하고 �
   assert.equal(replay.merge,proof.merge); assert.deepEqual([f.state.pushes,f.state.merges],[2,1]);
 });
 
-test('민감 경로 또는 겹침은 쓰기 전에 재QA로 돌린다',t=>{
-  for(const p of ['Cargo.lock','.github/workflows/verify.yml','payload with spaces.bin','crates/workspace-contracts/src/lib.rs','team/shared.rules']){
+// H1: main 이동 재검증은 경로 겹침·병합 충돌·병합 결과 불일치로만 한다. lockfile·CI·설정 같은 경로 종류만으로는 재QA하지 않는다.
+test('겹치지 않는 main 변경은 lockfile·CI·설정·어댑터 민감 경로여도 ci에 머물러 동기화한다',t=>{
+  for(const p of ['Cargo.lock','.github/workflows/verify.yml','crates/workspace-contracts/src/lib.rs','team/shared.rules']){
     const f=fixture(t,p);
     f.input.dev14.sensitivePaths=['team/shared.rules'];
-    assert.equal(f.query().phase,'revalidate',p);
+    const r=f.query({apply:false});
+    assert.deepEqual([r.phase,r.reasons[0]],['ci','DEV-14 동기화 가능'],p);
     assert.deepEqual([f.state.pushes,f.state.merges],[0,0]);
+  }
+  // PR 쪽 후보가 package.json·.agents여도 같다.
+  for(const file of ['package.json','.agents/harness/config.json']){
+    const f=fixture(t,'pnpm-lock.yaml',{file});
+    assert.equal(f.query({apply:false}).phase,'ci',file);
   }
 });
 
-test('병합 사실·후보 바이트·필수 CI가 맞아도 민감 변경은 DONE이 되지 않는다',t=>{
+test('후보 경로가 겹치거나 main·PR 병합이 충돌하면 쓰기 전에 재QA로 돌린다',t=>{
+  const overlap=fixture(t,'payload with spaces.bin');
+  const r=overlap.query();
+  assert.equal(r.phase,'revalidate'); assert.match(r.reasons[0],/QA 경로 겹침: payload with spaces\.bin/);
+  assert.deepEqual([overlap.state.pushes,overlap.state.merges],[0,0]);
+  // 경로가 겹치지 않아도 main의 디렉터리 이동이 후보의 새 파일 위치와 충돌하면 겹침 분기와 별개로 재QA한다.
+  const conflict=fixture(t,null,{file:'a/new.bin',baseFiles:['a/x.txt']});
+  conflict.git('-C',conflict.mainDir,'mv','a','b'); conflict.git('-C',conflict.mainDir,'commit','-m','rename a to b');
+  conflict.git('-C',conflict.mainDir,'push',conflict.remote,'main');
+  const c=conflict.query();
+  assert.deepEqual([c.phase,c.reasons],['revalidate',['main·PR 병합 충돌']]);
+  assert.deepEqual([conflict.state.pushes,conflict.state.merges],[0,0]);
+});
+
+test('strict 흐름은 lockfile main 변경을 동기화하고 새 head CI 통과 뒤 squash·사후 증명을 마친다',t=>{
   const f=fixture(t,'pnpm-lock.yaml');
-  const base=f.tip('main');
-  const sync=f.git('commit-tree',f.git('merge-tree','--write-tree',f.head,base),'-p',f.head,'-p',base,'-m','external sync');
-  f.git('push',f.remote,sync+':refs/heads/topic'); f.state.passed=true; f.squash();
-  const p=f.query({proofOnly:true,apply:false});
-  assert.equal(p.phase,'proof-blocked'); assert.ok(p.mainContainsMerge && p.exactTree && p.exactCandidate && p.requiredChecksPassed);
-  assert.match(p.reasons.join(' '),/pnpm-lock/); assert.equal(f.state.merges,0);
-  assert.throws(()=>f.query({proofOnly:true}),/apply/);
+  const first=f.query(); assert.equal(first.syncHead,f.tip('topic'));
+  f.state.passed=true;
+  const proof=f.query(); assert.equal(proof.phase,'merged'); assert.ok(proof.exactCandidate && proof.exactTree && proof.requiredChecksPassed);
+  assert.deepEqual([f.state.pushes,f.state.merges],[1,1]);
+  const replay=f.query({proofOnly:true,apply:false});
+  assert.equal(replay.phase,'merged'); assert.throws(()=>f.query({proofOnly:true}),/apply/);
+});
+
+// H3: strict up-to-date가 꺼진 규칙도 조회로 확인되면 동기화 없이 확인한 head를 --match-head-commit으로 한 번 병합한다.
+test('strict-off 규칙은 동기화 없이 확인한 head를 한 번 squash하고 사후 증명한다',t=>{
+  const f=fixture(t); f.state.strict=false; f.state.passed=true;
+  const dry=f.query({apply:false}); assert.deepEqual([dry.phase,dry.ready],['ci',true]);
+  const proof=f.query();
+  assert.equal(proof.phase,'merged'); assert.ok(proof.exactCandidate && proof.exactTree && proof.requiredChecksPassed);
+  assert.equal(proof.head,f.head); assert.equal(proof.base,f.git('rev-parse',proof.merge+'^'));
+  assert.deepEqual([f.state.pushes,f.state.merges],[0,1]);
+  assert.equal(f.query({proofOnly:true,apply:false}).phase,'merged');
+  // strict-off에서도 겹침은 재QA다.
+  const overlap=fixture(t,'payload with spaces.bin'); overlap.state.strict=false; overlap.state.passed=true;
+  assert.equal(overlap.query().phase,'revalidate'); assert.equal(overlap.state.merges,0);
+});
+
+// 저장소 ruleset만 있는 main. strict 값과 ruleset 상세 조회 결과(code)를 바꾼다. 403은 토큰 권한 부족 응답이다.
+const ruleQuery=(strict,detailCode)=>exec=>(cwd,cmd,args,allow)=>{
+  if (cmd==='gh' && args[0]==='api') {
+    if (args[1].endsWith('/branches/main/protection')) return {code:1,text:JSON.stringify({status:'404'})};
+    if (args[1].endsWith('/rules/branches/main')) return {code:0,text:JSON.stringify([{type:'required_status_checks',ruleset_source_type:'Repository',ruleset_id:99,
+      parameters:{strict_required_status_checks_policy:strict,required_status_checks:[{context:'CI',integration_id:42}]}}])};
+    if (args[1].endsWith('/rulesets/99')) return {code:detailCode,text:JSON.stringify({status:'403'})};
+  }
+  return exec(cwd,cmd,args,allow);
+};
+test('strict ruleset을 확정하지 못하면 느슨한 병합·사후 증명을 하지 않고, 확인된 strict-off ruleset은 병합한다',t=>{
+  // strict_required_status_checks_policy=true인데 ruleset 상세가 403이면 strict-off로 보지 않는다.
+  const denied=fixture(t); denied.state.passed=true;
+  const r=denied.query({},ruleQuery(true,1));
+  assert.equal(r.phase,'blocked'); assert.deepEqual([denied.state.pushes,denied.state.merges],[0,0]);
+  // 서버가 다른 경로로 병합해도 strict 근거 미확정이면 사후 자동 종결을 하지 않는다.
+  denied.squash();
+  const proof=denied.query({proofOnly:true,apply:false},ruleQuery(true,1));
+  assert.equal(proof.phase,'proof-blocked'); assert.ok(proof.reasons.includes('main 보호 규칙 조회 근거 불충분'));
+  // 관리자 우회가 가능한 classic strict 보호도 확정이 아니다.
+  const admins=fixture(t); admins.state.passed=true;
+  const bypass=admins.query({},exec=>(cwd,cmd,args,allow)=>cmd==='gh' && args[0]==='api' && args[1].endsWith('/branches/main/protection') ?
+    {code:0,text:JSON.stringify({required_status_checks:{strict:true,checks:[{context:'CI',app_id:42}]},enforce_admins:{enabled:false}})} : exec(cwd,cmd,args,allow));
+  assert.equal(bypass.phase,'blocked'); assert.deepEqual([admins.state.pushes,admins.state.merges],[0,0]);
+  // 명시적 strict-off ruleset은 상세 조회와 무관하게 동기화 없이 한 번 병합하고 사후 증명한다.
+  const off=fixture(t); off.state.passed=true;
+  assert.equal(off.query({},ruleQuery(false,1)).phase,'merged'); assert.deepEqual([off.state.pushes,off.state.merges],[0,1]);
+  assert.equal(off.query({proofOnly:true,apply:false},ruleQuery(false,1)).phase,'merged');
+});
+
+test('strict-off에서 병합 직전 main·head가 확인한 SHA와 다르면 병합하지 않는다',t=>{
+  // 마지막 조회 직전에 main이 움직이면 병합 0회.
+  const moved=fixture(t); moved.state.strict=false; moved.state.passed=true;
+  moved.state.onView=n=>{ if(n===2) moved.advance('docs/late.md'); };
+  const r=moved.query(); assert.deepEqual([r.phase,r.reasons],['ci',['병합 직전 head/base 이동']]); assert.equal(moved.state.merges,0);
+  // 마지막 조회 직전에 head가 움직여도 병합 0회.
+  const pushed=fixture(t); pushed.state.strict=false; pushed.state.passed=true;
+  pushed.state.onView=n=>{ if(n===2) pushed.git('push',pushed.remote,pushed.git('commit-tree',pushed.git('rev-parse',pushed.head+'^{tree}'),'-p',pushed.head,'-m','late')+':refs/heads/topic'); };
+  assert.equal(pushed.query().phase,'ci'); assert.equal(pushed.state.merges,0);
+  // 조회 뒤 서버 요청 직전에 head가 바뀌면 --match-head-commit이 병합을 거부한다.
+  const raced=fixture(t); raced.state.strict=false; raced.state.passed=true;
+  raced.state.beforeMerge=()=>raced.git('push',raced.remote,raced.git('commit-tree',raced.git('rev-parse',raced.head+'^{tree}'),'-p',raced.head,'-m','race')+':refs/heads/topic');
+  const x=raced.query(); assert.equal(x.phase,'blocked'); assert.match(x.reasons[0],/병합 거부/); assert.equal(raced.state.merges,0);
 });
 
 test('임의 head·틀린 QA 지문·후보 외 파일이 든 실제 squash는 거부한다',t=>{

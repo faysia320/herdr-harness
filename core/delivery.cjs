@@ -10,7 +10,10 @@ function execute(cwd, cmd, args, allowFailure = false) {
   return { code: r.status, text: r.stdout?.includes('\0') ? r.stdout : r.stdout?.trim() ?? '' };
 }
 // Record the effective check names and app IDs for a DEV-14 proof. Older
-// adapters only need the original strict-up-to-date gate.
+// adapters only need the original strict-up-to-date gate. known=true means the
+// detailed policy query succeeded and no rule asks for strict up-to-date checks
+// that could not be confirmed, so strict=false is a confirmed strict-off rule.
+// A strict rule whose ruleset detail is denied, bypassable or inactive stays known=false.
 function mainProtection(exec, cwd, repo, detailed) {
   function api(path) {
     const res = exec(cwd, 'gh', ['api', 'repos/' + repo + path], true);
@@ -21,6 +24,7 @@ function mainProtection(exec, cwd, repo, detailed) {
   const classic = api('/branches/main/protection');
   const classicChecks = classic.ok && classic.data.required_status_checks;
   let strict = classicChecks?.strict === true && classic.data.enforce_admins?.enabled === true;
+  let declared = classicChecks?.strict === true;
   const configured = [];
   function addChecks(list) {
     for (const c of list ?? []) {
@@ -38,17 +42,18 @@ function mainProtection(exec, cwd, repo, detailed) {
   if (!strict || detailed) {
     const effective = api('/rules/branches/main');
     if (detailed && (!effective.ok || !Array.isArray(effective.data) ||
-        (!classic.ok && String(classic.data?.status) !== '404'))) return {strict:false, configured, reviewRequired};
+        (!classic.ok && String(classic.data?.status) !== '404'))) return {strict:false, known:false, configured, reviewRequired};
     for (const rule of effective.ok && Array.isArray(effective.data) ? effective.data : []) {
       if (rule.type === 'pull_request') reviewRequired ||= needsApproval(rule.parameters);
       if (rule.type !== 'required_status_checks') continue;
       addChecks(rule.parameters?.required_status_checks);
+      declared ||= rule.parameters?.strict_required_status_checks_policy === true;
       if (strict || rule.parameters?.strict_required_status_checks_policy !== true || rule.ruleset_source_type !== 'Repository') continue;
       const detail = api('/rulesets/' + rule.ruleset_id);
       if (detail.ok && detail.data.enforcement === 'active' && Array.isArray(detail.data.bypass_actors) && !detail.data.bypass_actors.length) strict = true;
     }
   }
-  return {strict, configured, reviewRequired};
+  return {strict, known:Boolean(detailed) && (strict || !declared), configured, reviewRequired};
 }
 
 function deliver(input, exec = execute) {
@@ -118,9 +123,10 @@ function deliver(input, exec = execute) {
       const required=getChecks();
       const passed=checksAtHead(gh,repo,p.headRefOid,required,policy.configured);
       const drifted=base!==publication.original.base || p.headRefOid!==publication.original.head;
-      if (drifted && git('merge-base',base,p.headRefOid)!==base) reasons.push('최종 PR head가 squash 부모 main을 포함하지 않는다.');
+      // strict-off 저장소는 head가 main을 포함하지 않아도 병합된다. 이때는 겹침 검사와 실제 squash tree 대조로 증명한다.
+      if (policy.strict && drifted && git('merge-base',base,p.headRefOid)!==base) reasons.push('최종 PR head가 squash 부모 main을 포함하지 않는다.');
       if (!exactCandidate || !exactTree) reasons.push('QA 후보 변경·모드 또는 전체 예상 병합 tree 불일치');
-      if (!policy.strict) reasons.push('strict main 보호 근거 불충분');
+      if (!policy.strict && !policy.known) reasons.push('main 보호 규칙 조회 근거 불충분');
       if (!passed || ['CHANGES_REQUESTED','REVIEW_REQUIRED'].includes(p.reviewDecision) ||
           (policy.reviewRequired && p.reviewDecision!=='APPROVED')) reasons.push('최종 PR 필수 CI·리뷰 근거 불충분');
       // PR 브랜치 이름도 증명에 묶는다. 저장소 정리는 이 이름과 head가 같은 로컬 업무 브랜치만 지운다.
@@ -134,9 +140,9 @@ function deliver(input, exec = execute) {
   const merged=verifyMerged(pr);
   if (merged) return merged;
   if (proofOnly) return {phase:'proof-blocked',pr:pr.number,reasons:['서버 병합 SHA·시각 근거 불충분']};
-  // 동결 계획의 후속 확인이 PR 본문 남은 검증에 모두 있어야 병합한다. 이미 병합된 PR의 증명에는 적용하지 않는다.
+  // 동결 계획의 후속 확인과 QA가 남긴 한계가 PR 본문 남은 검증에 모두 있어야 병합한다. 이미 병합된 PR의 증명에는 적용하지 않는다.
   const bodyGap = p => {
-    const missing = missingRemaining(flow.plan, p.body).map(m=>m.line);
+    const missing = missingRemaining(flow.plan, p.body, flow.verification).map(m=>m.line);
     return missing.length ? {phase:'blocked',ready:false,pr:p.number,missing,reasons:['PR 본문 남은 검증 누락: '+missing.join(' / ')]} : null;
   };
   const gap = bodyGap(pr);
@@ -144,10 +150,12 @@ function deliver(input, exec = execute) {
   // 병합된 PR의 원격 브랜치는 이미 삭제될 수 있다. 열린 PR에서만 head를 가져온다.
   // FETCH_HEAD는 다른 프로세스와 공유하므로 사용하지 않는다.
   const main = fetchMain(`refs/heads/${branch}`);
-  // head 조건만으로 base 경쟁은 막을 수 없다. 서버가 최신 main 포함을 강제해야 한다.
+  // head 조건만으로 base 경쟁은 막을 수 없다. DEV-14 후보는 strict-off 규칙이 확인되면 병합 직전 head·main 재조회와
+  // --match-head-commit, 사후 squash 부모·tree·후보 대조로 대신한다. 조회와 병합 사이의 main 이동은 남는 경쟁 구간이다(README).
   policy ??= mainProtection(exec,cwd,repo,false);
-  if (!policy.strict || (dev14 && !policy.configured.length)) {
-    return {phase:'blocked',reasons:['자동 병합에는 main strict up-to-date와 관리자 포함 보호가 필요하다. 규칙을 우회하지 않는다.']};
+  const loose = Boolean(dev14) && !policy.strict && policy.known;
+  if ((!policy.strict && !loose) || (dev14 && !policy.configured.length)) {
+    return {phase:'blocked',reasons:[dev14 ? 'main 보호 규칙과 필수 검사 이름을 확인할 수 없다. 규칙을 우회하지 않는다.' : '자동 병합에는 main strict up-to-date와 관리자 포함 보호가 필요하다. 규칙을 우회하지 않는다.']};
   }
   let effectiveFlow=flow;
   if (dev14) {
@@ -161,7 +169,8 @@ function deliver(input, exec = execute) {
     if (merge.code===1) return {phase:'revalidate',reasons:['main·PR 병합 충돌']};
     if (merge.code!==0 || !/^[a-f0-9]{40}$/.test(merge.text)) throw new Error('예상 병합 tree 조회 실패');
     if (!candidateInTree(git,publication,main,merge.text)) return {phase:'revalidate',reasons:['동기화 결과가 QA 후보 경로·모드와 다르다.']};
-    if (git('merge-base',main,pr.headRefOid)!==main) {
+    // strict-off이면 서버가 최신 main 포함을 요구하지 않으므로 동기화 커밋 없이 현재 head를 병합한다.
+    if (!loose && git('merge-base',main,pr.headRefOid)!==main) {
       const pending={phase:'ci',ready:false,pr:pr.number,head:pr.headRefOid,base:main};
       if (!apply) return {...pending,reasons:['DEV-14 동기화 가능']};
       const fresh=view();
@@ -179,7 +188,7 @@ function deliver(input, exec = execute) {
     }
     effectiveFlow={...flow,delivery:{...flow.delivery,head:pr.headRefOid,base:main,tree:merge.text}};
   } else if (main!==flow.delivery.base || main!==pr.baseRefOid) return { phase:'revalidate', reasons:['main 이동: 동기화·영향 검증 후 게시 근거 갱신'] };
-  git('merge-base','--is-ancestor',main,pr.headRefOid);
+  if (!loose) git('merge-base','--is-ancestor',main,pr.headRefOid);
   const tree=git('merge-tree','--write-tree',main,pr.headRefOid).split(/\r?\n/)[0];
   if (tree!==effectiveFlow.delivery.tree) throw new Error('예상 병합 tree 불일치');
   const assess = (p, checks) => {

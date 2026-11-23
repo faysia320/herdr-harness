@@ -107,9 +107,10 @@ test('동결은 분류 누락·중복·미지원 위치·QA 실행 불가 필수
  for(const verify of ['제목을 복사해 Teams에 붙여넣고 원문과 대조','A & B 화면 비교','2.5초 안에 붙여넣기 (원문과 동일) | 결과 기록','이슈 #123 화면에서 확인',
    'https://example.com/deployed 에서 100% 일치 확인','3회 반복 후 "복사" 버튼 확인','A-B 순서로 10:30 배포 후 대조','snake_case 이름 대조','- 1. 순서대로'])
    assert.equal(freezePlan(scopedPlan({checkScopes:[suiteRow,unitRow,{...mobileRow,verify}]}),scopes).checkScopes[2].verify,verify);
- // AC 연결: 계획에 없는 AC, 후속 확인으로만 판정되는 AC(QA가 unverified로 적어 PASS가 막힌다)를 거부한다.
+ // AC 연결: 계획에 없는 AC, 어느 검사·후속 확인에도 연결되지 않은 AC를 거부한다. 후속 확인으로만 판정되는 AC는 동결한다(H2).
  reject(scopedPlan({checkScopes:[suiteRow,{...unitRow,criteria:['AC3']},mobileRow]}),/AC가 계획에 없다: unit/);
- reject(scopedPlan({checkScopes:[suiteRow,{...unitRow,criteria:['AC1']},mobileRow]}),/독립 QA 검사로 판정할 수 없는 AC: AC2/);
+ reject(scopedPlan({criteria:['AC1','AC2','AC3']}),/검사나 후속 확인에 연결되지 않은 AC: AC3/);
+ assert.deepEqual(freezePlan(scopedPlan({checkScopes:[suiteRow,{...unitRow,criteria:['AC1']},mobileRow]}),scopes).checkScopes[2].criteria,['AC2']);
  reject(scopedPlan({criteria:['AC1','AC1']}),/고유한 AC/);
  // 어댑터가 실행 수단을 선언하지 않으면 동결하지 않는다.
  reject(scopedPlan(),/실행 수단 선언이 필요하다/,{required:['hh-suite']});
@@ -145,9 +146,9 @@ test('research 공통 문구는 실행 위치·QA 실행 수단·후속 확인 �
  const flow=create('feature','사용자 승인');
  const research=instructions(flow,'research','c',{scopes});
  for(const pattern of [/checkScopes/,/independent-qa — 독립 QA가 후보 worktree에서/,/follow-up — 배포 후·실기기/,/checks는 independent-qa 항목의 ID와 정확히 같고/,
-   /모든 AC는 independent-qa 항목 하나 이상에 연결/,/어댑터 필수 검사: hh-suite/,/hh-suite — QA runner \(검사 ID hh-suite 전용, command 없음\)/,
+   /모든 AC는 checkScopes 항목 하나 이상에 연결한다. 로컬에서 판정할 수 있는 AC는 independent-qa에 연결/,/나머지는 follow-up에만 연결해도 된다/,/어댑터 필수 검사: hh-suite/,/hh-suite — QA runner \(검사 ID hh-suite 전용, command 없음\)/,
    /node-test — 지정 시험 파일 \(command 형식 \^node --test/,/실제 실행할 수 없는 검사\(배포 후·실기기·브라우저·외부 계정·운영 데이터\)/,
-   /environment\(확인 시점·실행 환경\)와 verify\(실제 확인 방법\)를 각각 한 줄 300자 이내/,/결정 요청을 제안/,
+   /environment\(확인 시점·실행 환경\)와 verify\(실제 확인 방법\)를 각각 한 줄 300자 이내/,
    /검사 ID 전용 수단에는 command를 적지 않는다\(적으면 동결을 거부한다\)/,
    /두 문구는 PR 본문에 그대로 싣는 일반 문장이다\. 링크·이미지 대괄호, 꺾쇠\(HTML 태그·주석·<URL>\), 백틱, HTML 엔티티를 쓰지 않는다/])
    assert.match(research,pattern);
@@ -233,4 +234,77 @@ test('PR 본문 대조는 보이는 마크다운 문맥만 인정한다: HTML �
  // 동결 문구에는 코드·HTML 표식을 넣을 수 없으므로 게시 줄은 항상 일반 문장 목록 줄이다.
  assert.throws(()=>freezePlan(scopedPlan({checkScopes:[suiteRow,unitRow,{...mobileRow,verify:`리터럴 ${tick}<!-- build -->${tick} 표식 대조`}]}),scopes),
    /후속 확인 verify에 .*: mobile-browser-copy/);
+});
+
+// H2: 운영 위험이 아닌 Medium·Low 결함과 QA 환경에서 확인할 수 없는 AC는 PASS를 막지 않고 PR 본문 남은 검증으로 넘긴다.
+const limitation={id:'L1',kind:'limitation',severity:'Medium',note:'긴 제목이 목록에서 말줄임 없이 두 줄로 보인다'};
+const deviceFollow={id:'device-check',kind:'follow-up',criteria:['AC2'],environment:'배포 후 실기기 Safari',verify:'제목 복사 뒤 붙여넣기 결과를 원문과 대조'};
+const limitLine='L1 | 남는 한계 Medium: 긴 제목이 목록에서 말줄임 없이 두 줄로 보인다';
+const deviceLine='device-check (AC2) | 환경: 배포 후 실기기 Safari | 확인: 제목 복사 뒤 붙여넣기 결과를 원문과 대조';
+test('Medium 한계·환경상 확인 불가 AC만 남으면 PASS하고 남은 검증 목록에 싣는다',()=>{
+ const plan=freezePlan(scopedPlan(),scopes);
+ const r=passing();r.criteria[1]={id:'AC2',status:'unverified',evidence:'로컬 클립보드 경로만 확인, 실기기 Safari는 QA 환경에 없음'};
+ r.limitations=[limitation,deviceFollow];
+ const result=collect({...create('feature','사용자 승인'),plan},r,fingerprint);
+ assert.deepEqual([result.flow.phase,result.flow.repairs,result.reason],['publish',0,'검증 통과 · 게시·자동 병합 대기 · 남은 검증 3건']);
+ const left=remainingVerification(result.flow.plan,result.flow.verification);
+ assert.deepEqual(left.map(r=>r.line),[mobileLine,limitLine,deviceLine]);
+ assert.deepEqual(left.slice(1).map(r=>r.source),['qa','qa']);
+ // 계획만 주면 기존과 같이 계획 항목만, limitations 없는 기존 보고서는 계획 항목만 돌려준다.
+ assert.deepEqual(remainingVerification(result.flow.plan).map(r=>r.line),[mobileLine]);
+ assert.deepEqual(remainingVerification(result.flow.plan,passing()).map(r=>r.line),[mobileLine]);
+ // PR 본문 대조는 QA 한계 줄도 요구한다.
+ assert.deepEqual(missingRemaining(result.flow.plan,`- ${mobileLine}`,result.flow.verification).map(r=>r.id),['L1','device-check']);
+ assert.deepEqual(missingRemaining(result.flow.plan,`- ${mobileLine}\n- [ ] ${limitLine}\n- [ ] ${deviceLine}`,result.flow.verification),[]);
+ // 후속 확인 한계에 연결되지 않은 미검증 AC는 여전히 PASS가 아니다.
+ const loose=structuredClone(r);loose.limitations=[limitation];
+ assert.throws(()=>collect({...create('feature','사용자 승인'),plan},loose,fingerprint),/PASS/);
+});
+test('운영 위험은 severity와 관계없이 FAIL이고 한계 형식·실패 AC·실패 검사는 PASS를 막는다',()=>{
+ const plan=freezePlan(scopedPlan(),scopes);
+ const base=()=>({...create('feature','사용자 승인'),plan});
+ // 운영 위험(정상 경로 실패)은 code finding과 FAIL로 수리 단계에 간다.
+ const risk=passing();risk.verdict='FAIL';risk.criteria[0].status='failed';
+ risk.findings=[{id:'F1',kind:'code',signature:'save-loses-data',evidence:'저장 뒤 다시 열면 본문이 비어 있다',next:'저장 경로 수정'}];
+ risk.limitations=[limitation];
+ const failed=collect(base(),risk,fingerprint);assert.deepEqual([failed.flow.phase,failed.flow.repairs],['repair',1]);
+ // finding이 남은 PASS, 실패 AC를 덮는 후속 한계, 실패 검사, High 한계, 형식 오류는 거부한다.
+ const withFinding=passing();withFinding.findings=[risk.findings[0]];
+ const failedAc=passing();failedAc.criteria[1].status='failed';failedAc.limitations=[deviceFollow];
+ const failedCheck=passing();failedCheck.checks[1].status='failed';failedCheck.limitations=[limitation];
+ for(const r of [withFinding,failedAc,failedCheck]) assert.throws(()=>collect(base(),r,fingerprint),/PASS/);
+ for(const [patch,pattern] of [[{...limitation,severity:'High'},/Medium·Low/],[{...limitation,kind:'note'},/종류/],[{...limitation,note:'링크 [x](y)'},/대괄호/],
+   [{...limitation,note:'둘째\n줄'},/한 줄/],[{...deviceFollow,criteria:['AC9']},/AC ID/],[{...limitation,id:'mobile-browser-copy'},/겹친다/],[{...limitation,id:'unit'},/겹친다/]]) {
+   const r=passing();r.limitations=[patch];assert.throws(()=>collect(base(),r,fingerprint),pattern,JSON.stringify(patch));
+ }
+ const dup=passing();dup.limitations=[limitation,limitation];assert.throws(()=>collect(base(),dup,fingerprint),/고유/);
+ const notArray=passing();notArray.limitations={};assert.throws(()=>collect(base(),notArray,fingerprint),/배열/);
+});
+test('QA 지시는 남는 한계·후속 확인 한계 작성법과 운영 위험 FAIL 기준을 안내한다',()=>{
+ const f={...create('feature','사용자 승인'),plan:freezePlan(scopedPlan(),scopes)};
+ const text=instructions(f,'qa',fingerprint,{scopes});
+ assert.match(text,/Medium·Low 결함은 findings 대신 limitations=\[\{id,kind:limitation,severity:Medium\|Low,note\}\]/);
+ assert.match(text,/운영 위험은 severity 표기와 관계없이 kind=code finding과 FAIL/);
+ assert.match(text,/status=unverified와 limitations=\[\{id,kind:follow-up,criteria:\[AC ID\],environment,verify\}\]/);
+ assert.match(text,/unverified AC는 모두 계획 follow-up 전용 AC이거나 follow-up 한계에 연결/);
+ assert.doesNotMatch(text,/후속 확인으로만 판정하는 AC/);
+ const only={...f,plan:freezePlan(scopedPlan({checkScopes:[suiteRow,{...unitRow,criteria:['AC1']},mobileRow]}),scopes)};
+ assert.match(instructions(only,'qa',fingerprint,{scopes}),/후속 확인으로만 판정하는 AC\(AC2\)는 status=unverified와 미검증 근거를 적고 PASS를 막지 않는다/);
+});
+test('후속 확인으로만 판정하는 AC는 동결·unverified PASS 뒤 원래 AC ID·환경·확인 방법으로 게시 목록에 실린다',()=>{
+ const plan=freezePlan(scopedPlan({checkScopes:[suiteRow,{...unitRow,criteria:['AC1']},mobileRow]}),scopes);
+ const r=passing();r.criteria[1]={id:'AC2',status:'unverified',evidence:'실기기 Galaxy Chrome은 QA 환경에 없어 배포 후 확인한다'};
+ const result=collect({...create('feature','사용자 승인'),plan},r,fingerprint);
+ assert.deepEqual([result.flow.phase,result.flow.repairs],['publish',0]);
+ assert.equal(result.flow.verification.criteria[1].evidence,'실기기 Galaxy Chrome은 QA 환경에 없어 배포 후 확인한다');
+ const left=remainingVerification(result.flow.plan,result.flow.verification);
+ assert.deepEqual(left.map(x=>[x.id,x.criteria,x.environment,x.verify,x.line]),
+   [['mobile-browser-copy',['AC2'],'배포 후 Galaxy Chrome','제목을 복사해 Teams에 붙여넣고 원문과 대조',mobileLine]]);
+ assert.deepEqual(missingRemaining(result.flow.plan,null,result.flow.verification).map(x=>x.id),['mobile-browser-copy']);
+ assert.deepEqual(missingRemaining(result.flow.plan,`- [ ] ${mobileLine}`,result.flow.verification),[]);
+ // QA 검사에 연결된 AC의 unverified는 한계 없이 PASS가 아니고, 후속 전용 AC도 failed면 PASS가 아니다.
+ const local=passing();local.criteria[0].status='unverified';
+ assert.throws(()=>collect({...create('feature','사용자 승인'),plan},local,fingerprint),/PASS/);
+ const failed=passing();failed.criteria[1].status='failed';
+ assert.throws(()=>collect({...create('feature','사용자 승인'),plan},failed,fingerprint),/PASS/);
 });

@@ -102,8 +102,9 @@ function workflow(file, input) {
   if (['freeze', 'remaining', 'pr-remaining'].includes(input.action)) {
     if (api.planScopeVersion !== 1) throw new Error('고정 release가 검증 계획 실행 위치 분류를 지원하지 않는다.');
     if (input.action === 'freeze') return api.freezePlan(input.plan, input.options);
-    if (input.action === 'remaining') return api.remainingVerification(input.plan);
-    return api.missingRemaining(input.plan, input.body);
+    // verification은 QA 보고서의 limitations를 함께 싣는 선택 입력이다. 이전 release는 무시하고 계획 항목만 돌려준다.
+    if (input.action === 'remaining') return api.remainingVerification(input.plan, input.verification);
+    return api.missingRemaining(input.plan, input.body, input.verification);
   }
   if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base,input.receipt);
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);

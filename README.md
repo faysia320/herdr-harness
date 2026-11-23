@@ -7,12 +7,12 @@
 기존 대장은 그대로 두고 `add --workflow v2 --kind bug-fix|feature|ui|performance|refactor --authorization <사용자의 자동 게시·병합 지시>`로 만든 업무만 새 흐름을 따른다. 모델 선택·작업별 절차는 `policy/workflow.json`, 실패 분류·진행 판정은 `core/workflow.cjs`가 정본이다. Herdr의 기존 단계는 호환 표시이며 `x_flow.phase`가 게시·CI·복구 진행을 구분한다.
 
 - 조사에서 `verification-plan.json`의 AC·필수 검사 ID와 검사별 실행 위치를 동결하고 구현자는 실패 검사부터 짧게 확인한다. 고위험 업무는 기존 설계 검토를 유지한다. 독립 QA가 실행할 수 없는 배포 후·실기기 확인은 필수 검사가 아니라 후속 확인으로 남기고, 업무에 연결된 해소 결정은 다음 단계 지시서에 들어간다([검증 계획 실행 위치와 해소 결정 인계](#검증-계획-실행-위치와-해소-결정-인계)).
-- QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다.
+- QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다. 운영 위험이 아닌 Medium·Low 결함과 QA 환경에서 확인할 수 없는 AC는 PASS를 막지 않고 «남은 검증»으로 넘긴다([QA 남는 한계](#qa-남는-한계와-환경상-확인-불가-ac)).
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
 - v2 업무가 독립 QA PASS 후 `publish`에 도달하면 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
 - `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
-- `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
+- `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. DEV-14 후보는 strict가 꺼진 규칙도 조회로 확인되고 필수 검사 이름이 있으면 병합한다(아래 DEV-14). 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
 - CI 실패·필수 검사 누락·리뷰 조치는 즉시 `delivery-blocked`로 반환한다. `flow-resume --evidence`는 해결된 CI만 다시 확인하고, 코드 수정은 `--stage implement`, 요구사항 변경은 `--stage research`로 보낸다. watcher의 대기 상한 도달은 nonzero이며 완료로 보고하지 않는다.
 
 v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 Opus/high(고위험 xhigh), 독립 QA에는 `gpt-6.2-sol`/high를 사용한다. 세 저장소의 PR 게시자는 Codex `gpt-6-luna`/medium이다. 정책은 다음 위임부터 적용한다. 조사·설계·구현·QA의 30/30/60/45분은 진단 점검 시점이며 재작업 횟수만으로 effort를 올리지 않는다. Lead는 기존 세션 모델을 사용하고, CI 대기와 병합 조건 판정은 스크립트가 수행한다.
@@ -21,12 +21,13 @@ v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 O
 
 ### DEV-14 동기화와 병합 증명
 
-저장소 어댑터는 검증된 binding release의 `core/delivery.cjs`에서 `dev14Version === 1`을 확인한 뒤 기존 `workflow(binding, {action:'delivery', ...})`에 `dev14: {candidate: task.candidate, mergeAuthorized, sensitivePaths}`를 추가한다. 이전 release는 이 옵션을 무시하므로 버전 확인에 실패하면 DEV-14 호출을 중단한다. `mergeAuthorized`는 Lead가 해당 업무의 사용자 권한과 미해소 결정을 확인한 결과다. PR까지만 허용된 업무에는 쓰기 권한을 주지 않는다. `sensitivePaths`에는 저장소 고유의 공용 설정·계약 파일이나 디렉터리를 상대 경로로 추가한다. 이 옵션을 보내지 않는 어댑터는 기존 고정 head/base 검사를 사용한다.
+저장소 어댑터는 검증된 binding release의 `core/delivery.cjs`에서 `dev14Version === 1`을 확인한 뒤 기존 `workflow(binding, {action:'delivery', ...})`에 `dev14: {candidate: task.candidate, mergeAuthorized}`를 추가한다. 이전 release는 이 옵션을 무시하므로 버전 확인에 실패하면 DEV-14 호출을 중단한다. `mergeAuthorized`는 Lead가 해당 업무의 사용자 권한과 미해소 결정을 확인한 결과다. PR까지만 허용된 업무에는 쓰기 권한을 주지 않는다. 이전 어댑터가 보내는 `sensitivePaths`는 무시한다(HH-016). `dev14`를 보내지 않는 어댑터는 기존 고정 head/base 검사를 사용한다.
 
-- 최초 게시 head·base·tree, QA 보고서의 후보 지문, 해당 경로의 Git 모드·삭제 여부·바이트 SHA-256을 대조한다. main이 이동하면 양쪽 변경 경로의 교집합과 lockfile·CI·공통 설정·계약 변경을 확인한다. 충돌, 겹침, 민감 변경, 설명되지 않는 PR 커밋은 재검증 대상이다.
+- 최초 게시 head·base·tree, QA 보고서의 후보 지문, 해당 경로의 Git 모드·삭제 여부·바이트 SHA-256을 대조한다. main이 이동하면 재QA(`revalidate`)는 (a) QA 후보 경로와 main 변경 경로가 같거나 상하위 경로로 겹칠 때, (b) main·PR 병합이 충돌할 때, (c) 예상 병합 결과가 QA 후보의 경로·모드·내용과 다를 때, 그리고 설명되지 않는 PR 커밋이 있을 때만 한다. lockfile·CI·설정·계약 같은 경로 종류만으로는 재QA하지 않는다. 겹치지 않으면 `ci`에 머물러 동기화·병합한다.
 - 조건을 충족하면 `apply`에서만 확인한 PR head와 main을 부모로 하는 동기화 커밋을 만들어 PR 브랜치에 일반 push한다. 업무 checkout과 최초 게시 근거는 보존한다. 이 호출은 `phase: ci`로 끝난다. 이후 호출은 각 동기화 커밋의 부모와 전체 tree를 다시 확인한다. 최종 head의 필수 CI·리뷰·서버 보호 규칙을 충족할 때만 그 head를 지정해 squash한다.
+- strict up-to-date가 꺼진 규칙(예: VDP ruleset)은 보호 규칙 조회가 성공하고 필수 검사 이름이 있을 때만 허용한다. 이때는 동기화 커밋을 만들지 않고, 위 겹침·충돌·병합 결과 대조와 확인한 head의 필수 CI·리뷰를 통과하면 병합 직전 PR head·원격 main을 다시 조회해 같을 때만 `gh pr merge --squash --match-head-commit <확인한 head>`를 한 번 호출한다. 다르면 병합하지 않고 `ci`로 돌아간다. 사후 증명은 실제 squash 부모 기준의 겹침·예상 tree·후보 일치를 대조하고 head의 main 포함은 요구하지 않는다. 보호 규칙 조회에 실패하면 strict 여부를 모르는 것으로 보고 막는다. strict up-to-date를 요구하는 규칙(ruleset `strict_required_status_checks_policy: true` 또는 classic `strict: true`)이 있는데 ruleset 상세 조회가 실패(403 등)하거나 우회 주체·관리자 미포함·비활성으로 확정되지 않으면 strict-off가 아니라 «보호 근거 미확정»으로 보고 병합 호출 없이 `blocked`, 사후 증명은 `proof-blocked`로 둔다.
 - 이미 병합된 업무는 같은 입력에 `proofOnly: true`를 주고 `apply`를 생략한다. 같은 저장소의 원본 checkout에서도 조회할 수 있다. 미병합 PR은 `not-merged`, 자격이 부족한 병합은 `proof-blocked`로 반환한다. 증명에는 실제 병합 SHA, main 포함 여부, 전체 예상 tree, QA 후보 경로 일치, 최종 head의 필수 CI 결과가 있다. 현재 유효한 main 보호 규칙에서 필수 검사 이름과 지정된 GitHub App도 대조한다. 과거 PR이 지금의 규칙을 증명할 수 없으면 자동 종결을 보류한다.
-- 대장 쓰기는 저장소 Lead CLI가 맡는다. BLOCKED 상태에서는 증명 전용 경로만 허용한다. 잠금 안에서 업무·후보·PR·binding이 같은지 다시 확인하고 `merged`일 때만 원래 게시 근거(`original`)와 증명을 보존하며 DONE을 기록한다. `proof-blocked`나 `not-merged`이면 기존 상태와 근거를 보존한다. 민감 경로가 바뀐 과거 병합을 후보 파일 일치만으로 종결할 수 없다.
+- 대장 쓰기는 저장소 Lead CLI가 맡는다. BLOCKED 상태에서는 증명 전용 경로만 허용한다. 잠금 안에서 업무·후보·PR·binding이 같은지 다시 확인하고 `merged`일 때만 원래 게시 근거(`original`)와 증명을 보존하며 DONE을 기록한다. `proof-blocked`나 `not-merged`이면 기존 상태와 근거를 보존한다. 겹침·충돌·후보 불일치가 있는 과거 병합은 후보 파일 일치만으로 종결할 수 없다.
 
 개인 AI 개발 하네스의 단계별 위임 정책, 공통 결정함, 실행 진입점, Herdr mod를 함께 관리한다. 프로젝트의 스킬·산출물 검증·업무 데이터는 각 프로젝트에 남긴다.
 
@@ -254,7 +255,7 @@ v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 
 - `checks`에 `follow-up` 항목이 있다(독립 QA가 실행할 수 없는 필수 지정). `independent-qa` 항목이 `checks`에 없다. 즉 `checks`는 `independent-qa` 항목의 ID 집합과 정확히 같다.
 - `independent-qa` 행의 `executor`가 어댑터 선언에 없다. 특정 검사 ID 전용 수단(예: QA runner `hh-suite`)을 다른 검사에 쓰거나, 전용 ID를 다른 수단으로 적었다. ID 전용 수단 행에 `command`를 적었다(빈 문자열·`null` 포함. 버리고 동결하면 적은 명령과 실제 실행이 달라진다). `command`가 수단의 형식과 다르다. 행에 `environment`·`verify`를 함께 적었다.
 - `follow-up` 행에 `executor`·`command`가 있다. `environment`·`verify`가 없거나 개행·제어문자를 포함하거나 300자(`plan.text_max`)를 넘는다. 두 문구는 PR 본문 목록 줄에 그대로 옮기는 일반 문장이어야 한다. 글을 숨기거나 다른 요소로 바꿀 수 있는 링크·이미지 대괄호(`[`, `]`), 꺾쇠(`<`, `>`: HTML 태그·주석·`<URL>` 자동 링크), 백틱, HTML 엔티티(`&lt;`, `&#60;` 등)가 있으면 필드·이유·ID를 넣어 거부한다. 예: `[](https://… "확인 방법")`처럼 빈 링크의 title에만 확인 방법이 있는 문구.
-- 행의 `criteria`가 계획에 없는 AC를 가리킨다. `independent-qa` 행이 하나도 연결되지 않은 AC가 있다. 후속 확인으로만 판정되는 AC는 QA가 `unverified`로 적어 PASS가 막히므로, QA가 판정할 수 있는 부분과 후속 확인으로 나눠 적거나 결정 요청으로 올린다.
+- 행의 `criteria`가 계획에 없는 AC를 가리킨다. 어느 행(`independent-qa`·`follow-up`)에도 연결되지 않은 AC가 있다. 로컬에서 판정할 수 있는 AC는 `independent-qa`에 연결한다. 실기기·배포 후로만 판정되는 AC는 `follow-up`에만 연결해 동결할 수 있다. QA는 그 AC를 `unverified`와 미검증 근거로 적고 PASS하며, 원래 AC ID·환경·확인 방법이 계획 후속 확인 줄로 게시 PR «남은 검증»에 실린다.
 - 어댑터 필수 검사(`required`, HH의 `hh-suite`)가 `checks`에 없다.
 
 동결 결과는 알려진 필드만 남긴 정규화 계획이다. 명령 형식 수단 행만 `command`를 남기고, 후속 설명의 앞뒤 공백을 지운다.
@@ -273,6 +274,16 @@ v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 
   - 그 밖의 HTML(태그·속성·`<details>` 같은 요소, 줄을 넘는 인라인 주석, 주석 뒤에 이어지는 글)이나 들여쓰거나 목록·인용 안에 있는 코드 울타리를 만나면, 그 뒤의 표시 여부를 확정할 수 없으므로 그 줄부터 본문 끝까지 인정하지 않는다. 그래서 «남은 검증» 절은 그런 요소보다 앞에 둔다. 자동 링크(`<https://…>`)와 `a < b` 같은 비교 기호는 HTML로 보지 않는다.
 - `core/delivery.cjs`는 PR 조회 필드에 `body`를 더하고, 병합 전 게이트의 첫 조회와 병합 직전 재조회에서 같은 대조를 한다. 빠지면 병합하지 않고 `{phase: "blocked", missing, reasons}`를 돌려준다. 이미 병합된 PR의 증명(`verifyMerged`, `proofOnly`)에는 적용하지 않는다. 병합 뒤 본문 수정으로 증명을 잃지 않게 하기 위해서다.
 - 후속 확인 0건이거나 `checkScopes`가 없는 계획은 본문을 요구하지 않는다.
+
+### QA 남는 한계와 환경상 확인 불가 AC
+
+QA 재작업 왕복(40~60분)을 줄이려고 PASS 판정을 운영 위험 기준으로 좁힌다(HH-016). 판정 형식은 그대로이고 `verification.json`에 선택 필드 `limitations`만 더한다.
+
+- FAIL·`findings`는 AC 정상 경로 실패·데이터 유실·병합/운영 차단 같은 운영 위험에만 쓴다. 운영 위험은 severity 표기와 관계없이 `kind=code` finding과 FAIL로 수리 단계에 간다.
+- 운영 위험이 아닌 Medium·Low 결함은 `limitations: [{id, kind: "limitation", severity: "Medium"|"Low", note}]`에 적고 PASS를 막지 않는다. High 이상은 limitations로 받지 않는다.
+- 독립 QA 환경에서 확인할 수 없는 AC(브라우저·실기기·배포 후)는 로컬 증거로 확인한 부분만 판정하고, 확인하지 못한 AC는 `status: "unverified"`와 `limitations: [{id, kind: "follow-up", criteria: [AC ID], environment, verify}]`로 넘긴다. 이 한계나 계획의 후속 확인 전용 AC가 아닌 unverified AC, failed AC, 실패·누락 필수 검사, findings가 있으면 PASS가 아니다.
+- `remainingVerification(plan, verification)`·`missingRemaining(plan, body, verification)`(runtime의 `remaining`·`pr-remaining`에 `verification`을 넘긴다)은 계획의 후속 확인 뒤에 QA 한계를 `source: "qa"`로 붙인다. `line`은 남는 한계가 `L1 | 남는 한계 Medium: <note>`, 후속 확인이 계획 항목과 같은 형식이다. 게시 PR 본문 «남은 검증»에 실리고 PR 연결·병합 직전 대조도 같은 목록을 요구한다. 남는 한계는 후속 업무 후보다.
+- 문구 규칙은 계획 후속 확인과 같다(한 줄, 링크 대괄호·꺾쇠·백틱·HTML 엔티티 금지). 한계 ID는 계획의 검사 ID와 겹칠 수 없다. `limitations`가 없는 기존 보고서는 이전과 같다.
 
 ### 해소 결정 조회와 지시서 주입
 
@@ -295,6 +306,8 @@ v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 
 
 - 후속 확인 문구의 강조·취소선·이스케이프 문자(`*`, `_`, `~`, `\`), 문구 앞의 목록·제목 표식, 표·수식(`$`)·이모지 단축어(`:x:`), 맨 URL·`#123` 자동 링크는 거부하지 않는다. 글을 숨기지 않고 모양만 바꾸며, PR 본문 대조는 렌더링 결과가 아니라 게시자가 옮긴 원문 줄을 비교한다.
 - PR 본문 대조는 GitHub 렌더링 전체를 흉내 내지 않는다. 위 «QA와 남은 검증»의 보수적인 목록 줄 판정만 하고, 새 마크다운 특수 사례 처리는 늘리지 않는다.
+- strict-off 규칙의 DEV-14 병합은 병합 직전 head·main 재조회와 `--match-head-commit`만 쓴다. 재조회와 서버 병합 사이에 main이 움직이면 확인하지 않은 main 위에 squash될 수 있다(사용자가 받아들인 경쟁 구간). 사후 증명이 실제 squash 부모로 겹침·tree·후보를 다시 대조해 어긋나면 `proof-blocked`로 남기고, 병합 결과의 문제는 배포 단계에서 고친다.
+- main 이동 재검증은 경로 겹침·병합 충돌·병합 결과로만 판단한다. 겹치지 않는 lockfile·CI·설정 변경이 런타임에서 후보와 상호작용하는 경우는 재QA하지 않고 CI·배포 뒤 확인에 맡긴다.
 - 결정 재조사 전 PR 조회는 그 시점 한 번이다. 조회 뒤 철회 사이에 병합되거나 철회 뒤 사람이 GitHub에서 직접 병합하면 대장에 게시 근거가 없어 병합 증명을 자동으로 모을 수 없다. 이 경우 Lead가 PR과 main을 직접 대조해 정리한다. 닫힌(CLOSED) PR은 병합되지 않았으므로 재조사를 허용한다. BLOCKED(`delivery-blocked`) 업무의 재조사는 이 조회를 하지 않는다.
 
 ### 하위 호환
