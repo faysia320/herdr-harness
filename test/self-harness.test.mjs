@@ -10,7 +10,7 @@ import { build, root } from '../scripts/build.mjs';
 import { adapter, git, samePath } from '../.agents/harness/repository.mjs';
 import { suiteInvocation } from '../.agents/harness/suite.mjs';
 import { archiveKeep } from '../.agents/harness/cleanup.mjs';
-import { closeTerminal } from '../.agents/harness/stages.mjs';
+import { closeTerminal, reclaimTerminals } from '../.agents/harness/terminals.mjs';
 
 const frozenRelease = process.env.HH_TEST_PINNED_RELEASE;
 const built = frozenRelease ? { release: frozenRelease, manifestHash: frozenRelease.split(/[\\/]/).at(-1) } : build();
@@ -77,7 +77,7 @@ async function setup(t) {
     command: [process.execPath, cliPath], adapterConfig: join(repo, '.agents/harness/config.json') });
   const { main } = await import(pathToFileURL(cliPath));
   const sessions = new Map([['t-lead', { state: 'live' }], ['t-other', { state: 'live' }]]);
-  const launches = [], kills = [];
+  const launches = [], kills = [], removes = [];
   function herdr(cwd, args) {
     assert.ok(samePath(cwd, repo));
     if (args[0] === 'get') {
@@ -88,8 +88,15 @@ async function setup(t) {
     if (args[0] === 'kill') {
       kills.push(args[1]);
       const session = sessions.get(args[1]);
-      session.state = 'finished';
+      if (!session.keep) session.state = 'finished';
       return session;
+    }
+    if (args[0] === 'rm') {
+      removes.push(args[1]);
+      const session = sessions.get(args[1]);
+      assert.notEqual(session?.state, 'live');
+      for (const [key, value] of sessions) if (value === session) sessions.delete(key);
+      return {};
     }
     assert.equal(args[0], 'run');
     launches.push(args);
@@ -113,7 +120,7 @@ async function setup(t) {
   const launcher = join(repo, '.agents/harness/launch.mjs');
   const viaLauncher = (...args) => spawnSync(process.execPath, [launcher, '--binding', binding, ...args],
     { cwd: repo, encoding: 'utf8', windowsHide: true });
-  return Object.assign(fixture, { repo, base, state, binding, main, sessions, launches, kills, herdr, run, ledgerFile, eventsFile, stored, close, refused,
+  return Object.assign(fixture, { repo, base, state, binding, main, sessions, launches, kills, removes, herdr, run, ledgerFile, eventsFile, stored, close, refused,
     launcher, viaLauncher, ledger: () => JSON.parse(readFileSync(ledgerFile, 'utf8')),
     edit: change => { const value = JSON.parse(readFileSync(ledgerFile, 'utf8')); change(value); writeFileSync(ledgerFile, JSON.stringify(value, null, 2) + '\n'); } });
 }
@@ -166,8 +173,10 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   }
   writeJson(join(research.dir, 'verification-plan.json'), plan);
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');
-  // 정상 수집 뒤 그 회차의 위임 터미널을 닫는다.
-  assert.deepEqual([sessions.get(research.terminal).state, fixture.ledger().tasks[task.id].runs[0].x_terminal.outcome], ['finished', 'killed']);
+  // 정상 수집 뒤 그 회차의 위임 터미널을 닫고 finished를 확인하면 hc rm으로 목록에서도 지운다.
+  const closedResearch = fixture.ledger().tasks[task.id].runs[0].x_terminal;
+  assert.deepEqual([sessions.has(research.terminal), closedResearch.outcome, closedResearch.after, closedResearch.removed], [false, 'killed', 'finished', true]);
+  assert.deepEqual(fixture.removes, [research.terminal]);
   await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   const implementation = (await run('dispatch ' + task.id)).run;
   assert.equal(implementation.model, 'claude-opus-5-5');
@@ -184,11 +193,15 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   const kept = implemented.runs[1].x_terminal;
   assert.deepEqual([kept.outcome, sessions.get(implementation.terminal).state], ['kept', 'live']);
   assert.match(kept.reason, /작업 중/);
+  // kill로 끝나지 않는 터미널(keep 등)은 다음 위임 때 다시 닫아도 still-live로 남는다.
+  sessions.get(implementation.terminal).keep = true;
   await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   writeJson(join(research.dir, 'verification-plan.json'), { ...plan, criteria: ['replaced'] });
   const qa = (await run('dispatch ' + task.id)).run;
   assert.equal(qa.model, 'gpt-6.2-sol');
   assert.notEqual(qa.terminal, implementation.terminal);
+  assert.equal(fixture.ledger().tasks[task.id].runs[1].x_terminal.outcome, 'still-live');
+  assert.ok(fixture.kills.includes(implementation.terminal));
   await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   const reportFile = join(qa.dir, 'verification.json'), receiptFile = join(task.worktree, 'target/hh-verify/latest-qa.json');
   const report = { run: qa.token, version: 2, verdict: 'PASS', candidate: implemented.candidate.fingerprint, findings: [],
@@ -225,7 +238,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('collect ' + task.id), /후보가 변경/);
   writeFileSync(target, 'candidate\n');
   assert.equal((await run('collect ' + task.id)).x_flow.phase, 'publish');
-  assert.equal(sessions.get(qa.terminal).state, 'finished');
+  assert.equal(sessions.has(qa.terminal), false);
   assert.ok((await main(['--help'])).commands.includes('flow-close'));
   assert.ok((await main(['--help'])).commands.includes('cleanup-worktree'));
   await refused(() => main(['flow-close', '--evidence', 'fixture exception'], { cwd: repo, terminal: 't-lead', herdr }), /위치 인자/);
@@ -309,7 +322,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   assert.equal(stored()[1].split('\n').length, events + 2);
   assert.ok(archiveKeep(Object.values(fixture.ledger().tasks), new Set()).includes(task.id));
   writeFileSync(binding, pinned);
-  // 수집 때 닫지 않은 구현 회차의 터미널이 살아 있으면 아무것도 지우지 않고 사유를 남긴다.
+  // 종결 뒤 다시 닫아도 살아 있는 구현 회차의 터미널이 있으면 아무것도 지우지 않고 사유를 남긴다.
   const blocked = (await run('cleanup-worktree ' + task.id)).cleanup;
   assert.deepEqual([blocked.status, blocked.retry, fixture.ledger().tasks[task.id].x_cleanup.status], ['refused', retry, 'refused']);
   assert.match(blocked.reasons.join('\n'), new RegExp('살아 있는 위임 터미널.*' + implementation.terminal));
@@ -412,6 +425,79 @@ test('수집 뒤 터미널 종료: 대장에 기록된 그 회차의 레이블�
   assert.equal(calls.some(c => c[0] === 'kill'), false);
   assert.equal(close(null).outcome, 'absent');
   assert.equal(close({ state: 'finished', labels }).outcome, 'finished');
+});
+
+test('남겨 둔 위임 터미널 재회수: 다음 위임 직전과 FAILED 뒤 이전 회차의 kept 터미널을 닫고 지운 뒤 회차에 기록한다', async t => {
+  const fixture = await setup(t);
+  const { repo, main, herdr, run, sessions } = fixture;
+  await run('recover');
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Reclaim kept terminals.\n');
+  const task = await main(['add','--title','Reclaim','--desc-file',request,'--workflow','v2','--kind','bug-fix','--slug','reclaim','--authorization','fixture'],
+    { cwd: repo, terminal: 't-lead', herdr });
+  const research = (await run('next --go')).run;
+  writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'fixture', planned_files: ['tracked.txt'] });
+  writeJson(join(research.dir, 'verification-plan.json'), { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-suite'],
+    ...(scopedRelease ? { checkScopes: [{ id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1'] }] } : {}) });
+  sessions.get(research.terminal).status = { state: 'working' };
+  await run('collect ' + task.id);
+  assert.equal(fixture.ledger().tasks[task.id].runs[0].x_terminal.outcome, 'kept');
+  assert.deepEqual([fixture.kills, fixture.removes], [[], []]);
+  // 다음 위임 직전에는 그 회차가 끝났으므로 working이어도 닫고 hc rm으로 지운다.
+  const implementation = (await run('next --go')).run;
+  const reclaimed = fixture.ledger().tasks[task.id].runs[0].x_terminal;
+  assert.deepEqual([reclaimed.outcome, reclaimed.after, reclaimed.removed, sessions.has(research.terminal)], ['killed', 'finished', true, false]);
+  assert.deepEqual([fixture.kills, fixture.removes], [[research.terminal], [research.terminal]]);
+  assert.equal(sessions.get(implementation.terminal).state, 'live');
+  // FAILED로 끝난 업무의 남은 터미널은 다음 Lead 명령에서 닫는다. 레이블이 다른 터미널과 Lead는 닫지 않는다.
+  sessions.set('t-foreign', { address: 't-foreign', state: 'live', labels: { 'harness.project': 'herdr-harness', 'harness.task': task.id, 'harness.run': 'other' } });
+  fixture.edit(ledger => {
+    const t = ledger.tasks[task.id], r = t.runs[1];
+    Object.assign(r, { status: 'ended', outcome: 'BLOCKED', ended: r.started, x_terminal: { address: r.terminal, at: r.started, outcome: 'kept', reason: 'fixture' } });
+    t.runs.push({ ...r, token: 'foreign', terminal: 't-foreign' }, { ...r, token: 'lead', terminal: 't-lead' });
+    t.current = null;
+    t.history.push({ at: r.started, from: t.state, to: 'FAILED', why: 'fixture' });
+    t.state = 'FAILED';
+  });
+  await run('recover');
+  const [failedRun, foreign, lead] = fixture.ledger().tasks[task.id].runs.slice(1).map(r => r.x_terminal);
+  assert.deepEqual([failedRun.outcome, failedRun.removed, sessions.has(implementation.terminal)], ['killed', true, false]);
+  assert.deepEqual([foreign.outcome, lead.outcome], ['kept', 'kept']);
+  assert.match(foreign.reason, /레이블/);
+  assert.match(lead.reason, /Lead 터미널/);
+  assert.deepEqual([sessions.get('t-foreign').state, sessions.get('t-lead').state], ['live', 'live']);
+  assert.deepEqual(fixture.kills, [research.terminal, implementation.terminal]);
+  assert.ok(existsSync(task.worktree));
+});
+
+test('재회수 대상: 끝난 회차의 kept·still-live·unknown·rm 실패만 다시 닫고 레이블이 다르면 kill·rm을 보내지 않는다', () => {
+  const ledger = { lead: { terminal: 't-lead' } };
+  const labels = token => ({ 'harness.project': 'herdr-harness', 'harness.task': 'HH-001', 'harness.run': token });
+  const sessions = new Map(), calls = [];
+  const ctx = { stateDir: mkdtempSync(join(tmpdir(), 'hh-reclaim-')), herdr: args => {
+    calls.push(args.join(' '));
+    const session = sessions.get(args[1]);
+    if (args[0] === 'kill') session.state = 'finished';
+    if (args[0] === 'rm') sessions.delete(args[1]);
+    return args[0] === 'get' ? session ?? null : {};
+  } };
+  const ended = (token, x_terminal) => ({ token, terminal: 't-' + token, status: 'ended', x_terminal: { address: 't-' + token, at: 'then', ...x_terminal } });
+  for (const [token, extra] of [['kept', {}], ['live', {}], ['unknown', {}], ['rm', { state: 'finished' }], ['foreign', {}], ['done', {}], ['active', {}]])
+    sessions.set('t-' + token, { state: 'live', status: { state: 'working' }, labels: labels(token === 'foreign' ? 'other' : token), ...extra });
+  const task = { id: 'HH-001', current: { run: 6 }, runs: [
+    ended('kept', { outcome: 'kept' }), ended('live', { outcome: 'still-live' }), ended('unknown', { outcome: 'unknown' }),
+    ended('rm', { outcome: 'finished', removed: false, rm: 'fixture' }), ended('foreign', { outcome: 'kept', reason: '터미널의 업무·회차 레이블이 이 회차와 다르다.' }),
+    ended('done', { outcome: 'killed', after: 'finished', removed: true }), { ...ended('active', { outcome: 'kept' }), status: 'running' }] };
+  const changed = reclaimTerminals(ctx, ledger, task);
+  rmSync(ctx.stateDir, { recursive: true, force: true });
+  assert.deepEqual(changed.map(c => [c.token, c.outcome, c.removed]),
+    [['kept', 'killed', true], ['live', 'killed', true], ['unknown', 'killed', true], ['rm', 'finished', true]]);
+  assert.deepEqual(task.runs.map(r => r.x_terminal.outcome), ['killed', 'killed', 'killed', 'finished', 'kept', 'killed', 'kept']);
+  assert.match(task.runs[4].x_terminal.reason, /레이블/);
+  // 결과가 같으면(시각 제외) 기록을 바꾸지 않는다.
+  assert.equal(task.runs[4].x_terminal.at, 'then');
+  assert.equal(calls.some(c => / t-(foreign|done|active)$/.test(c) && !c.startsWith('get')), false);
+  assert.deepEqual([...sessions.keys()], ['t-foreign', 't-done', 't-active']);
 });
 
 test('병합 증명 경로: flow-deliver --apply·flow-prove-merged 직후 공통 정리를 부르고, 증명과 다른 브랜치는 지우지 않는다', async t => {

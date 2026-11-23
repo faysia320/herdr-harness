@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { activeRun, collect, createWorktree, dispatch, policyPath, scoped } from './stages.mjs';
 import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
+import { reclaimTerminals } from './terminals.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, command, config, context, git, now, project, readJson, repository, samePath, verifyCommit } from './repository.mjs';
 
@@ -32,7 +33,12 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
     assertBinding(ctx);
     const ledger = await readLedger(ctx);
     if (!recover) requireLead(ctx, ledger, terminal);
-    return handler(ledger);
+    const result = await handler(ledger);
+    // FAILED로 끝난 업무의 남은 위임 터미널을 다시 닫는다. DONE은 정리(cleanupWorktree)가 활동 조회 전에 닫는다.
+    // 처리기가 새 대장 객체를 저장할 수 있으므로(archive-tasks) 저장된 대장을 다시 읽어 그 위에 회수 결과를 남긴다.
+    const saved = await readLedger(ctx);
+    for (const task of Object.values(saved.tasks)) if (task.state === 'FAILED') reclaimTerminals(ctx, saved, task);
+    return result;
   });
 }
 

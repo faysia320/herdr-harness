@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { save } from './ledger.mjs';
 import { adapter, check, config, now, project } from './repository.mjs';
-import { lookupTerminal } from './stages.mjs';
+import { lookupTerminal, reclaimTerminals } from './terminals.mjs';
 
 // 끝난 업무 정리를 공통 release의 worktree-cleanup에 맡긴다. 이 파일은 HH의 경로·브랜치 규칙과 실행 조회만 넘긴다.
 export const cleanupCommand = id => 'node .agents/harness/launch.mjs cleanup-worktree ' + id;
@@ -34,6 +34,8 @@ export function cleanupWorktree(ctx, ledger, task, { retry = false } = {}) {
   try {
     check(task.state === 'DONE' && (merged || ['policy-exception', 'merged-accepted'].includes(closure)),
       '병합 증명·정책 예외·사용자 승인 병합 종결로 DONE이 된 업무만 정리한다.');
+    // 끝난 업무이므로 활동 조회 전에 남겨 둔 위임 터미널을 다시 닫는다.
+    reclaimTerminals(ctx, ledger, task);
     check(JSON.stringify(adapter.binding(ctx.file)) === JSON.stringify(ctx.binding), '실행 중 binding이 바뀌었다. 고정 릴리스로 다시 실행한다.');
     result = adapter.worktreeCleanup(ctx.file, { action: 'cleanup', project, stateDir: ctx.stateDir, task: {
       id: task.id, state: task.state, root: ctx.root, worktreeDir: join(ctx.root, config.project.worktree_dir), worktree: task.worktree, branch: task.branch,
