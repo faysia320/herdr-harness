@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { artifact, save, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, config, git, now, project } from './repository.mjs';
 import { suiteInvocation, suiteTestCount } from './suite.mjs';
+import { closeTerminal, reclaimTerminals } from './terminals.mjs';
 
 export const receiptPath = 'target/hh-verify/latest-qa.json';
 // QA 실행 영수증 v2의 저장소 정책. output/<QA 회차>/envelope.txt가 PR 본문에 넣을 줄이다.
@@ -82,6 +83,8 @@ export async function dispatch(ctx, ledger, task) {
   if (stage === 'qa') check(before.fingerprint === task.candidate?.fingerprint, '구현 수집 뒤 후보가 바뀌었다.');
   const role = ctx.execution({ action: 'resolve', task, stage });
   const instructions = guide(ctx, ledger, task, stage);
+  // 새 회차를 만들기 전에 이 업무의 이전 회차에서 남겨 둔 위임 터미널을 다시 닫는다.
+  reclaimTerminals(ctx, ledger, task);
   const round = task.runs.filter(r => r.stage === stage).length + 1;
   const name = (config.project.terminal_prefix + task.id.split('-').at(-1) + '-' + stage + '-' + round).toLowerCase();
   const token = randomUUID();
@@ -213,43 +216,6 @@ export async function collect(ctx, ledger, task) {
   run.x_terminal = closeTerminal(ctx, ledger, task, run);
   save(ctx, ledger);
   return task;
-}
-
-// hc가 없는 터미널(제거됨 포함)을 not_found로 알리면 없는 것으로 본다. 그 밖의 조회 실패는 그대로 던진다.
-const notFound = error => /"kind"\s*:\s*"not_found"/.test(error?.message ?? '');
-export function lookupTerminal(ctx, address) {
-  try { return ctx.herdr(['get', address]); } catch (error) { if (notFound(error)) return null; throw error; }
-}
-
-// 대장에 기록된 그 회차의 주소이고 업무·회차 레이블이 같을 때만 닫는다. Lead·다른 업무 터미널, 레이블 불일치, 조회 실패,
-// 아직 작업 중인 에이전트는 닫지 않는다(kept). 산출물을 쓴 뒤 턴을 이어 가는 에이전트를 끊지 않기 위해서다.
-// 이미 없으면 absent, 끝났으면 finished다. kill을 보냈으면 응답과 무관하게 다시 조회해 결과를 정한다.
-// killed는 종료(after: finished)나 제거(after: removed)를 확인한 경우, still-live는 kill 뒤에도 살아 있는 경우,
-// unknown은 kill 뒤 상태를 확인하지 못한 경우다. still-live·unknown 터미널은 worktree 정리를 막으므로
-// Lead가 hc get으로 확인한 뒤 다시 닫는다.
-export function closeTerminal(ctx, ledger, task, run) {
-  const record = { address: run.terminal ?? null, at: now() };
-  try {
-    check(run.terminal, '대장에 위임 터미널 주소가 없다.');
-    check(run.terminal !== ledger.lead?.terminal, 'Lead 터미널은 닫지 않는다.');
-    const terminal = lookupTerminal(ctx, run.terminal);
-    if (!terminal) return { ...record, outcome: 'absent' };
-    check(terminal.labels?.['harness.project'] === project && terminal.labels?.['harness.task'] === task.id &&
-      terminal.labels?.['harness.run'] === run.token, '터미널의 업무·회차 레이블이 이 회차와 다르다.');
-    if (terminal.state !== 'live') return { ...record, outcome: 'finished' };
-    check(terminal.status?.state !== 'working', '에이전트가 아직 작업 중이다. 턴이 끝난 뒤 hc kill로 닫는다.');
-  } catch (error) {
-    return { ...record, outcome: 'kept', reason: error.message };
-  }
-  let killError = null, after;
-  try { ctx.herdr(['kill', run.terminal]); } catch (error) { killError = error.message; }
-  const note = killError ? { kill: killError } : {};
-  try { after = lookupTerminal(ctx, run.terminal); }
-  catch (error) { return { ...record, outcome: 'unknown', ...note, reason: 'kill 뒤 터미널 상태를 확인하지 못했다: ' + error.message }; }
-  if (!after) return { ...record, outcome: 'killed', after: 'removed', ...note };
-  if (after.state !== 'live') return { ...record, outcome: 'killed', after: after.state, ...note };
-  return { ...record, outcome: 'still-live', ...note,
-    reason: 'kill 뒤에도 터미널이 살아 있다(keep 터미널 등). hc get으로 확인한 뒤 Lead가 닫는다.' };
 }
 
 export function createWorktree(ctx, id, slug, base) {

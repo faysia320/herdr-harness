@@ -121,7 +121,7 @@ node .agents/harness/launch.mjs cleanup-worktree HH-123
 
 | 사유 | 조치 |
 |---|---|
-| 살아 있는 위임 터미널 `tN` | `hc get tN --json`에서 `harness.task`·`harness.run`이 이 업무의 회차이고 작업 중이 아닌지 확인한 뒤 `hc kill tN`. 수집 때 에이전트가 `working`이라 닫지 않았거나(`x_terminal.outcome=kept`) kill 뒤에도 살아 있던(`still-live`) 터미널이다. kill 뒤에도 살아 있으면 `hc get tN --json`으로 확인한 뒤 다시 닫는다 |
+| 살아 있는 위임 터미널 `tN` | 정리는 활동 조회 전에 남겨 둔 위임 터미널(`x_terminal.outcome=kept·still-live·unknown`)을 working이어도 다시 닫고 끝난 터미널은 `hc rm`으로 지운다. 그래도 남았으면 kill로 끝나지 않는 터미널(`still-live`)이거나 레이블이 다른 터미널이다. `hc get tN --json`에서 `harness.task`·`harness.run`이 이 업무의 회차인지 확인한 뒤 `hc kill tN`·`hc rm tN`으로 닫는다 |
 | 위임 터미널 상태를 확인하지 못했다 | hc 서버(`hc server status`)를 확인한 뒤 재시도한다. 수집 때 `x_terminal.outcome=unknown`이었던 터미널도 같다. hc가 not_found로 알리는 제거된 터미널은 정리를 막지 않는다 |
 | 다른 프로세스가 worktree를 사용 중 | 게시자 세션·셸·편집기가 그 worktree를 cwd로 쓰는지 확인하고 닫는다. 게시자 세션은 `flow-attach-pr` 뒤 Lead가 닫는다 |
 | 보존 대상 밖의 항목(미추적·변경·무시 파일) | 목록의 파일을 확인한다. 필요한 내용은 옮기고 업무와 무관한 생성물만 지운다. 정리 기능은 이 파일을 대신 지우지 않는다 |
