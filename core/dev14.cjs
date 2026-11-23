@@ -4,18 +4,6 @@ const { createHash } = require('node:crypto');
 const oid = /^[0-9a-f]{40}$/;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
-function sensitive(path, extra) {
-  const parts = path.toLowerCase().split('/');
-  const name = parts.at(-1);
-  return extra.some(p => path.toLowerCase() === p.toLowerCase() || path.toLowerCase().startsWith(p.toLowerCase() + '/')) ||
-    parts.some(p => /^(?:\.github|\.cargo|\.agents|\.claude|\.husky|\.config|config|configs|contracts?|schemas?|patches|migrations|ci)$/.test(p)) ||
-    parts.some(p => /(?:^|[-._])(?:contracts?|schemas?|configs?)(?:[-._]|$)/.test(p)) ||
-    /(?:^|\/)(?:ui-builder\/backend|ui-builder-backend|scripts\/verify)(?:\/|$)/i.test(path) ||
-    /\.(?:proto|graphql|gql|idl|avsc)$/.test(name) ||
-    /(?:\.lockb?$|(?:^|[.-])lock[.-]|(?:^|[.-])(?:config|contract|schema)(?:[.-]|$)|^tsconfig|^jsconfig)/.test(name) ||
-    /^(?:package\.json|cargo\.toml|build\.rs|rust-toolchain(?:\.toml)?|pnpm-workspace\.yaml|\.npmrc|\.gitattributes|\.gitmodules|\.gitignore|codeowners|go\.(?:mod|sum)|pyproject\.toml|requirements.*\.txt|dockerfile.*|(?:docker-)?compose\.ya?ml|makefile|\.env(?:\..*)?)$/.test(name);
-}
-
 function changes(git, base, tip) {
   const raw = git('diff', '--raw', '--no-abbrev', '--no-renames', '--no-ext-diff', '-z', base, tip, '--');
   const fields = raw.split('\0');
@@ -48,14 +36,12 @@ function verifyPublication(git, blob, flow, options) {
       !['100644','100755','120000'].includes(entry.mode) || entry.mode !== p.mode ||
       entry.status !== p.status || digest(blob(entry.blob)) !== p.sha256)) throw Error('QA와 게시 바이트·모드·삭제 상태 불일치: ' + p.path);
   }
-  const extra = options.sensitivePaths ?? [];
-  if (!Array.isArray(extra) || extra.some(p => typeof p !== 'string' || /[\\*?:\x00-\x1f]/.test(p) ||
-      p.split('/').some(part => !part || part === '.' || part === '..'))) throw Error('민감 경로는 저장소 상대 파일·폴더 이름이어야 한다.');
-  return { original: { base: anchor.base, head: anchor.head, tree: anchor.tree }, paths, extra };
+  // 이전 어댑터가 보내는 sensitivePaths는 무시한다. main 이동 재검증은 경로 겹침·병합 충돌·병합 결과 불일치로만 판정한다.
+  return { original: { base: anchor.base, head: anchor.head, tree: anchor.tree }, paths };
 }
 
 function checkScope(git, publication, base) {
-  const { original, paths, extra } = publication;
+  const { original, paths } = publication;
   if (base === original.base) return [];
   if (git('merge-base', '--all', original.head, base) !== original.base) return ['기존 QA 갈림점이 변경됐다.'];
   const upstream = changes(git, original.base, base);
@@ -64,8 +50,7 @@ function checkScope(git, publication, base) {
     const a = p.toLowerCase(), b = q.toLowerCase();
     return a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
   }));
-  const protectedPaths = [...new Set([...upstream.keys(), ...qaPaths])].filter(p => sensitive(p, extra));
-  return [...overlap.map(p => 'QA 경로 겹침: ' + p), ...protectedPaths.map(p => '민감 경로 변경: ' + p)];
+  return overlap.map(p => 'QA 경로 겹침: ' + p);
 }
 
 function syncHistory(git, publication, head, base) {

@@ -20,6 +20,8 @@ const prefix = ['.agents/harness', 'adapters/runtime.cjs', '.gitignore', 'packag
   'core/process.js', 'core/preparation.mjs', 'core/metrics.mjs', 'core/qa-receipt-policy.cjs', 'core/dev14.cjs', 'policy/qa-receipt.json'];
 // 검증 계획 실행 위치 분류·해소 결정 주입 표지. HH_TEST_PINNED_RELEASE가 이전 release면 기존 계획 형식으로 분기한다.
 const scopedRelease = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs')).planScopeVersion === 1;
+// QA 보고서 limitations(남는 한계)를 남은 검증에 싣는 release인지. 이전 release는 계획 항목만 돌려준다.
+const limitsRelease = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs')).remainingVerification?.length >= 2;
 const writeJson = (file, value) => {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(value));
@@ -708,7 +710,7 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   for (const [plan, pattern] of [
     [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, copyLater] }, /독립 QA가 실행할 수 없는 항목을 필수 검사로 지정했다: copy-check/],
     [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'hh-suite', command: undefined }] }, /실행 수단 hh-suite로 실행할 수 없는 검사다: copy-check/],
-    [{ checks: ['hh-suite'], checkScopes: [{ ...qaRow, criteria: ['AC1'] }, copyLater] }, /독립 QA 검사로 판정할 수 없는 AC: AC2/],
+    [{ criteria: ['AC1', 'AC2', 'AC3'], checks: ['hh-suite'], checkScopes: [qaRow, copyLater] }, /검사나 후속 확인에 연결되지 않은 AC: AC3/],
     [{ checks: ['hh-suite'], checkScopes: [qaRow, { ...copyLater, location: ['follow-up'] }] }, /지원하지 않는 실행 위치: copy-check/],
     // 후보를 그대로 두어야 하는 QA 수단으로 후보 파일을 쓰는 Git 명령을 필수 검사에 넣을 수 없다.
     [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'git-read', command: 'git diff --output=tracked.txt' }] },
@@ -784,14 +786,18 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
       status === 'passed' ? [] : [conflict]), run: qa2.token });
     await refused(() => run('collect ' + task.id), /후속 확인은 QA가 실행하거나 checks에 기록하지 않는다: copy-check/);
   }
-  writeJson(join(qa2.dir, 'verification.json'), { ...verdict('PASS', [['hh-suite', 'passed']]), run: qa2.token });
+  // 운영 위험이 아닌 Medium 결함은 QA 보고서 limitations로 남기고 PASS한다.
+  const limitation = { id: 'L1', kind: 'limitation', severity: 'Medium', note: '긴 제목이 두 줄로 보인다' };
+  writeJson(join(qa2.dir, 'verification.json'), { ...verdict('PASS', [['hh-suite', 'passed']]), ...(limitsRelease ? { limitations: [limitation] } : {}), run: qa2.token });
   const passed = await run('collect ' + task.id);
   assert.equal(passed.x_flow.phase, 'publish');
-  assert.match(passed.runs.at(-1).note, /남은 검증 1건/);
+  assert.match(passed.runs.at(-1).note, limitsRelease ? /남은 검증 2건/ : /남은 검증 1건/);
 
   // 게시 인계: publish-check와 flow-status가 남은 검증 줄과 이 업무의 결정을 돌려준다.
   const line = 'copy-check (AC2) | 환경: 배포 후 Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조';
   const remainingItem = { id: 'copy-check', criteria: ['AC2'], environment: '배포 후 Galaxy Chrome', verify: '제목을 복사해 Teams에 붙여넣고 원문과 대조', line };
+  const limitLine = 'L1 | 남는 한계 Medium: 긴 제목이 두 줄로 보인다';
+  const leftItems = limitsRelease ? [remainingItem, { ...limitation, source: 'qa', line: limitLine }] : [remainingItem];
   // QA runner가 같은 회차에 남긴 QA 실행 영수증 줄(무시 경로)을 게시자에게 그대로 넘긴다.
   const envelope = '<!-- herdr-qa-receipt:v2 ' + Buffer.from('{"kind":"herdr-qa-receipt"}').toString('base64url') + ' -->';
   const envelopeFile = join(task.worktree, 'target/hh-verify/receipts', qa2.token, 'envelope.txt');
@@ -799,9 +805,9 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   writeFileSync(envelopeFile, envelope + '\n');
   const check = await run('publish-check ' + task.id, 't-other');
   assert.deepEqual(check.qaReceipt, { file: envelopeFile, line: envelope });
-  assert.deepEqual(check.remainingVerification, [remainingItem]);
+  assert.deepEqual(check.remainingVerification, leftItems);
   assert.deepEqual(projected(check.decisions), [browser, early]);
-  assert.deepEqual((await run('flow-status ' + task.id, 't-other')).remainingVerification, [remainingItem]);
+  assert.deepEqual((await run('flow-status ' + task.id, 't-other')).remainingVerification, leftItems);
   const published = readFileSync(fixture.ledgerFile, 'utf8');
 
   // PR 연결: 실제 PR 조회 본문에 남은 검증 줄이 모두 있어야 한다. 환경·방법 하나라도 빠지면 대장을 바꾸지 않고 빠진 줄을 알려 준다.
@@ -820,7 +826,10 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
     await refused(() => attach(body), new RegExp('남은 검증.*' + line.replace(/[|()]/g, '\\$&') + '.*목록 항목'));
   // 정상 게시 예: 인라인 코드의 리터럴 주석 표식은 주석이 아니므로 뒤의 목록 줄이 그대로 보인다.
   // 남은 검증 목록 뒤 줄 맨 앞의 QA 실행 영수증 주석은 목록 판정을 바꾸지 않는다.
-  const attached = await attach('## 검증\r\nQA PASS. 템플릿 표식 `<!--`는 지웠다.\r\n\r\n## 남은 검증\r\n- [ ] copy-check (AC2) | 환경: 배포 후  Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조\r\n\r\n' + envelope + '\r\n');
+  const listed = '## 검증\r\nQA PASS. 템플릿 표식 `<!--`는 지웠다.\r\n\r\n## 남은 검증\r\n- [ ] copy-check (AC2) | 환경: 배포 후  Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조\r\n';
+  // QA가 남긴 한계 줄이 빠져도 연결하지 않는다.
+  if (limitsRelease) await refused(() => attach(listed), new RegExp('남은 검증.*' + limitLine.replace(/[|()]/g, '\\$&')));
+  const attached = await attach(listed + (limitsRelease ? '- [ ] ' + limitLine + '\r\n' : '') + '\r\n' + envelope + '\r\n');
   assert.deepEqual([attached.phase, attached.pr], ['ci', 5]);
   // 병합 판정에는 동결 계획이 그대로 넘어가 공통 delivery가 병합 직전 본문을 다시 대조한다.
   const inputs = [];
@@ -832,8 +841,8 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   git(task.worktree, 'reset', '--hard', fixture.base);
   writeFileSync(join(task.worktree, 'tracked.txt'), 'title copy\n');
   const closed = await fixture.close(task.id, 'fixture: PR 없는 검증 업무');
-  assert.deepEqual(closed.closure.remainingVerification, [remainingItem]);
-  assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.closure.remainingVerification, [remainingItem]);
+  assert.deepEqual(closed.closure.remainingVerification, leftItems);
+  assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.closure.remainingVerification, leftItems);
 });
 
 test('HH 게시 대기 중 계획 변경 결정: QA·게시 허가 철회 → 재조사·재동결 → 새 QA → 게시 인계', async t => {

@@ -85,6 +85,16 @@ collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 �
 - 연결 뒤 본문이 바뀌어 `flow-deliver`가 `phase: blocked`, `missing`을 돌려주면 본문을 고친 뒤 다시 확인한다. `--apply`·`watch-delivery`에서 막혀 BLOCKED(`delivery-blocked`)가 됐으면 본문을 고친 뒤 `flow-resume HH-123 --evidence "PR 본문 남은 검증 복구"`로 CI 확인에 돌려보낸다.
 - 이미 병합된 PR의 증명(`flow-prove-merged`)은 본문을 대조하지 않는다.
 
+## 최소 필수 관문(HH-016)
+
+속도 우선 정책에 따라 재QA·재작업은 실제 위험이 있을 때만 한다([공통 규칙](../../README.md#dev-14-동기화와-병합-증명)).
+
+- **main 이동**: `flow-deliver`가 `revalidate`를 돌려주는 경우는 QA 후보 경로와 main 변경 경로의 겹침, main·PR 병합 충돌, 병합 결과의 후보 경로·모드 불일치, 설명되지 않는 PR 커밋뿐이다. lockfile·`.agents`·`package.json` 같은 경로라는 이유만으로는 재QA하지 않는다. `config.json`의 `sensitive_paths`는 더 이상 판정에 쓰지 않는다.
+- **조건부 PASS**: QA가 운영 위험이 아닌 Medium·Low 결함을 `limitations`(kind=limitation)로, 브라우저·실기기·배포 후에만 확인되는 AC를 `limitations`(kind=follow-up)로 넘기면 PASS로 수집된다. `publish-check`·`flow-status`의 `remainingVerification`에 `source: "qa"` 항목으로 나오며, 계획 후속 확인과 같이 PR 본문 «남은 검증»에 `- [ ] <line>`으로 넣어야 연결·병합된다. 병합 뒤 남는 한계는 필요하면 `add`로 후속 업무를 만든다.
+- **후속 확인 전용 AC**: 계획에서 실기기·배포 후로만 판정되는 AC는 `follow-up` 항목에만 연결해 동결할 수 있다. QA는 그 AC를 `unverified`로 적고 PASS하며, 계획 후속 확인 줄이 같은 PR 본문 «남은 검증»으로 넘어간다.
+- **운영 위험**: AC 정상 경로 실패·데이터 유실·병합/운영 차단은 severity와 관계없이 FAIL(code finding)이며 수리로 돌린다.
+- **strict-off 저장소**: 보호 규칙 조회가 성공하고 strict 요구 규칙이 없으며 필수 검사 이름이 있으면 동기화 없이 확인한 head를 `--match-head-commit`으로 한 번 squash한다. 병합 직전 재조회와 서버 병합 사이의 main 이동은 막지 못하는 경쟁 구간이다. 사후 증명이 `proof-blocked`이면 PR·main을 직접 대조하고 문제는 후속 업무로 고친다. strict 요구 규칙이 있는데 ruleset 상세 조회가 403 등으로 실패하면 strict-off로 보지 않고 `blocked`로 멈춘다. 토큰 권한·ruleset 우회 주체를 확인한다.
+
 ## QA 실행 영수증 발급과 PR 본문
 
 HH의 필수 CI(`harness-ci (ubuntu-latest)`, `harness-ci (windows-latest)`)는 전체 시험 대신 PR 본문의 QA 실행 영수증 줄만 검증한다([공통 규칙](../../README.md#qa-실행-영수증과-ci-검증)). PR #7 이하만 면제다. 영수증 줄이 없으면 PR은 병합되지 않으므로 게시 전에 줄을 확보한다.

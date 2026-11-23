@@ -24,7 +24,8 @@ function create(kind, authorization) {
   if (!text(authorization)) fail('자동 게시·병합 권한의 사용자 근거가 필요하다.');
   return { version: 2, kind, phase: 'work', authorization, failures: [], repairs: 0, verification: null, delivery: null };
 }
-function validateReport(report, candidate) {
+// planDeferred는 동결 계획에서 follow-up 항목으로만 판정하는 AC ID다. QA는 이 AC를 unverified로 적고 PASS할 수 있다.
+function validateReport(report, candidate, planDeferred = []) {
   if (report?.version !== 2 || report.candidate !== candidate || !/^[a-f0-9]{64}$/.test(candidate)) fail('검증 보고서의 후보 지문이 다르다.');
   if (!['PASS', 'FAIL', 'BLOCKED'].includes(report.verdict)) fail('검증 판정이 올바르지 않다.');
   if (!Array.isArray(report.criteria) || !report.criteria.length || !Array.isArray(report.findings) || !Array.isArray(report.checks) || !report.checks.length) fail('AC·검사·결함 목록이 필요하다.');
@@ -34,22 +35,57 @@ function validateReport(report, candidate) {
   for (const f of report.findings) {
     if (!text(f.id) || !text(f.signature) || !text(f.evidence) || !text(f.next) || !['code','environment','test','verification','decision'].includes(f.kind)) fail('결함은 종류·원인 식별자·근거·다음 조치가 필요하다.');
   }
-  if (report.verdict === 'PASS' && (report.findings.length || report.criteria.some(c=>c.status!=='passed') || report.checks.some(c=>c.status!=='passed'))) fail('미검증·실패·미해소 결함을 PASS로 만들 수 없다.');
+  const limits = limitationsOf(report);
+  // 미검증 AC는 같은 ID의 후속 확인(QA 한계 또는 계획 follow-up 전용 AC)이 있을 때만 PASS에 남는다. 실패 AC·실패 검사·findings(운영 위험)는 PASS를 막는다.
+  const deferred = new Set([...planDeferred, ...limits.filter(l => l.kind === 'follow-up').flatMap(l => l.criteria)]);
+  if (report.verdict === 'PASS' && (report.findings.length || report.checks.some(c=>c.status!=='passed') ||
+    report.criteria.some(c=>c.status==='failed' || (c.status==='unverified' && !deferred.has(c.id))))) fail('미검증·실패·미해소 결함을 PASS로 만들 수 없다.');
   if (report.verdict !== 'PASS' && !report.findings.length) fail('실패·보류의 원인 분류가 필요하다.');
   if (report.verdict === 'FAIL' && !report.findings.some(f=>f.kind==='code')) fail('후보 코드 결함 없는 실패는 BLOCKED로 분류한다.');
   return report;
 }
+// QA가 남긴 비차단 한계. limitation은 운영 위험이 아닌 Medium·Low 결함, follow-up은 독립 QA 환경에서 확인할 수 없는 AC의 남은 검증이다.
+// 둘 다 PR 본문 «남은 검증»에 한 줄로 싣는다. 필드가 없는 기존 보고서는 0건이다.
+function limitationsOf(report) {
+  if (report?.limitations === undefined) return [];
+  if (!Array.isArray(report.limitations)) fail('limitations는 배열이어야 한다.');
+  const acs = new Set((report.criteria ?? []).map(c => c.id)), seen = new Set();
+  return report.limitations.map(l => {
+    if (!validId(l?.id) || seen.has(l.id)) fail('한계에는 고유한 ID가 필요하다.');
+    seen.add(l.id);
+    const fields = l.kind === 'limitation' ? ['note'] : l.kind === 'follow-up' ? ['environment', 'verify'] : fail(`한계 종류는 limitation 또는 follow-up이다: ${l.id}`);
+    if (l.kind === 'limitation' && !['Medium', 'Low'].includes(l.severity)) fail(`남는 한계는 운영 위험이 아닌 Medium·Low 결함만 받는다. 운영 위험은 findings에 code로 적고 FAIL로 보낸다: ${l.id}`);
+    if (l.kind === 'follow-up' && (!ids(l.criteria) || l.criteria.some(c => !acs.has(c)))) fail(`후속 확인 한계에는 보고서의 AC ID가 필요하다: ${l.id}`);
+    for (const field of fields) {
+      if (!line(l[field])) fail(`한계 ${field}는 한 줄 ${policy.plan.text_max}자 이내여야 한다: ${l.id}`);
+      const found = markupIn(l[field]);
+      if (found) fail(`한계 ${field}에 ${found}를 쓸 수 없다(PR 본문에 그대로 보이는 일반 문장만 받는다): ${l.id}`);
+    }
+    return l.kind === 'limitation' ? { id: l.id, kind: l.kind, severity: l.severity, note: l.note.trim() } :
+      { id: l.id, kind: l.kind, criteria: [...l.criteria], environment: l.environment.trim(), verify: l.verify.trim() };
+  });
+}
+// 독립 QA 검사 없이 계획 follow-up으로만 판정하는 AC. 게시 PR 본문 남은 검증에 원래 AC ID·환경·확인 방법이 실린다.
+function followUpOnly(plan) {
+  const scopes = scopesOf(plan);
+  if (!scopes || !Array.isArray(plan.criteria)) return [];
+  const qa = scopes.filter(r => r.location === 'independent-qa').flatMap(r => r.criteria ?? []);
+  const follow = scopes.filter(r => r.location === 'follow-up').flatMap(r => r.criteria ?? []);
+  return plan.criteria.filter(ac => !qa.includes(ac) && follow.includes(ac));
+}
 function collect(flow, report, candidate) {
   if (flow?.version !== 2) fail('v2 업무가 아니다.');
-  validateReport(report, candidate);
+  validateReport(report, candidate, followUpOnly(flow.plan));
   if (!flow.plan?.criteria?.length || !flow.plan?.checks?.length) fail('구현 전에 확정한 검증 계획이 없다.');
   for (const id of flow.plan.criteria) if (!report.criteria.some(c=>c.id===id)) fail(`AC 검증 누락: ${id}`);
   for (const id of flow.plan.checks) if (!report.checks.some(c=>c.id===id)) fail(`필수 검사 누락: ${id}`);
   // 후속 확인은 QA가 실행하지 않는다. 상태와 무관하게 보고에 나오면 실행한 것처럼 보이거나 PASS를 막으므로 거부한다.
-  const followUp = remainingVerification(flow.plan);
-  for (const c of report.checks) if (followUp.some(r=>r.id===c.id)) fail(`후속 확인은 QA가 실행하거나 checks에 기록하지 않는다: ${c.id}`);
+  const planned = remainingVerification(flow.plan);
+  for (const c of report.checks) if (planned.some(r=>r.id===c.id)) fail(`후속 확인은 QA가 실행하거나 checks에 기록하지 않는다: ${c.id}`);
+  for (const l of limitationsOf(report)) if (planned.some(r=>r.id===l.id) || flow.plan.checks.includes(l.id)) fail(`한계 ID가 계획의 검사 ID와 겹친다: ${l.id}`);
   const next = structuredClone(flow);
   next.verification = { ...report, digest: hash(report) };
+  const followUp = remainingVerification(flow.plan, next.verification);
   if (report.verdict === 'PASS') { next.phase = 'publish'; next.delivery = null; return { flow: next, state: 'QA', pending: null, awaiting: null,
     reason: '검증 통과 · 게시·자동 병합 대기' + (followUp.length ? ` · 남은 검증 ${followUp.length}건` : '') }; }
   for (const f of new Map(report.findings.map(f=>[f.signature,f])).values()) next.failures.push({ signature: f.signature, kind: f.kind, candidate });
@@ -117,15 +153,18 @@ function freezePlan(plan, { executors, required = [] } = {}) {
   }
   for (const r of qa) if (!plan.checks.includes(r.id)) fail(`독립 QA 검사가 필수 검사(checks)에 없다: ${r.id}`);
   for (const id of required) if (!plan.checks.includes(id)) fail(`어댑터 필수 검사 누락: ${id}`);
-  // 후속 확인으로만 판정되는 AC는 QA가 unverified로 적어 PASS가 막힌다. 동결에서 막는다.
-  for (const ac of plan.criteria) if (!qa.some(r => r.criteria.includes(ac))) fail(`독립 QA 검사로 판정할 수 없는 AC: ${ac}`);
+  // 모든 AC는 독립 QA 검사나 후속 확인 하나 이상에 연결한다. 후속 확인으로만 판정되는 AC는 QA가 unverified로 적고 PASS하며 PR 남은 검증으로 넘어간다.
+  for (const ac of plan.criteria) if (!rows.some(r => r.criteria.includes(ac))) fail(`검사나 후속 확인에 연결되지 않은 AC: ${ac}`);
   return { version: 2, criteria: [...plan.criteria], checks: [...plan.checks], checkScopes: rows };
 }
 // 동결 계획의 후속 확인. line은 PR 본문 «남은 검증»에 그대로 넣는 한 줄이다. checkScopes 없는 기존 계획은 0건이다.
+// verification을 주면 QA 보고서의 limitations(남는 한계·QA가 넘긴 후속 확인)를 계획 항목 뒤에 붙인다. 계획 항목의 형식은 그대로다.
 const followLine = r => `${r.id} (${r.criteria.join(', ')}) | 환경: ${r.environment} | 확인: ${r.verify}`;
-function remainingVerification(plan) {
-  return (scopesOf(plan) ?? []).filter(r => r.location === 'follow-up').map(r => ({ id: r.id, criteria: r.criteria, environment: r.environment, verify: r.verify,
+function remainingVerification(plan, verification) {
+  const planned = (scopesOf(plan) ?? []).filter(r => r.location === 'follow-up').map(r => ({ id: r.id, criteria: r.criteria, environment: r.environment, verify: r.verify,
     line: followLine(r) }));
+  const limits = verification?.limitations === undefined ? [] : limitationsOf(verification);
+  return [...planned, ...limits.map(l => ({ ...l, source: 'qa', line: l.kind === 'limitation' ? `${l.id} | 남는 한계 ${l.severity}: ${l.note}` : followLine(l) }))];
 }
 // PR 본문 대조. GitHub 렌더링 전체를 흉내 내지 않고, 화면에 보이는 것이 확실한 목록 줄만 인정한다.
 // 인정하는 줄은 들여쓰기 0~3칸의 -, *, + 목록 항목이다. 이 줄은 항상 새 블록이라 앞 문단의 링크 제목·인라인 HTML에 묻히지 않는다.
@@ -227,9 +266,9 @@ function visibleItems(body) {
   }
   return items;
 }
-function missingRemaining(plan, body) {
+function missingRemaining(plan, body, verification) {
   const seen = new Set(visibleItems(body));
-  return remainingVerification(plan).filter(item => !seen.has(normalLine(item.line)));
+  return remainingVerification(plan, verification).filter(item => !seen.has(normalLine(item.line)));
 }
 function researchPlan({ executors, required = [] }) {
   const { means } = qaExecutors(executors);
@@ -239,9 +278,9 @@ function researchPlan({ executors, required = [] }) {
     { id: 'mobile-browser-copy', location: 'follow-up', criteria: ['AC2'], environment: '배포 후 Galaxy Chrome', verify: '제목을 복사해 Teams에 붙여넣고 원문과 대조' }] };
   return '업무 폴더에 verification-plan.json을 작성한다. {"version":2,"criteria":["원래 요구사항의 AC 식별자"],"checks":["독립 QA 필수 검사 식별자"],"checkScopes":[검사별 실행 위치]}.\n' +
     `검사 실행 위치: ${Object.entries(policy.plan.locations).map(([k, v]) => `${k} — ${v}`).join(' ')}\n` +
-    `checkScopes에는 모든 검사를 한 번씩 적고 각 항목의 criteria에 그 검사로 판정하는 AC를 적는다. checks는 independent-qa 항목의 ID와 정확히 같고, 모든 AC는 independent-qa 항목 하나 이상에 연결한다.${required.length ? ` 어댑터 필수 검사: ${required.join(', ')}.` : ''}\n` +
+    `checkScopes에는 모든 검사를 한 번씩 적고 각 항목의 criteria에 그 검사로 판정하는 AC를 적는다. checks는 independent-qa 항목의 ID와 정확히 같고, 모든 AC는 checkScopes 항목 하나 이상에 연결한다. 로컬에서 판정할 수 있는 AC는 independent-qa에 연결한다.${required.length ? ` 어댑터 필수 검사: ${required.join(', ')}.` : ''}\n` +
     `independent-qa 항목에는 아래 QA 실행 수단(executor)과 그 형식의 command를 적는다. 검사 ID 전용 수단에는 command를 적지 않는다(적으면 동결을 거부한다). 독립 QA가 후보 worktree에서 그 수단으로 실제 실행할 수 없는 검사(배포 후·실기기·브라우저·외부 계정·운영 데이터)는 independent-qa로 적지 않는다. QA 실행 수단: ${list}\n` +
-    `follow-up 항목에는 environment(확인 시점·실행 환경)와 verify(실제 확인 방법)를 각각 한 줄 ${policy.plan.text_max}자 이내로 적고 executor·command는 적지 않는다. 두 문구는 PR 본문에 그대로 싣는 일반 문장이다. 링크·이미지 대괄호, 꺾쇠(HTML 태그·주석·<URL>), 백틱, HTML 엔티티를 쓰지 않는다. 실기기·배포 증거로만 판정되는 AC는 QA가 판정할 수 있는 부분과 후속 확인으로 나눠 적거나 Lead에게 결정 요청을 제안한다.\n` +
+    `follow-up 항목에는 environment(확인 시점·실행 환경)와 verify(실제 확인 방법)를 각각 한 줄 ${policy.plan.text_max}자 이내로 적고 executor·command는 적지 않는다. 두 문구는 PR 본문에 그대로 싣는 일반 문장이다. 링크·이미지 대괄호, 꺾쇠(HTML 태그·주석·<URL>), 백틱, HTML 엔티티를 쓰지 않는다. 실기기·배포 증거로만 판정되는 AC는 QA가 판정할 수 있는 부분을 independent-qa에 연결하고, 나머지는 follow-up에만 연결해도 된다(QA는 그 AC를 unverified로 적고 PASS하며 PR 남은 검증에 넘어간다).\n` +
     `예: ${JSON.stringify(example)}\n` +
     '실제 재현 명령·기대 결과·환경 준비는 조사 문서에 남긴다. 큰 작업은 독립 결과 단위로 Lead에게 분해를 제안한다.\n';
 }
@@ -257,7 +296,10 @@ function decisionsText(stage, decisions) {
 }
 // 예방 비용이 사후 수정 비용보다 크지 않게 단계별 판정 기준을 한 줄로 준다. 판정 형식·게이트는 바꾸지 않는다.
 function speedFirst(flow, stage) {
-  if (stage === 'qa') return '속도 우선: FAIL과 High 결함은 AC 정상 경로 실패, 데이터 유실, 병합·운영 차단 같은 실제 운영 위험으로 한정한다. 인위적 경계 사례는 QA 보고의 관찰·남는 한계로 적고 findings와 판정에 넣지 않는다.\n';
+  if (stage === 'qa') return '속도 우선: FAIL과 High 결함은 AC 정상 경로 실패, 데이터 유실, 병합·운영 차단 같은 실제 운영 위험으로 한정한다. 인위적 경계 사례는 QA 보고의 관찰·남는 한계로 적고 findings와 판정에 넣지 않는다.\n' +
+    '남는 한계: 운영 위험이 아닌 Medium·Low 결함은 findings 대신 limitations=[{id,kind:limitation,severity:Medium|Low,note}]에 적고 PASS를 막지 않는다. 운영 위험은 severity 표기와 관계없이 kind=code finding과 FAIL로 보낸다. ' +
+    '독립 QA 실행 환경에서 확인할 수 없는 AC(브라우저·실기기·배포 후)는 로컬 증거로 확인한 부분만 판정하고, 확인하지 못한 AC는 status=unverified와 limitations=[{id,kind:follow-up,criteria:[AC ID],environment,verify}]로 넘긴다. 실행하지 않은 검사를 passed로 적지 않는다. ' +
+    'note·environment·verify는 PR 본문 남은 검증에 그대로 싣는 한 줄 일반 문장이다(링크 대괄호·꺾쇠·백틱·HTML 엔티티 금지).\n';
   if (stage === 'implement') return '속도 우선: 계획 범위만 구현하고 방어 로직을 필요 이상 늘리지 않는다.' +
     (flow.phase === 'repair' ? ' 수리 회차는 지적된 실제 결함만 고치고 범위를 넓히지 않는다.' : '') + '\n';
   return '속도 우선: 방어 로직과 검사 범위를 필요 이상 늘리지 않는다. 방지 비용이 사후 수정 비용보다 크면 남는 한계로 적는다.\n';
@@ -273,8 +315,8 @@ function instructions(flow, stage, candidate, { scopes, decisions } = {}) {
     speedFirst(flow, stage) +
     (stage==='research' ? scopes ? researchPlan(scopes) : '업무 폴더에 verification-plan.json을 작성한다. {"version":2,"criteria":["원래 요구사항의 AC 식별자"],"checks":["필수 검사 식별자"]}. 실제 재현 명령·기대 결과·환경 준비는 조사 문서에 남긴다. 큰 작업은 독립 결과 단위로 Lead에게 분해를 제안한다.\n' : '') +
     (stage==='architect' && scoped ? '동결 계획의 independent-qa 검사가 QA 환경에서 선언된 실행 수단으로 실제 실행되는지, follow-up으로 분류한 항목 때문에 AC 판정이나 요구사항이 빠지지 않는지 검토한다. 실행 수단 대조는 형식 검사일 뿐이므로 실기기·배포가 필요한 검사가 로컬 명령으로 적혔으면 BLOCKED로 보고한다.\n' : '') +
-    (stage==='qa' ? `기존 독립 QA와 함께 업무 폴더에 verification.json을 쓴다. version=2, candidate=${candidate}, verdict=PASS|FAIL|BLOCKED. criteria=[{id,status:passed|failed|unverified,evidence}], checks=[{id,command,status:passed|failed|blocked,evidence}], findings=[{id,kind:code|environment|test|verification|decision,signature:반복원인식별자,evidence,next}]. 원래 AC를 빠짐없이 대조한다. PASS에는 실패·미검증·미해소 finding이 없어야 한다. 환경만 막혔으면 BLOCKED. 같은 후보의 독립 QA 검사 기록은 검증 runner의 --resume-qa로만 재사용하고 보고 자체를 통과 근거로 쓰지 않는다.\n` : '') +
-    (stage==='qa' && scoped ? `checks에는 동결 계획의 독립 QA 필수 검사(${flow.plan.checks.join(', ')})만 적는다. 후속 확인 항목은 실행하지도 checks에 적지도 않는다${followUp.length ? `: ${followUp.map(r=>r.id).join(', ')}` : ''}. 후속 확인은 PASS를 막지 않고 게시 PR의 남은 검증으로 넘어간다. AC는 연결된 독립 QA 검사의 근거로 판정한다.\n` : '') +
+    (stage==='qa' ? `기존 독립 QA와 함께 업무 폴더에 verification.json을 쓴다. version=2, candidate=${candidate}, verdict=PASS|FAIL|BLOCKED. criteria=[{id,status:passed|failed|unverified,evidence}], checks=[{id,command,status:passed|failed|blocked,evidence}], findings=[{id,kind:code|environment|test|verification|decision,signature:반복원인식별자,evidence,next}]. 원래 AC를 빠짐없이 대조한다. PASS에는 실패 AC·실패 검사·finding이 없어야 하고 unverified AC는 모두 계획 follow-up 전용 AC이거나 follow-up 한계에 연결돼야 한다. 환경만 막혔으면 BLOCKED. 같은 후보의 독립 QA 검사 기록은 검증 runner의 --resume-qa로만 재사용하고 보고 자체를 통과 근거로 쓰지 않는다.\n` : '') +
+    (stage==='qa' && scoped ? `checks에는 동결 계획의 독립 QA 필수 검사(${flow.plan.checks.join(', ')})만 적는다. 후속 확인 항목은 실행하지도 checks에 적지도 않는다${followUp.length ? `: ${followUp.map(r=>r.id).join(', ')}` : ''}. 후속 확인은 PASS를 막지 않고 게시 PR의 남은 검증으로 넘어간다. AC는 연결된 독립 QA 검사의 근거로 판정한다${followUpOnly(flow.plan).length ? `. 후속 확인으로만 판정하는 AC(${followUpOnly(flow.plan).join(', ')})는 status=unverified와 미검증 근거를 적고 PASS를 막지 않는다` : ''}.\n` : '') +
     (flow.verification?.findings?.length ? `직전 결함과 재개 조건: ${JSON.stringify(flow.verification.findings)}\n` : '') +
     (decisions === undefined ? '' : decisionsText(stage, decisions));
 }

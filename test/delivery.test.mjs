@@ -103,6 +103,17 @@ test('후속 확인이 있는 계획은 첫 조회와 병합 직전 PR 본문에
  f=fixture({plan:{...plan,checkScopes:plan.checkScopes.slice(0,1)}});assert.equal(deliver(f.input,f.exec).phase,'merged');
 });
 
+test('QA가 남긴 한계·후속 확인도 PR 본문 남은 검증에 있어야 병합한다',()=>{
+ const plan={version:2,criteria:['AC1'],checks:['hh-suite'],checkScopes:[{id:'hh-suite',location:'independent-qa',executor:'hh-suite',criteria:['AC1']}]};
+ const limitations=[{id:'L1',kind:'limitation',severity:'Low',note:'오류 문구가 영어로 남는다'},{id:'device',kind:'follow-up',criteria:['AC1'],environment:'배포 후 실기기',verify:'붙여넣기 결과 대조'}];
+ const lines=['L1 | 남는 한계 Low: 오류 문구가 영어로 남는다','device (AC1) | 환경: 배포 후 실기기 | 확인: 붙여넣기 결과 대조'];
+ const merges=f=>f.calls.filter(x=>x[0]==='gh'&&x[2]==='merge').length;
+ const run=bodies=>{const f=fixture({plan,bodies});f.input.flow.verification={verdict:'PASS',criteria:[{id:'AC1',status:'unverified',evidence:'로컬만'}],limitations};return [deliver(f.input,f.exec),merges(f)];};
+ const full='## 남은 검증\n'+lines.map(l=>'- [ ] '+l).join('\n');
+ const [ok,merged]=run([full,full,full]);assert.deepEqual([ok.phase,merged],['merged',1]);
+ const [gap,none]=run(['## 남은 검증\n- [ ] '+lines[0]]);assert.deepEqual([gap.phase,gap.missing,none],['blocked',[lines[1]],0]);
+});
+
 test('병합 증명에 PR 브랜치 이름을 남긴다',()=>{
  const f=fixture();assert.equal(deliver(f.input,f.exec).branch,'codex/test');
 });
