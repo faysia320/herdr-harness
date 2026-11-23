@@ -22,6 +22,10 @@ node .agents/harness/launch.mjs whoami
 
 두 명령에서 새 터미널이 Lead로 일치하는지 확인한다. `recover`가 돌려준 활성 실행은 기존 산출물과 터미널부터 확인한 뒤 수집한다. `next --go`는 남은 실행과 열린 결정을 확인한 후 사용한다.
 
+## 실행 중인 Codex 터미널에 보내기
+
+실행 중인 Codex 터미널에 추가 지시나 Lead 주소 변경 알림 등을 보낼 때는 `hc send` 대신 `node <고정 release>/bin/send.mjs <터미널> "<텍스트>"`를 쓴다. `hc send`는 성공을 돌려줘도 Codex 입력창에 원문이 남을 수 있다. 이 도구는 남은 경우 Enter만 다시 누르고, 끝까지 남으면 0이 아닌 코드로 끝난다. 그때는 `hc read <터미널>`로 입력창을 확인한다. 원문을 다시 보내지 않는다.
+
 ## 영수증 경로로 차단된 기존 QA 재개
 
 전환 전 기준에서 생성된 업무에는 `target/hh-verify/`의 Git 제외 규칙이 빠져 있을 수 있다. 해당 업무의 마지막 QA 보고서를 보존하고 업무 checkout에서 `git check-ignore -v --no-index -- target/hh-verify/latest-qa.json`으로 확인한다. 규칙이 없다면 그 checkout의 `target/hh-verify/.gitignore`에 `*` 한 줄을 두어 해당 디렉터리의 로컬 실행 자료를 제외한다. 이미 파일이 있다면 내용을 먼저 확인한다.

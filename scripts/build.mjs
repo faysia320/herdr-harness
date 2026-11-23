@@ -27,7 +27,7 @@ export function build() {
   files.push('bin/herdr-browser.mjs', 'core/herdr-browser.mjs', 'bin/heavy.mjs', 'core/heavy-slots.mjs');
   files.push('core/workflow.cjs', 'core/delivery.cjs', 'core/dev14.cjs', 'policy/workflow.json', 'bin/watch-delivery.mjs');
   files.push('core/verification-receipt.cjs', 'core/preparation.mjs', 'core/metrics.mjs', 'bin/metric.mjs');
-  files.push('bin/resource-status.mjs');
+  files.push('bin/resource-status.mjs', 'bin/send.mjs');
   // QA 실행 영수증 v2 발급기와 CI 검증기. 저장소별 정책 파일(HH는 policy/qa-receipt.json)은 release에 싣지 않는다.
   files.push('core/qa-receipt-policy.cjs', 'core/qa-receipt-runner.mjs', 'bin/qa-receipt.mjs', 'bin/verify-qa-receipt.mjs');
   const contents = new Map(files.sort().map(name => [name, releaseBytes(name)]));
