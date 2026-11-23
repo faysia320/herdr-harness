@@ -113,6 +113,19 @@ async function dockerCheck(ctx, platform, check) {
   }
 }
 
+// OR(anyPlatform) 규칙은 이 PC에서 실행할 수 있는 플랫폼 하나만 고른다. AND 규칙이 이미 요구한 플랫폼, 이 PC의 host, Docker Linux 순이다.
+function pickPlatforms(policy, paths, hostOs) {
+  const fixed = new Set(contract.appliedRules(policy, paths).filter(rule => !rule.anyPlatform).flatMap(rule => rule.platforms));
+  const runnable = p => policy.platforms[p].runner === 'docker' || p === hostOs;
+  return rule => {
+    if (!rule.anyPlatform) return rule.platforms;
+    const options = rule.platforms.filter(runnable);
+    const chosen = options.find(p => fixed.has(p)) ?? options.find(p => policy.platforms[p].runner === 'host') ?? options[0];
+    if (!chosen) throw new Blocked(`이 PC(${hostOs})에서 실행할 수 있는 플랫폼이 없다(${rule.platforms.join('|')} 중 하나, 검사 ${rule.checks.join('·')}).`);
+    return [chosen];
+  };
+}
+
 export async function issueReceipt({ worktree, base, run, round = null, heavy, release = null, policyFile = 'policy/qa-receipt.json',
   hostOs = hostName(), exec = runTree, env = process.env, timeout = 45 * 60 * 1000, now = () => new Date().toISOString() }) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(run ?? '')) throw Error('run은 영문·숫자·_.-로 된 회차 식별자여야 한다.');
@@ -137,8 +150,13 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   const ctx = { worktree, policy, run, heavy, exec, timeout, hostOs, out, tree,
     env: Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'NODE_TEST_CONTEXT')) };
   const environments = {}, results = [], outputs = [], phases = [], reasons = [];
-  let status = 'PASS';
-  for (const { platform, check } of contract.requiredPairs(policy, binding.paths)) {
+  let status = 'PASS', pairs = [];
+  try { pairs = contract.requiredPairs(policy, binding.paths, pickPlatforms(policy, binding.paths, hostOs)); } catch (error) {
+    if (!(error instanceof Blocked)) throw error;
+    status = 'BLOCKED';
+    reasons.push(error.message);
+  }
+  for (const { platform, check } of pairs) {
     const spec = policy.checks[check];
     let r;
     try {
@@ -185,6 +203,7 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
 }
 
 // heavy.mjs가 설치 release 안에 있으면 그 manifest 지문(폴더 이름)을 영수증 release로 남긴다.
+// 저장소 사본(policy/qa-receipt-files.json)으로 발급하면 null이다. release는 선택 기록이고 CI 검증은 보지 않는다.
 export function releaseOf(heavy) {
   const dir = dirname(dirname(resolve(heavy)));
   return /^[0-9a-f]{64}$/.test(basename(dir)) && existsSync(join(dir, 'manifest.json')) ? basename(dir) : null;

@@ -38,7 +38,8 @@ function validatePolicy(p) {
   if (!Array.isArray(p.required) || !p.required.some(rule => rule?.paths === undefined)) fail('경로 조건 없는 기본 required 규칙이 필요하다.');
   for (const rule of p.required) {
     if (!list(rule?.checks, id => Object.hasOwn(p.checks, id)) || !list(rule.platforms, id => Object.hasOwn(p.platforms, id)) ||
-      (rule.paths !== undefined && !list(rule.paths, relative))) fail('required 규칙은 선언된 checks·platforms와 저장소 상대 paths만 쓴다.');
+      (rule.paths !== undefined && !list(rule.paths, relative)) || ![undefined, true, false].includes(rule.anyPlatform))
+      fail('required 규칙은 선언된 checks·platforms, 저장소 상대 paths, 불리언 anyPlatform만 쓴다.');
   }
   return p;
 }
@@ -49,12 +50,16 @@ function loadPolicy(file) {
   return validatePolicy(value);
 }
 
-// 변경 경로에 걸리는 규칙의 합집합. 경로는 정확한 파일이거나 '/'로 끝나는 폴더다. 기본 규칙은 항상 적용한다.
-function requiredPairs(policy, paths) {
-  const hit = rule => !rule.paths || rule.paths.some(r => paths.some(p => r.endsWith('/') ? p.startsWith(r) : p === r));
+// 변경 경로에 걸리는 규칙. 경로는 정확한 파일이거나 '/'로 끝나는 폴더다. 기본 규칙은 항상 적용한다.
+// anyPlatform: true인 규칙은 나열한 플랫폼 중 하나에서 그 규칙의 checks가 모두 통과하면 된다(OR). 생략·false는 모든 플랫폼(AND)이다.
+const appliedRules = (policy, paths) =>
+  policy.required.filter(rule => !rule.paths || rule.paths.some(r => paths.some(p => r.endsWith('/') ? p.startsWith(r) : p === r)));
+
+// 실행할 OS×검사 쌍의 합집합. pick(rule)이 규칙마다 실행할 플랫폼을 고른다. 기본은 나열한 모든 플랫폼이다.
+function requiredPairs(policy, paths, pick = rule => rule.platforms) {
   const pairs = new Map();
-  for (const rule of policy.required.filter(hit))
-    for (const platform of rule.platforms) for (const check of rule.checks) pairs.set(platform + '/' + check, { platform, check });
+  for (const rule of appliedRules(policy, paths))
+    for (const platform of pick(rule)) for (const check of rule.checks) pairs.set(platform + '/' + check, { platform, check });
   const platforms = Object.keys(policy.platforms), checks = Object.keys(policy.checks);
   return [...pairs.values()].sort((a, b) => platforms.indexOf(a.platform) - platforms.indexOf(b.platform) || checks.indexOf(a.check) - checks.indexOf(b.check));
 }
@@ -90,18 +95,29 @@ function decodeEnvelope(body) {
   try { return JSON.parse(Buffer.from(m[1], 'base64url').toString('utf8')); } catch { throw Error('QA 실행 영수증을 해독할 수 없다(잘림·변조).'); }
 }
 
-// 정책이 요구한 OS×검사가 정확히 한 번, 정책과 같은 명령으로 통과했고 실행 환경이 기록됐는지.
-function verifyResults(receipt, policy, paths) {
+// 한 OS×검사가 정확히 한 번, 정책과 같은 명령으로 통과했고 실행 환경이 기록됐는지. 문제 목록을 돌려준다.
+function pairReasons(receipt, policy, platform, check) {
   const reasons = [], results = Array.isArray(receipt?.results) ? receipt.results : [];
-  for (const { platform, check } of requiredPairs(policy, paths)) {
-    const label = platform + '/' + check, spec = policy.checks[check], found = results.filter(r => r?.platform === platform && r?.check === check);
-    if (found.length !== 1) reasons.push((found.length ? '검사 결과 중복: ' : '필수 검사 결과 없음: ') + label);
-    else if (found[0].state !== 'passed' || found[0].exit !== 0) reasons.push('통과하지 않은 검사: ' + label);
-    else if (JSON.stringify(found[0].steps) !== JSON.stringify(spec.steps)) reasons.push('정책과 다른 명령: ' + label);
-    else if (spec.result === 'tap' && !tapPassed(found[0])) reasons.push('시험 수·실패 기록이 통과 조건과 다르다: ' + label);
-    const env = receipt?.environments?.[platform], image = policy.platforms[platform].image;
-    if (env?.os !== platform || typeof env.node !== 'string' || typeof env.git !== 'string' || (image && env.image !== image))
-      reasons.push('실행 환경 기록 없음·불일치: ' + platform);
+  const label = platform + '/' + check, spec = policy.checks[check], found = results.filter(r => r?.platform === platform && r?.check === check);
+  if (found.length !== 1) reasons.push((found.length ? '검사 결과 중복: ' : '필수 검사 결과 없음: ') + label);
+  else if (found[0].state !== 'passed' || found[0].exit !== 0) reasons.push('통과하지 않은 검사: ' + label);
+  else if (JSON.stringify(found[0].steps) !== JSON.stringify(spec.steps)) reasons.push('정책과 다른 명령: ' + label);
+  else if (spec.result === 'tap' && !tapPassed(found[0])) reasons.push('시험 수·실패 기록이 통과 조건과 다르다: ' + label);
+  const env = receipt?.environments?.[platform], image = policy.platforms[platform].image;
+  if (env?.os !== platform || typeof env.node !== 'string' || typeof env.git !== 'string' || (image && env.image !== image))
+    reasons.push('실행 환경 기록 없음·불일치: ' + platform);
+  return reasons;
+}
+
+// 적용되는 규칙을 모두 충족하는지. AND 규칙은 나열한 OS×검사 전부, OR 규칙은 한 플랫폼에서 그 규칙의 검사 전부가 통과해야 한다.
+// OR 규칙에서 검사를 여러 OS에 나눠 통과한 것은 인정하지 않는다.
+function verifyResults(receipt, policy, paths) {
+  const reasons = [];
+  for (const rule of appliedRules(policy, paths)) {
+    const tries = rule.platforms.map(platform => [...new Set(rule.checks.flatMap(check => pairReasons(receipt, policy, platform, check)))]);
+    if (!rule.anyPlatform) reasons.push(...tries.flat());
+    else if (tries.every(t => t.length))
+      reasons.push(`플랫폼 하나(${rule.platforms.join('|')})에서 ${rule.checks.join('·')} 통과 필요: ` + tries.flat().join('; '));
   }
   return [...new Set(reasons)];
 }
@@ -138,5 +154,5 @@ function verifyPullRequest({ git, event, policy, main }) {
     base: receipt.base, main: mainCommit, from, candidate: { digest: binding.digest, count: binding.count } };
 }
 
-module.exports = { kind, marker, hostNames, sha256, validatePolicy, loadPolicy, requiredPairs, candidateBinding, tapSummary, tapPassed,
+module.exports = { kind, marker, hostNames, sha256, validatePolicy, loadPolicy, appliedRules, requiredPairs, candidateBinding, tapSummary, tapPassed,
   encodeEnvelope, decodeEnvelope, verifyResults, verifyPullRequest };

@@ -347,7 +347,8 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 
 - `platforms`: 대상 OS. `host`는 발급하는 PC의 OS(windows·linux·macos)와 이름이 같을 때만 실행한다. `docker`는 linux만 쓰고 이미지를 `@sha256:` digest로 고정한다. tag는 받지 않는다.
 - `checks`: 검사 ID별 `steps`(셸 없이 실행할 argv 배열. 공백·`&`·`|`·`$`·`;`·따옴표 같은 셸 특수문자는 거부한다)와 판정 `result`(`tap`: node --test TAP 끝 요약이 양수 전체 통과이고 fail·cancelled·skipped·todo 0, `exit`: 종료 코드 0).
-- `required`: OS×검사 필수 집합. `paths`가 없는 기본 규칙이 하나 이상 있어야 하고 항상 적용한다. `paths`는 정확한 파일 또는 `/`로 끝나는 폴더다. 후보 변경 행(삭제·이동의 원래 경로 포함) 하나라도 걸리면 그 규칙을 적용하고, 걸린 규칙은 합집합이다.
+- `required`: OS×검사 필수 집합. `paths`가 없는 기본 규칙이 하나 이상 있어야 하고 항상 적용한다. `paths`는 정확한 파일 또는 `/`로 끝나는 폴더다. 후보 변경 행(삭제·이동의 원래 경로 포함) 하나라도 걸리면 그 규칙을 적용하고, 걸린 규칙은 모두 충족해야 한다.
+- `anyPlatform`(선택): 생략·`false`면 규칙의 `platforms` 모두(AND)에서 `checks`가 통과해야 한다. `true`면 나열한 플랫폼 중 하나(OR)에서 그 규칙의 `checks` 전부가 통과하면 된다. 검사를 여러 OS에 나눠 통과한 것은 인정하지 않는다. 기존 정책·영수증은 그대로 유효하다.
 - `output`: 발급 결과를 둘 Git 무시 경로. 무시되지 않으면 발급을 거부한다(추적·미무시 경로에 쓰면 후보 지문이 바뀐다).
 - `exempt_pr_max`: 도입 시점에 열려 있던 PR까지의 마지막 PR 번호. 이 번호 이하 PR은 영수증 검사를 면제하고 정책 파일 검사는 그대로 한다. 도입 뒤 늘리지 않는다.
 
@@ -366,12 +367,12 @@ node bin/qa-receipt.mjs [--worktree <checkout>] [--base <B>] [--run <회차 ID>]
 ```
 
 - 기본값: `--base`는 `origin/main`과 HEAD의 merge-base, `--run`은 `local-<UUID>`, `--heavy`는 같은 폴더의 `heavy.mjs`다. 종료 코드는 0=PASS, 1=FAIL(검사 실패), 3=BLOCKED(환경 준비 실패), 2=입력 오류다.
-- 정책의 필수 OS×검사를 정책 선언 순서대로 하나씩 실행한다. 검사마다 공용 heavy 슬롯을 한 번 잡고, 컨테이너 안에서 슬롯을 다시 잡지 않는다. 앞 검사가 FAIL·BLOCKED면 뒤 검사는 실행하지 않는다.
+- 정책의 필수 OS×검사를 정책 선언 순서대로 하나씩 실행한다. `anyPlatform` 규칙은 이 PC에서 실행할 수 있는 플랫폼 하나만 고른다(걸린 AND 규칙이 이미 요구한 플랫폼 → 이 PC와 같은 OS의 host → Docker Linux 순). 실행할 플랫폼이 없으면 BLOCKED다. 검사마다 공용 heavy 슬롯을 한 번 잡고, 컨테이너 안에서 슬롯을 다시 잡지 않는다. 앞 검사가 FAIL·BLOCKED면 뒤 검사는 실행하지 않는다.
 - 호스트 검사는 후보 checkout에서 `heavy.mjs -- <steps를 &&로 이은 명령>`을 실행한다. 시험 worker 표지 `NODE_TEST_CONTEXT`는 넘기지 않는다.
 - Docker Linux 검사는 Docker 엔진(`docker version`의 Server OS가 linux)과 digest 이미지를 확인하고 없으면 pull한다. 후보 tree를 `git archive`로 꺼내 출력 폴더 아래(업무 worktree의 ASCII 경로)에 두고 `--mount …,readonly`로 붙인다. 컨테이너는 `--init`(고아 손자 프로세스를 거두는 init. 없으면 프로세스 종료 시험이 좀비 때문에 실패한다)과 비root(`node`)로 실행해 /tmp 사본에 풀고, `git add -A -f`·`git write-tree` 결과가 후보 tree와 같을 때만 정책 명령을 셸 없이 실행한다. 작업 사본 파일을 그대로 복사하지 않으므로 줄 끝·실행 비트는 Git 기준이다. 실행 뒤 `docker rm -f`로 남은 컨테이너를 지우고 사본은 보관하지 않는다.
 - Docker 없음·엔진 연결 실패, 이미지 pull 실패, 사본 tree 불일치, `docker run` 오류(exit 125~127)는 BLOCKED이며 PASS 영수증을 남기지 않는다. 시험 실패·시간 초과(검사당 45분)는 FAIL이다.
 - `output/<회차>/`에 `result.json`(상태·사유·검사별 시간), `<OS>-<검사>.log`를 남기고 PASS일 때만 `receipt.json`과 `envelope.txt`를 쓴다. 같은 회차를 다시 시작하면 이전 결과부터 지운다. 검사 도중 후보 tree가 바뀌면 BLOCKED다.
-- 영수증 필드: `kind`·`version: 2`, `run`·`round`(QA 회차), `runner`(id·version), `release`(heavy가 든 설치 release 지문. 저장소 checkout의 heavy면 null), `base`, `candidate`(digest·count), `tree`, 시작·완료 시각, `environments`(OS별 os·release·arch·node·git. Docker는 distro·image·사본 준비 시간), `results`(OS·검사·steps·state·exit·tests/pass/fail/cancelled/skipped/todo·시간·로그 SHA-256). 로컬 경로·로그 원문·환경변수 값은 담지 않는다.
+- 영수증 필드: `kind`·`version: 2`, `run`·`round`(QA 회차), `runner`(id·version), `release`(선택 기록. heavy가 든 설치 release 지문. 저장소 checkout·사본의 heavy면 null이고 CI는 보지 않는다), `base`, `candidate`(digest·count), `tree`, 시작·완료 시각, `environments`(OS별 os·release·arch·node·git. Docker는 distro·image·사본 준비 시간), `results`(OS·검사·steps·state·exit·tests/pass/fail/cancelled/skipped/todo·시간·로그 SHA-256). 로컬 경로·로그 원문·환경변수 값은 담지 않는다.
 
 ### PR 전달
 
@@ -381,12 +382,12 @@ node bin/qa-receipt.mjs [--worktree <checkout>] [--base <B>] [--run <회차 ID>]
 
 - workflow는 `pull_request`의 opened·synchronize·reopened·edited에서 `actions/checkout`(`fetch-depth: 0`) 뒤 `node bin/verify-qa-receipt.mjs` 하나만 실행한다. 본문만 고쳐도 다시 검사한다.
 - 이벤트 payload(`GITHUB_EVENT_PATH`)의 PR 번호·head·본문과 checkout의 정책 파일·Git 객체만 읽는다. release·Docker·네트워크·전체 시험이 필요 없다. 비교할 main은 checkout한 merge 커밋의 첫 부모(둘째 부모가 PR head일 때), 아니면 `origin/<base.ref>`, 마지막으로 payload `base.sha`다. `--main`으로 지정할 수도 있다.
-- 정책 파일을 먼저 검사한다. PR 번호가 `exempt_pr_max` 이하이면 면제로 통과한다. 그 밖에는 봉투 해독, B가 head의 조상인지, 지문·행 수 일치, 필수 OS×검사가 정확히 한 번 정책 명령으로 통과했는지(양수 시험 수·실패 0), OS별 환경 기록(Docker는 정책 image와 같음)을 확인한다. 실패하면 사유와 재발급 안내를 출력하고 exit 1이다.
+- 정책 파일을 먼저 검사한다. PR 번호가 `exempt_pr_max` 이하이면 면제로 통과한다. 그 밖에는 봉투 해독, B가 head의 조상인지, 지문·행 수 일치, 필수 OS×검사(`anyPlatform` 규칙은 나열한 플랫폼 중 하나)가 정확히 한 번 정책 명령으로 통과했는지(양수 시험 수·실패 0), OS별 환경 기록(Docker는 정책 image와 같음)을 확인한다. 실패하면 사유와 재발급 안내를 출력하고 exit 1이다.
 - 영수증이 없거나 무효인 PR은 실패로 끝난다. 전체 시험으로 돌아가는 폴백은 없다.
 
 ### 하네스 밖 PR
 
-하네스를 거치지 않은 PR도 같은 runner를 로컬에서 실행해 영수증을 받는다. 커밋한 PR 브랜치 checkout에서 `node bin/qa-receipt.mjs`(다른 저장소는 `node <release>/bin/qa-receipt.mjs --policy <정책 파일>`)를 실행하고, PASS면 `envelope.txt` 줄을 PR 본문에 넣는다. FAIL·BLOCKED면 원인을 고친 뒤 같은 명령을 다시 실행한다. 커밋을 더하면 다시 발급해 본문의 줄을 바꾼다.
+하네스를 거치지 않은 PR도 같은 runner를 로컬에서 실행해 영수증을 받는다. 커밋한 PR 브랜치 checkout 루트에서 `node bin/qa-receipt.mjs`(다른 저장소는 아래 사본 폴더의 `node tools/hh/bin/qa-receipt.mjs`)를 실행하고, PASS면 `envelope.txt` 줄을 PR 본문에 넣는다. FAIL·BLOCKED면 원인을 고친 뒤 같은 명령을 다시 실행한다. 커밋을 더하면 다시 발급해 본문의 줄을 바꾼다.
 
 ### 사후 검사
 
@@ -413,9 +414,22 @@ main push·nightly 사후 검사는 공통 규칙으로 두지 않는다. 기존
 SW·VDP·VP는 병합 뒤 저장소별 업무와 사용자 확인으로 전환한다. 이번 변경은 세 저장소의 CI·코드·ruleset·strict 설정과 binding을 바꾸지 않는다.
 
 1. **정책 파일**: 저장소에 정책 파일 위치를 정해(예: `policy/qa-receipt.json` 또는 `.agents/harness/qa-receipt.json`) 대상 OS·검사·필수 규칙·`output`(Git 무시 경로, 예: SW `target/sw-verify/receipts`)을 선언한다. `exempt_pr_max`는 도입 PR을 병합하기 직전의 마지막 PR 번호로 정한다.
-2. **검증기 복사**: `bin/verify-qa-receipt.mjs`, `core/qa-receipt-policy.cjs`, `core/dev14.cjs`를 같은 상대 위치로 복사한다. Node 내장 모듈과 git만 쓴다. 정책 위치가 기본값과 다르면 `--policy`를 준다.
+2. **발급기·검증기 사본**: `policy/qa-receipt-files.json`의 `files`를 상대 위치를 유지해 전용 폴더(예: `tools/hh`)에 복사하고 커밋한다. release·binding·설치 없이 Windows·Linux 어디서나 발급·검증한다(Node 내장 모듈과 git만 쓴다. 사본의 `package.json`이 그 폴더를 ESM으로 지정한다). 갱신·대조는 HH checkout에서 같은 명령을 다시 실행하고 `git status tools/hh`로 차이를 본다.
+
+   ```sh
+   node -e "const [s,d]=process.argv.slice(1),fs=require('fs'),p=require('path');for(const f of JSON.parse(fs.readFileSync(p.join(s,'policy/qa-receipt-files.json'))).files){fs.mkdirSync(p.dirname(p.join(d,f)),{recursive:true});fs.copyFileSync(p.join(s,f),p.join(d,f))}" <HH checkout> tools/hh
+   ```
+
+   발급은 저장소 루트에서 `node tools/hh/bin/qa-receipt.mjs [--base <B>] [--policy <정책>]`, CI는 `node tools/hh/bin/verify-qa-receipt.mjs [--policy <정책>]`이다. Windows 또는 Linux 중 한 곳에서 QA하면 되는 저장소의 정책 예(Linux 개발 서버는 docker 없이 host로 실행한다):
+
+   ```json
+   {"version":1,"output":"target/sw-verify/receipts","exempt_pr_max":0,
+    "platforms":{"windows":{"runner":"host"},"linux":{"runner":"host"}},
+    "checks":{"suite":{"result":"exit","steps":[["cargo","test","--workspace"]]}},
+    "required":[{"checks":["suite"],"platforms":["windows","linux"],"anyPlatform":true}]}
+   ```
 3. **CI**: 기존 필수 check 이름을 그대로 둔 job에서 `fetch-depth: 0` checkout 뒤 검증기만 실행하고 `pull_request` types에 `edited`를 더한다. 경로 필터·job skip으로 필수 이름이 사라지지 않게 한다. 제거·QA 이관할 기존 검사의 분류는 저장소별 업무에서 정한다.
-4. **QA runner**: 독립 QA 명령이 `node <release>/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <회차> --policy <정책>`을 실행하거나 HH의 verify.mjs처럼 `issueReceipt`를 직접 부르게 하고, 게시자에게 envelope 줄을 넘긴다. Docker Linux를 선언하면 QA PC에 Docker가 있어야 한다.
+4. **QA runner**: 독립 QA 명령이 `node tools/hh/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <회차> --policy <정책>`을 실행하거나 HH의 verify.mjs처럼 `issueReceipt`를 직접 부르게 하고, 게시자에게 envelope 줄을 넘긴다. Docker Linux를 선언하면 QA PC에 Docker가 있어야 한다.
 5. **하네스 밖 PR 안내**: 저장소 PR 템플릿·기여 안내에 로컬 발급 명령과 본문 위치를 적는다.
 
 ## 단계 수집 판정

@@ -44,6 +44,8 @@ test('정책 검증: 기본 규칙·선언된 ID·셸 특수문자 없는 명령
     p => { p.required[0].platforms = ['windows', 'windows']; },
     p => { p.required[1].paths = ['../docs/']; },
     p => { p.required[1].paths = []; },
+    p => { p.required[0].anyPlatform = 'yes'; },
+    p => { p.required[0].anyPlatform = 1; },
   ];
   for (const change of broken) {
     const p = policy();
@@ -94,6 +96,36 @@ test('검사 목록 대조: 정책이 요구한 OS×검사가 정확히 한 번 
   // 경로 규칙이 요구한 검사가 빠지면 거부하고, 넣으면 통과한다.
   assert.match(verifyResults(receipt(all), p, ['docs/a.md']).join('\n'), /필수 검사 결과 없음: windows\/docs/);
   assert.deepEqual(verifyResults(receipt([...all, passed('windows', 'docs')]), p, ['docs/a.md']), []);
+});
+
+test('OR 규칙(anyPlatform): 나열한 플랫폼 하나에서 규칙의 검사 전부가 통과하면 되고, 누락·나눠 통과·잘못된 환경은 거부한다', () => {
+  const p = policy();
+  p.checks.lint = { result: 'exit', steps: [['node', 'lint.mjs']] };
+  p.required = [{ checks: ['suite', 'lint'], platforms: ['windows', 'linux'], anyPlatform: true }];
+  assert.equal(validatePolicy(p).required[0].anyPlatform, true);
+  const lint = platform => ({ platform, check: 'lint', steps: [['node', 'lint.mjs']], state: 'passed', exit: 0 });
+  // 기본 pick은 AND와 같은 상한(나열한 모든 플랫폼)이고, 발급기는 pick으로 하나를 고른다.
+  assert.equal(requiredPairs(p, ['a']).length, 4);
+  assert.deepEqual(requiredPairs(p, ['a'], rule => rule.anyPlatform ? ['linux'] : rule.platforms), [{ platform: 'linux', check: 'suite' }, { platform: 'linux', check: 'lint' }]);
+  for (const os of ['windows', 'linux']) {
+    assert.deepEqual(verifyResults(receipt([passed(os, 'suite'), lint(os)]), p, ['a']), [], os);
+    // 실행하지 않은 다른 플랫폼의 환경 기록이 없어도 된다.
+    assert.deepEqual(verifyResults(receipt([passed(os, 'suite'), lint(os)], { [os]: receipt([]).environments[os] }), p, ['a']), [], os);
+  }
+  assert.deepEqual(verifyResults(receipt([passed('windows', 'suite'), lint('windows'), passed('linux', 'suite')]), p, ['a']), []);
+  const rejected = [
+    [[], /플랫폼 하나\(windows\|linux\)에서 suite·lint 통과 필요: .*필수 검사 결과 없음: windows\/suite/],
+    [[passed('windows', 'suite')], /필수 검사 결과 없음: windows\/lint/],
+    [[passed('windows', 'suite'), lint('linux')], /플랫폼 하나/],
+    [[passed('linux', 'suite', { state: 'failed', exit: 1 }), lint('linux')], /통과하지 않은 검사: linux\/suite/],
+  ];
+  for (const [results, pattern] of rejected) assert.match(verifyResults(receipt(results), p, ['a']).join('\n'), pattern);
+  assert.match(verifyResults(receipt([passed('linux', 'suite'), lint('linux')], { windows: receipt([]).environments.windows }), p, ['a']).join('\n'), /실행 환경 기록 없음·불일치: linux/);
+  // 걸린 AND 규칙은 OR 규칙과 별도로 모두 충족해야 한다.
+  p.required.push({ paths: ['docs/'], checks: ['lint'], platforms: ['windows', 'linux'] });
+  assert.deepEqual(verifyResults(receipt([passed('linux', 'suite'), lint('linux')]), p, ['a']), []);
+  assert.match(verifyResults(receipt([passed('linux', 'suite'), lint('linux')]), p, ['docs/a.md']).join('\n'), /필수 검사 결과 없음: windows\/lint/);
+  assert.deepEqual(verifyResults(receipt([passed('linux', 'suite'), lint('linux'), lint('windows')]), p, ['docs/a.md']), []);
 });
 
 test('PR 본문 봉투: 한 줄 주석으로 왕복하고 없음·중복·형식 변경·잘림을 구별한다', () => {
