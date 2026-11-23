@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
@@ -11,6 +12,7 @@ import { adapter, git, samePath } from '../.agents/harness/repository.mjs';
 import { suiteInvocation } from '../.agents/harness/suite.mjs';
 import { archiveKeep } from '../.agents/harness/cleanup.mjs';
 import { closeTerminal, reclaimTerminals } from '../.agents/harness/terminals.mjs';
+import { atomic } from '../.agents/harness/ledger.mjs';
 
 const frozenRelease = process.env.HH_TEST_PINNED_RELEASE;
 const built = frozenRelease ? { release: frozenRelease, manifestHash: frozenRelease.split(/[\\/]/).at(-1) } : build();
@@ -1040,4 +1042,108 @@ test('HH 이전 release: 기존 계획 형식·지시서를 유지하고 결정 
   assert.doesNotMatch(promptOf(implementation), /해소 결정|LEGACY_DECISION_QUOTE/);
   const status = await run('flow-status ' + task.id, 't-other');
   assert.equal(Object.hasOwn(status, 'remainingVerification'), false);
+});
+
+// fs.renameSync를 바꿔 대장 교체 실패를 주입한다. decide(to)가 오류 코드를 돌려주면 그 rename을 실패시킨다.
+function injectRename(t, decide) {
+  const original = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    const code = decide(to);
+    if (code) throw Object.assign(new Error('fixture rename ' + code), { code });
+    return original(from, to);
+  };
+  syncBuiltinESMExports();
+  const restore = () => { fs.renameSync = original; syncBuiltinESMExports(); };
+  t.after(restore);
+  return restore;
+}
+
+test('대장 교체 재시도: EPERM·EACCES·EBUSY 일시 실패 뒤 성공하고, 지속 실패는 제한 횟수 뒤·다른 오류는 즉시 원본을 보존한 채 던진다', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'hh-atomic-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'ledger.json');
+  let attempts = 0, failures = [];
+  const restore = injectRename(t, to => to === file && ++attempts && failures.shift());
+  const leftovers = () => readdirSync(dir).filter(name => name !== 'ledger.json');
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    writeFileSync(file, 'before');
+    attempts = 0;
+    failures = [code, code];
+    atomic(file, 'after-' + code, { delay: 1 });
+    assert.deepEqual([attempts, readFileSync(file, 'utf8'), leftovers()], [3, 'after-' + code, []]);
+  }
+  writeFileSync(file, 'before');
+  attempts = 0;
+  failures = Array(10).fill('EPERM');
+  assert.throws(() => atomic(file, 'after', { retries: 2, delay: 1 }), { code: 'EPERM' });
+  assert.deepEqual([attempts, readFileSync(file, 'utf8'), leftovers()], [3, 'before', []]);
+  attempts = 0;
+  failures = ['EIO'];
+  assert.throws(() => atomic(file, 'after', { delay: 1 }), { code: 'EIO' });
+  assert.deepEqual([attempts, readFileSync(file, 'utf8'), leftovers()], [1, 'before', []]);
+  restore();
+});
+
+test('위임 직후 대장 저장 실패: dispatch·next --go는 방금 띄운 그 회차 터미널만 kill·rm하고 대장·이벤트를 위임 전으로 남긴다', async t => {
+  const fixture = await setup(t);
+  const { repo, main, herdr, run, sessions, launches, stored } = fixture;
+  await run('recover');
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Ledger save retry.\n');
+  const task = await main(['add','--title','Save','--desc-file',request,'--workflow','v2','--kind','bug-fix','--slug','save','--authorization','fixture'],
+    { cwd: repo, terminal: 't-lead', herdr });
+  let code = null;
+  const restore = injectRename(t, to => launches.length && basename(to) === 'ledger.json' ? code : null);
+  // 지속 EPERM은 기본 재시도(약 2초) 뒤 실패한다. EIO는 재시도 없이 바로 실패한다.
+  for (const [command, failure] of [['dispatch ' + task.id, 'EPERM'], ['next --go', 'EIO']]) {
+    const before = stored(), started = launches.length;
+    code = failure;
+    await assert.rejects(run(command), error => error.code === failure && /대장 저장에 실패해 위임을 되돌렸다/.test(error.message));
+    code = null;
+    const address = 'stage-' + launches.length;
+    assert.equal(launches.length, started + 1);
+    assert.deepEqual(stored(), before);
+    assert.equal(fixture.kills.at(-1), address);
+    assert.equal(fixture.removes.at(-1), address);
+    assert.equal(sessions.has(address), false);
+  }
+  // 레이블이 이 회차와 다른 터미널은 저장이 실패해도 닫지 않는다.
+  const before = stored(), kills = fixture.kills.length;
+  const foreign = (cwd, args) => {
+    const result = herdr(cwd, args);
+    if (args[0] === 'run') result.labels['harness.run'] = 'other';
+    return result;
+  };
+  code = 'EIO';
+  await assert.rejects(run('dispatch ' + task.id, 't-lead', { herdr: foreign }), /"outcome":"kept"/);
+  code = null;
+  assert.deepEqual(stored(), before);
+  assert.equal(fixture.kills.length, kills);
+  assert.equal(sessions.get('stage-' + launches.length).state, 'live');
+  restore();
+  // 정상 위임은 주소를 담은 대장과 dispatch 이벤트를 한 번 남긴다.
+  const dispatched = (await run('dispatch ' + task.id)).run;
+  const saved = fixture.ledger().tasks[task.id];
+  assert.deepEqual([saved.runs.length, saved.runs[0].terminal, saved.state], [1, dispatched.terminal, 'RESEARCHING']);
+  const events = stored()[1].trim().split('\n').map(line => JSON.parse(line)).filter(e => e.event === 'dispatch');
+  assert.deepEqual(events.map(e => [e.task, e.stage, e.round]), [[task.id, 'research', 1]]);
+});
+
+test('대장 잠금 회수: 소유 PID가 종료된 잠금만 회수하고, 살아 있는 소유자·손상된 잠금은 보존한다', async t => {
+  const fixture = await setup(t);
+  const { state, run, refused } = fixture;
+  await run('recover');
+  const lockFile = join(state, 'ledger.lock');
+  const child = spawnSync(process.execPath, ['-e', ''], { windowsHide: true });
+  assert.equal(child.status, 0);
+  assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
+  writeFileSync(lockFile, JSON.stringify({ pid: child.pid, at: new Date().toISOString() }));
+  await run('recover');
+  assert.deepEqual([existsSync(lockFile), existsSync(lockFile + '.reclaim')], [false, false]);
+  for (const content of [JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), '', '{broken']) {
+    writeFileSync(lockFile, content);
+    await refused(() => run('recover'), /대장 잠금이 사용 중이다/);
+    assert.equal(readFileSync(lockFile, 'utf8'), content);
+    rmSync(lockFile);
+  }
 });

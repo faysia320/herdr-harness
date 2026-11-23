@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { artifact, save, transition, withoutDecision } from './ledger.mjs';
+import { appendEvent, artifact, save, transition, withoutDecision } from './ledger.mjs';
 import { adapter, candidate, check, config, git, now, project } from './repository.mjs';
 import { suiteInvocation, suiteTestCount } from './suite.mjs';
 import { closeTerminal, reclaimTerminals } from './terminals.mjs';
@@ -106,16 +106,28 @@ export async function dispatch(ctx, ledger, task) {
   await transition(ctx, task, stateForStage[stage], stage + ' 위임');
   const file = join(dir, 'prompt.txt');
   writeFileSync(file, prompt(ctx, ledger, task, run, instructions), { flag: 'wx' });
-  save(ctx, ledger, { task: task.id, event: 'dispatch', stage, round });
+  const event = { task: task.id, event: 'dispatch', stage, round };
   const text = '[' + task.id + ' ' + stage + '] Read "' + file + '" first and follow it.';
   const extra = role.cli === 'codex' ? ['-C', task.worktree, '--add-dir', dir, text] : ['--add-dir', dir, '--', text];
   const labels = ['--label', 'harness.project=' + project, '--label', 'harness.task=' + task.id, '--label', 'harness.run=' + token];
   const space = ctx.herdr(['get', ledger.lead.terminal])?.labels?.['herdr.space'];
   if (space) labels.push('--label', 'herdr.space=' + space);
   const launched = ctx.herdr(['run', '--json', '--bg', '--outlive-parent', '--parent', ledger.lead.terminal, '--name', name, '--cwd', task.worktree, ...labels, '--', ...role.argv, ...extra]);
-  check(launched?.address, 'Herdr 위임 주소를 확인할 수 없다. 해당 이름을 확인한 뒤 수집한다.');
+  if (!launched?.address) {
+    // 주소 없이 떠 있을 수 있는 터미널을 이름으로 수집하도록 회차는 남긴다(기존 동작).
+    save(ctx, ledger, event);
+    check(false, 'Herdr 위임 주소를 확인할 수 없다. 해당 이름을 확인한 뒤 수집한다.');
+  }
   run.terminal = launched.address;
-  save(ctx, ledger);
+  // 대장은 터미널 주소까지 담아 한 번만 교체한다. 교체가 끝내 실패하면 디스크의 대장·이벤트는 위임 전 그대로이므로
+  // 방금 띄운 터미널(레이블 project·task·run 확인)을 닫고 지운 뒤 원래 오류로 끝낸다. 이벤트는 교체 뒤에만 남긴다.
+  try { save(ctx, ledger); }
+  catch (error) {
+    const closed = closeTerminal(ctx, ledger, task, run, { reclaim: true });
+    error.message = '대장 저장에 실패해 위임을 되돌렸다. 위임 터미널 정리: ' + JSON.stringify(closed) + ' — ' + error.message;
+    throw error;
+  }
+  appendEvent(ctx, event);
   return { id: task.id, run };
 }
 
