@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { renameRetry } = require('./atomic-rename.cjs');
 const raw = fs.readFileSync(path.join(__dirname, '../policy/ledger.json'));
 const defaults = JSON.parse(raw);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -67,7 +68,7 @@ function archive(ledger, stateDir, options = {}) {
     if (fs.existsSync(target)) { if (digest(fs.readFileSync(target)) !== sha) fail(`이미 다른 내용의 보관 파일이 있다: ${file}`); }
     else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(`${target}.tmp`, bytes); fs.renameSync(`${target}.tmp`, target);
+      fs.writeFileSync(`${target}.tmp`, bytes); renameRetry(`${target}.tmp`, target);
     }
     next.tasks[id] = summarize(task, file, at);
     moved.push(id);

@@ -29,7 +29,7 @@ export function build() {
   files.push('core/verification-receipt.cjs', 'core/preparation.mjs', 'core/metrics.mjs', 'bin/metric.mjs');
   files.push('bin/resource-status.mjs', 'bin/send.mjs');
   // QA 실행 영수증 v2 발급기와 CI 검증기. 저장소별 정책 파일(HH는 policy/qa-receipt.json)은 release에 싣지 않는다.
-  files.push('core/qa-receipt-policy.cjs', 'core/qa-receipt-runner.mjs', 'bin/qa-receipt.mjs', 'bin/verify-qa-receipt.mjs');
+  files.push('core/atomic-rename.cjs', 'core/qa-receipt-policy.cjs', 'core/qa-receipt-runner.mjs', 'bin/qa-receipt.mjs', 'bin/verify-qa-receipt.mjs');
   const contents = new Map(files.sort().map(name => [name, releaseBytes(name)]));
   const version = JSON.parse(contents.get('package.json')).version;
   const manifest = { format: 1, version, files: Object.fromEntries(Array.from(contents, ([name, bytes]) => [name, hash(bytes)])) };

@@ -2,7 +2,7 @@
 // 모두 통과하고 후보가 그대로일 때만 receipt.json과 PR 본문용 envelope.txt를 쓴다.
 // Docker·이미지·사본 준비에 실패하면 영수증 없이 BLOCKED, 검사가 실패하면 FAIL이다. 하네스 독립 QA와 하네스 밖 PR이 같은 함수를 쓴다.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { arch, release as osRelease } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -10,6 +10,7 @@ import { runTree } from './process.js';
 
 const require = createRequire(import.meta.url);
 const { publishTree } = require('./verification-receipt.cjs');
+const { renameRetry } = require('./atomic-rename.cjs');
 const contract = require('./qa-receipt-policy.cjs');
 export const runnerId = { id: 'herdr-qa-receipt', version: 1 };
 export const hostName = () => contract.hostNames[process.platform] ?? process.platform;
@@ -30,7 +31,7 @@ const version = command => {
 };
 function atomicWrite(file, text) {
   writeFileSync(file + '.tmp', text);
-  renameSync(file + '.tmp', file);
+  renameRetry(file + '.tmp', file);
 }
 class Blocked extends Error {}
 
