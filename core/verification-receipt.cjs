@@ -3,13 +3,28 @@ const path=require('node:path');
 const os=require('node:os');
 const {execFileSync}=require('node:child_process');
 const artifacts=require('./artifact-policy.cjs');
+// 임시 index를 실제 index의 mode·blob·stage와 skip-worktree 표시만으로 채운다. stat 캐시는 옮기지 않으므로
+// 같은 길이·같은 초 mtime으로 바뀐 미스테이지 파일도 뒤이은 add -A가 작업 트리 내용을 다시 읽는다.
+// 경로는 원시 바이트로 한 번에 넘겨 파일별 Git 프로세스를 만들지 않는다. 실제 index가 없으면 HEAD에서 시작한다.
+function seedIndex(cwd, env) {
+  const git=(args,e,input)=>execFileSync('git',args,{cwd,env:e,input,windowsHide:true,stdio:[input===undefined?'ignore':'pipe','pipe','pipe'],maxBuffer:256<<20,timeout:30000});
+  const real=path.resolve(cwd,git(['rev-parse','--git-path','index'],process.env).toString('utf8').trim());
+  if(!fs.existsSync(real)){git(['read-tree','HEAD'],env);return;}
+  const out=git(['ls-files','-s','-t','-z'],process.env),info=[],skip=[];
+  for(let at=0;at<out.length;){
+    const end=out.indexOf(0,at),rec=out.subarray(at,end);at=end+1;
+    info.push(rec.subarray(2),Buffer.of(0));
+    if(rec[0]===0x53)skip.push(rec.subarray(rec.indexOf(9)+1),Buffer.of(0));
+  }
+  if(info.length)git(['update-index','-z','--index-info'],env,Buffer.concat(info));
+  if(skip.length)git(['update-index','-z','--skip-worktree','--stdin'],env,Buffer.concat(skip));
+}
 function candidateTree(cwd) {
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'herdr-proof-'));
   const git=(args,env=process.env)=>execFileSync('git',args,{cwd,env,encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe'],timeout:30000}).trim();
   try {
-    const index=path.join(scratch,'index'),real=path.resolve(cwd,git(['rev-parse','--git-path','index']));
-    const env={...process.env,GIT_INDEX_FILE:index};
-    if(fs.existsSync(real))fs.copyFileSync(real,index);else git(['read-tree','HEAD'],env);
+    const env={...process.env,GIT_INDEX_FILE:path.join(scratch,'index')};
+    seedIndex(cwd,env);
     git(['add','-A'],env);
     git(['rm','-r','--cached','-q','--ignore-unmatch','--','docs/tasks','docs/projects'],env);
     // add가 작업 바이트를 기록한 index의 지문이다. 큰 저장소의 기존 blob 존재 여부를 다시 읽지 않는다.
@@ -32,9 +47,8 @@ function publishTree(cwd, base) {
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'herdr-proof-'));
   const git=(args,env=process.env,input)=>execFileSync('git',args,{cwd,env,input,encoding:'utf8',windowsHide:true,stdio:[input===undefined?'ignore':'pipe','pipe','pipe'],maxBuffer:64<<20,timeout:30000});
   try {
-    const index=path.join(scratch,'index'),real=path.resolve(cwd,git(['rev-parse','--git-path','index']).trim());
-    const env={...process.env,GIT_INDEX_FILE:index};
-    if(fs.existsSync(real))fs.copyFileSync(real,index);else git(['read-tree','HEAD'],env);
+    const env={...process.env,GIT_INDEX_FILE:path.join(scratch,'index')};
+    seedIndex(cwd,env);
     git(['add','-A'],env);
     const parts=git(['diff-index','--cached','--raw','--no-renames','--no-abbrev','-z',base],env).split('\0');
     const rows=[];

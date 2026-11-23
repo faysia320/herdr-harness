@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,writeFileSync,mkdirSync,rmSync,readFileSync,renameSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,mkdirSync,rmSync,readFileSync,renameSync,utimesSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
@@ -9,7 +9,9 @@ const {candidateTree,verifyReceipt}=createRequire(import.meta.url)('../core/veri
 test('QA runner 증거는 같은 후보·시각·완료 결과만 통과시키고 index를 보존한다',t=>{
  const cwd=mkdtempSync(join(tmpdir(),'herdr-receipt-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
  const git=(...args)=>execFileSync('git',args,{cwd,windowsHide:true,stdio:'pipe'});
- git('init','-q');writeFileSync(join(cwd,'.gitignore'),'target/\n');writeFileSync(join(cwd,'a.txt'),'one\n');git('add','.gitignore','a.txt');
+ // 같은 길이 수정(26행)이 시각에 따라 갈리지 않도록 a.txt의 mtime을 과거 정각으로 고정한다.
+ const fixed=new Date('2001-01-01T00:00:00Z');git('init','-q');git('config','core.trustctime','false');
+ writeFileSync(join(cwd,'.gitignore'),'target/\n');writeFileSync(join(cwd,'a.txt'),'one\n');utimesSync(join(cwd,'a.txt'),fixed,fixed);git('add','.gitignore','a.txt');
  const index=readFileSync(join(cwd,'.git/index')),tree=candidateTree(cwd);assert.deepEqual(readFileSync(join(cwd,'.git/index')),index);
  const dir=join(cwd,'target/sw-verify');mkdirSync(dir,{recursive:true});
  const receipt={version:1,role:'qa',stable:true,tree,base:'base',scope:'changed-paths',completedAt:'2026-11-17T01:00:00Z',checks:[{id:'test',state:'passed'}]};
@@ -23,7 +25,7 @@ test('QA runner 증거는 같은 후보·시각·완료 결과만 통과시키�
  assert.throws(()=>verifyReceipt(cwd,'2026-11-17T02:00:00Z','base'),/불완전/);
  save({...receipt,checks:[{id:'test',state:'skipped'}]});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
  save({...receipt,base:'wrong'});assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
- save(receipt);writeFileSync(join(cwd,'a.txt'),'two\n');assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
+ save(receipt);writeFileSync(join(cwd,'a.txt'),'two\n');utimesSync(join(cwd,'a.txt'),fixed,fixed);assert.throws(()=>verifyReceipt(cwd,'2026-11-17T00:00:00Z','base'),/불완전/);
 });
 test('미커밋 QA 후보의 v2 지문은 게시 커밋과 같고 무시 경로의 QA 산출물은 후보에 들어가지 않는다',t=>{
  const {candidateBinding}=createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
@@ -54,4 +56,25 @@ test('v2 후보 publishTree는 B 대비 실제 변경에만 과정 문서 정책
  assert.deepEqual(git('diff','--name-status','--no-renames',base,tree).split('\n'),['M\ta.txt','D\tdocs/tasks/gone/a.md']);
  // v1 candidateTree(HH 수집기·정리 경로)는 기존처럼 두 문서 폴더 전체를 뺀다.
  assert.match(git('diff','--name-status',base,candidateTree(cwd)),/D\tdocs\/tasks\/keep\/a\.md/);
+});
+test('같은 길이·같은 초 mtime으로 바뀐 미스테이지 파일도 v1·v2 후보에 작업 내용으로 들어가고 skip-worktree는 유지된다',t=>{
+ const {publishTree}=createRequire(import.meta.url)('../core/verification-receipt.cjs');
+ const {candidateBinding}=createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+ const cwd=mkdtempSync(join(tmpdir(),'herdr-receipt-racy-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+ const git=(...args)=>{const out=execFileSync('git',args,{cwd,windowsHide:true,encoding:'utf8',stdio:'pipe'});return out.includes('\0')?out:out.trim();};
+ git('init','-q');git('config','user.name','r');git('config','user.email','r@example.invalid');git('config','core.autocrlf','false');git('config','core.trustctime','false');
+ // 시각에 의존하지 않도록 내용과 함께 mtime을 같은 과거 정각으로 고정한다. index 기록 시각보다 과거라 git은 stat 캐시를 믿는다.
+ const fixed=new Date('2001-01-01T00:00:00Z'),put=(f,s)=>{writeFileSync(join(cwd,f),s);utimesSync(join(cwd,f),fixed,fixed);};
+ put('a.txt','one\n');put('sparse.txt','s\n');git('add','-A');git('commit','-q','-m','base');const base=git('rev-parse','HEAD');
+ git('update-index','--skip-worktree','sparse.txt');rmSync(join(cwd,'sparse.txt'));
+ put('a.txt','two\n');const expected=git('hash-object','a.txt'),index=readFileSync(join(cwd,'.git/index'));
+ const v1=candidateTree(cwd),v2=publishTree(cwd,base);
+ assert.deepEqual(readFileSync(join(cwd,'.git/index')),index);
+ assert.deepEqual([git('rev-parse',v1+':a.txt'),git('rev-parse',v2+':a.txt')],[expected,expected]);
+ // skip-worktree로 작업 트리에 없는 파일은 삭제로 세지 않는다.
+ assert.deepEqual(git('diff','--name-status','--no-renames',base,v2).split('\n'),['M\ta.txt']);
+ const qa=candidateBinding(git,base,base,v2);assert.deepEqual([qa.count,qa.paths],[1,['a.txt']]);
+ // 실제 index도 같은 stat 캐시를 가지므로 게시 add 전에는 다른 고정 시각으로 바꿔 작업 내용을 기록하게 한다.
+ const later=new Date('2002-01-01T00:00:00Z');utimesSync(join(cwd,'a.txt'),later,later);git('update-index','--no-skip-worktree','sparse.txt');git('checkout','--','sparse.txt');git('add','-A');git('commit','-q','-m','publish');
+ assert.equal(candidateBinding(git,base,base,git('rev-parse','HEAD')).digest,qa.digest);
 });
