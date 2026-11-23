@@ -12,6 +12,7 @@ const os = require('node:os');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const artifacts = require('./artifact-policy.cjs');
+const { renameRetry } = require('./atomic-rename.cjs');
 const { candidateTree } = require('./verification-receipt.cjs');
 
 const VERSION = 1;
@@ -291,7 +292,7 @@ function readJson(file) {
 }
 function writeAtomic(file, bytes) {
   const temp = `${file}.${randomUUID()}.tmp`;
-  try { fs.writeFileSync(temp, bytes, { flag: 'wx' }); fs.renameSync(temp, file); }
+  try { fs.writeFileSync(temp, bytes, { flag: 'wx' }); renameRetry(temp, file); }
   finally { fs.rmSync(temp, { force: true }); }
 }
 // 상태 폴더의 업무 폴더. 경로 중간의 링크·junction을 따라가지 않는다.

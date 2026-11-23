@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { validateDecisions, changeDecision, resolvedForTask } from './decisions.js';
 import { validateLedger } from './contract.js';
+const { renameRetry } = createRequire(import.meta.url)('./atomic-rename.cjs');
 
 // 쓰기는 adapter가 기존 ledger.lock을 잡고 Lead 생존을 확인한 동안만 호출한다.
 // 잠금을 이중 획득하거나 업무 대장·events를 쓰지 않는다.
@@ -23,7 +25,7 @@ export function decisionStore({ stateDir, project, ledger, action, id, input, re
   const serialized = `${JSON.stringify(data, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > (1 << 20)) throw new Error('결정함이 mod의 1 MiB 읽기 한도를 넘어서 저장하지 않았다.');
   const tmp = `${file}.${randomUUID()}.tmp`;
-  try { writeFileSync(tmp, serialized, { flag: 'wx' }); renameSync(tmp, file); }
+  try { writeFileSync(tmp, serialized, { flag: 'wx' }); renameRetry(tmp, file); }
   finally { rmSync(tmp, { force: true }); }
   return result;
 }

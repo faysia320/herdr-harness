@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { renameRetry } = require('./atomic-rename.cjs');
 const raw = fs.readFileSync(path.join(__dirname, '../policy/artifacts.json'));
 const defaults = JSON.parse(raw);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -90,7 +91,7 @@ const isLink = (p) => { try { return fs.lstatSync(p).isSymbolicLink(); } catch {
 function put(target, bytes) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const temp = `${target}.${randomUUID()}.tmp`;
-  try { fs.writeFileSync(temp, bytes, { flag: 'wx' }); fs.renameSync(temp, target); }
+  try { fs.writeFileSync(temp, bytes, { flag: 'wx' }); renameRetry(temp, target); }
   finally { fs.rmSync(temp, { force: true }); }
 }
 
