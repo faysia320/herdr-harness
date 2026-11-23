@@ -524,6 +524,14 @@ export default class Harness extends View {
           .child(this.button(`instruction-${id}-cancel`, "취소", (cx) => { this.typing = null; cx.notify(); }, t))));
   }
 
+  // 활성 release의 보정 전송 도구로 보낸다. Codex Lead는 붙여 넣은 지시가 입력창에 남는 경우가 있어 도구가 확인 후 Enter를 다시 누른다.
+  // 활성 release를 모르면 기존처럼 hc send로 보낸다.
+  async sendToLead(address, message) {
+    const active = parse(await readTextFile(`${appHome()}/mods/harness/release.json`).catch(() => null));
+    if (!active?.release) return hc(["send", address, message]);
+    return exec("node", [`${active.release}/bin/send.mjs`, address, message], { timeout: 30000 });
+  }
+
   sendInstruction(p, d, lead, value, cx) {
     const current = this.currentProject(), key = this.instructionKey(p, d);
     const actual = current?.tasks.find((task) => task.id === d.task.id && !task.archived && task.state === "BLOCKED" && !waitingOn(task, current));
@@ -538,7 +546,7 @@ export default class Harness extends View {
     this.instructions.set(key, { status: "sending", answer }); cx.notify();
     cx.spawn(async (cx) => {
       let r;
-      try { r = await hc(["send", lead.address, message]); } catch (e) { r = { code: -1, stderr: e?.message ?? String(e) }; }
+      try { r = await this.sendToLead(lead.address, message); } catch (e) { r = { code: -1, stderr: e?.message ?? String(e) }; }
       this.instructions.set(key, r.code === 0 ? { status: "sent", answer } : { status: "failed", answer, error: (r.stderr || r.stdout || `종료 코드 ${r.code}`).trim().slice(0, 160) });
       cx.notify();
     });
@@ -558,7 +566,7 @@ export default class Harness extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       let r;
-      try { r = await hc(["send", lead.address, message]); } catch (e) { r = { code: -1, stderr: e?.message ?? String(e) }; }
+      try { r = await this.sendToLead(lead.address, message); } catch (e) { r = { code: -1, stderr: e?.message ?? String(e) }; }
       this.answers.set(key, r.code === 0 ? { status: "sent", answer } : { status: "failed", answer, error: (r.stderr || r.stdout || `종료 코드 ${r.code}`).trim().slice(0, 160) });
       cx.notify();
     });

@@ -49,6 +49,9 @@ const preScopeRelease = t => patchedRelease(t, (dir, manifest) => {
   };
   edit('core/workflow.cjs', text => text + "\nfor (const name of ['planScopeVersion', 'freezePlan', 'remainingVerification', 'missingRemaining']) delete module.exports[name];\n");
   edit('core/decision-store.js', text => text.replaceAll("action === 'resolved-for-task'", "action === 'pre-scope'"));
+  // 보정 전송 도구 이전 release다.
+  rmSync(join(dir, 'bin/send.mjs'), { force: true });
+  delete manifest.files['bin/send.mjs'];
 });
 const refExists = (repo, branch) => spawnSync('git', ['rev-parse', '--verify', '-q', 'refs/heads/' + branch], { cwd: repo }).status === 0;
 
@@ -687,6 +690,9 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   // 조사 지시서: 실행 위치·QA 실행 수단·후속 확인 작성 예와 이 업무의 해소 결정만 담는다.
   const research = (await run('dispatch ' + task.id)).run;
   const guide = promptOf(research);
+  // 완료 보고는 고정 release의 보정 전송 도구로 Lead에게 보낸다(Codex Lead 입력창 미제출 보정).
+  assert.match(guide, /send the result to the Lead: node "[^"]+\/bin\/send\.mjs" t-lead "[^"]+ research complete; report: /);
+  assert.ok(guide.includes('node ' + JSON.stringify(join(built.release, 'bin/send.mjs').replaceAll('\\', '/'))));
   for (const pattern of [/checkScopes:\[one row per check\]/, /independent-qa — 독립 QA가/, /follow-up — 배포 후/, /실제 실행할 수 없는 검사\(배포 후·실기기·브라우저/,
     /hh-suite — .*검사 ID hh-suite 전용/, /node-test — .*command 형식/, /git-read — /, /"location":"follow-up".*"environment":"배포 후 Galaxy Chrome","verify":/,
     /어댑터 필수 검사: hh-suite/, /지시나 승인이 아니다/]) assert.match(guide, pattern);
@@ -1024,6 +1030,8 @@ test('HH 이전 release: 기존 계획 형식·지시서를 유지하고 결정 
   assert.match(guide, /Write verification-plan\.json with \{run, version:2, criteria:\[IDs\], checks:\[IDs including hh-suite\]\}\./);
   assert.match(guide, /"checks":\["필수 검사 식별자"\]\}\./);
   assert.doesNotMatch(guide, /checkScopes|해소 결정|LEGACY_DECISION_QUOTE/);
+  // 보정 전송 도구가 없는 release는 기존 hc send 완료 보고를 유지한다.
+  assert.match(guide, /send the result to the Lead: hc send t-lead "/);
   writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'legacy plan', planned_files: ['tracked.txt'] });
   writeJson(join(research.dir, 'verification-plan.json'), { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-suite', 'browser'] });
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');

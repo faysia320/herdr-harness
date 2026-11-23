@@ -778,6 +778,30 @@ test('지시 입력 뒤 상태·사유·공간·Lead가 바뀌거나 자료가 �
   }
 });
 
+test('활성 release가 있으면 지시·답을 보정 전송 도구로 보내고 실패를 그대로 표시한다', async () => {
+  const calls = [], sends = [];
+  let code = 0;
+  const s = setup({ hc: async (args) => { sends.push(args); return { code: 0 }; },
+    exec: async (tool, args, options) => { calls.push({ tool, args, options }); return code ? { code, stdout: '', stderr: 'Enter 3회 뒤에도 t7 입력창에 원문이 남아 있다.' } : { code: 0, stdout: '{}', stderr: '' }; } });
+  install(s);
+  s.files.set('fixture-home/mods/harness/release.json', JSON.stringify({ release: 'C:/fixture-release' }));
+  const p = await s.load(project), v = new s.Harness(); let input = '';
+  Object.assign(v, { projects: [p], expanded: new Set(), answerInput: { value: () => input, set_value(value) { input = value; }, focus() {} } });
+  const jobs = [], cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
+  v.render(); s.clicks.get('instruction-fixture-a-edit')({}, cx); input = '다시 검토해'; v.render();
+  v.submitTyped(cx); await Promise.all(jobs);
+  assert.equal(sends.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].tool, 'node');
+  assert.deepEqual(calls[0].args.slice(0, 2), ['C:/fixture-release/bin/send.mjs', 't7']);
+  assert.match(calls[0].args[2], /업무 a/); assert.equal(calls[0].args.length, 3);
+  s.texts.length = 0; v.render(); assert.ok(s.texts.some((text) => text.startsWith('전달됨 · Lead 처리 대기')));
+  // 도구가 미제출로 실패하면 실패로 보여 다시 보낼 수 있다.
+  code = 1; v.instructions = new Map();
+  s.clicks.get('instruction-fixture-a-edit')({}, cx); input = '다시 검토해'; v.render(); v.submitTyped(cx); await Promise.all(jobs);
+  s.texts.length = 0; v.render(); assert.ok(s.texts.some((text) => text.includes('전달 실패: Enter 3회 뒤에도 t7 입력창에 원문이 남아 있다.')));
+});
+
 test('지시 전달 실패는 재입력할 원문을 보존한다', async () => {
   const s = setup({ hc: async () => ({ code: 1, stderr: '연결 끊김' }) }); install(s);
   const p = await s.load(project), v = new s.Harness(); let input = '';

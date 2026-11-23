@@ -30,6 +30,14 @@ function guide(ctx, ledger, task, stage) {
   return ctx.flow({ ...input, options: { decisions, ...(stage === 'research' ? { scopes: scopeOptions() } : {}) } });
 }
 
+// 완료 보고 명령. 고정 release에 보정 전송 도구가 있으면 그것을 쓴다(Codex Lead의 입력창 미제출 보정). 이전 release는 hc send.
+function notifyCommand(release, lead) {
+  const tool = join(release, 'bin/send.mjs');
+  if (!existsSync(tool)) return 'hc send ' + lead;
+  // 첫 토큰을 node로 둬 bash·PowerShell 모두 그대로 실행한다.
+  return 'node ' + JSON.stringify(tool.replaceAll('\\', '/')) + ' ' + lead;
+}
+
 function prompt(ctx, ledger, task, run, instructions) {
   const stage = run.stage, release = ctx.binding.release;
   const plan = scoped(ctx) ? 'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite], checkScopes:[one row per check]} following the plan rules below.' :
@@ -56,8 +64,8 @@ function prompt(ctx, ledger, task, run, instructions) {
     instructions,
     stage === 'qa' ? 'QA runner: ' + qa : '',
     'Pinned release: ' + release,
-    'Do not change the ledger, binding, baseline release, remote Git state or other tasks. When finished, send the result to the Lead: hc send ' +
-      ledger.lead.terminal + ' "' + task.id + ' ' + stage + ' complete; report: ' + file + '"',
+    'Do not change the ledger, binding, baseline release, remote Git state or other tasks. When finished, send the result to the Lead: ' +
+      notifyCommand(release, ledger.lead.terminal) + ' "' + task.id + ' ' + stage + ' complete; report: ' + file + '"',
   ].filter(Boolean).join('\n') + '\n';
 }
 
