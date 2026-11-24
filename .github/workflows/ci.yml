@@ -1,8 +1,8 @@
 name: Harness CI
 
-# 전체 시험은 독립 QA가 Windows·Docker Linux에서 실행하고 PR 본문에 QA 실행 영수증을 남긴다.
-# CI는 PR head에서 후보 지문을 다시 계산해 영수증과 저장소 정책(policy/qa-receipt.json)만 검사한다.
-# 본문 수정(edited)에도 다시 실행한다. main push·nightly 사후 검사는 두지 않는다.
+# HH 자체 QA는 바뀐 파일 시험만 독립 QA에서 실행하고 QA 실행 영수증을 쓰지 않는다(HH-020).
+# 저장소 보호 규칙이 필수로 보는 job 이름(harness-ci (ubuntu-latest)/(windows-latest))만 유지하고, 단계는 수 초짜리 build 하나다.
+# 검사를 더하지 않는다. main push·nightly 사후 검사는 두지 않는다.
 on:
   pull_request:
     branches: [main]
@@ -24,8 +24,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - run: node bin/verify-qa-receipt.mjs
+      - run: node scripts/build.mjs

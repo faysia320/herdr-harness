@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { activeRun, collect, createWorktree, dispatch, policyPath, scoped } from './stages.mjs';
+import { activeRun, collect, createWorktree, dispatch, scoped } from './stages.mjs';
 import { archiveKeep, cleanupWorktree } from './cleanup.mjs';
 import { reclaimTerminals } from './terminals.mjs';
 import { atomic, lock, readLedger, requireLead, save, taskById, transition, withoutDecision } from './ledger.mjs';
@@ -219,19 +219,8 @@ function publicationCheck(ctx, ledger, id, committed) {
     check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
   }
   const left = remaining(ctx, task.x_flow);
-  const envelope = qaReceipt(ctx, task);
-  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}),
-    ...(envelope ? { qaReceipt: envelope } : {}) };
-}
-
-// PASS한 QA 회차의 runner가 남긴 QA 실행 영수증 줄. 게시자는 PR 본문 «남은 검증» 뒤 줄 맨 앞에 그대로 넣는다.
-// 게시 판정에는 쓰지 않는다. 후보·검사 대조는 PR의 필수 CI가 한다.
-function qaReceipt(ctx, task) {
-  const qa = task.runs.filter(r => r.stage === 'qa' && r.outcome === 'PASS').at(-1);
-  const policy = [task.worktree, ctx.root].map(dir => join(dir, policyPath)).find(existsSync);
-  if (!qa || !policy) return null;
-  const file = join(task.worktree, readJson(policy).output, qa.token, 'envelope.txt');
-  return existsSync(file) ? { file, line: readFileSync(file, 'utf8').trim() } : null;
+  // HH는 QA 실행 영수증을 쓰지 않는다. PR 본문에는 남은 검증 줄만 넣는다.
+  return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}) };
 }
 
 async function deliver(ctx, ledger, task, name, a) {
@@ -271,8 +260,9 @@ async function close(ctx, ledger, task, a, terminal) {
   check(evidence, '--evidence에 정책 예외 승인 출처와 적용 이유가 필요하다.');
   check(flow?.version === 2 && task.state === 'QA' && !task.current && task.pending === null &&
     flow.phase === 'publish' && !flow.delivery, 'PR이 연결되지 않은 게시 대기 업무만 예외 종결한다.');
-  check(flow.verification?.verdict === 'PASS' && task.candidate?.fingerprint && flow.verification.candidate === task.candidate.fingerprint &&
-    flow.runner?.tree && flow.runner.tree === task.candidate.tree, '독립 QA PASS와 실행 영수증이 저장 후보와 일치해야 한다.');
+  // 현재 후보(tree 포함)와 저장 후보의 대조는 아래 publicationCheck가 한다.
+  check(flow.verification?.verdict === 'PASS' && task.candidate?.fingerprint && task.candidate.tree &&
+    flow.verification.candidate === task.candidate.fingerprint, '독립 QA PASS가 저장 후보와 일치해야 한다.');
   // PR이 없으면 후속 확인이 드러날 곳이 없으므로 종결 기록에 남긴다.
   const left = publicationCheck(ctx, ledger, task.id, false).remainingVerification ?? [];
   const previousPhase = flow.phase;
