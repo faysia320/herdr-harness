@@ -51,7 +51,7 @@ node .agents/harness/launch.mjs dispatch HH-001
    ```
 
 3. 업무가 독립 QA PASS 뒤 게시 대기(phase=publish)나 CI 대기(phase=ci)이면 그 결정은 PASS한 QA 지시서에 없었다. 판정을 기록하기 전에는 `publish-check`·`flow-attach-pr`·`flow-close`·`flow-deliver`가 «QA 이후 해소된 결정의 계획 영향을 판정하지 않았다»로 멈춘다(이미 병합된 PR의 `flow-prove-merged`는 막지 않는다). `decision list --all`에서 결정 ID와 해소 뒤 revision을 확인한다.
-   - 계획을 바꾸면 결정 ID·revision·변경 근거로 QA 판정과 게시 허가를 철회하고 재조사로 돌린다. 대장에는 `QA → BLOCKED`(철회)와 `BLOCKED → RESEARCHING`이 남고, `x_flow.recovery`에 결정(`decision`)과 철회한 QA 보고 지문·phase·연결했던 PR(`withdrawn`)이 남는다. 이전 QA 판정·실행 영수증·게시 근거(`verification`, `runner`, `delivery`)는 지워진다. 열린 PR은 새 QA 뒤 같은 브랜치에 다시 게시하고 `flow-attach-pr`로 다시 연결한다.
+   - 계획을 바꾸면 결정 ID·revision·변경 근거로 QA 판정과 게시 허가를 철회하고 재조사로 돌린다. 대장에는 `QA → BLOCKED`(철회)와 `BLOCKED → RESEARCHING`이 남고, `x_flow.recovery`에 결정(`decision`)과 철회한 QA 보고 지문·phase·연결했던 PR(`withdrawn`)이 남는다. 이전 QA 판정·게시 근거(`verification`, `delivery`, 이전 형식 업무의 `runner`)는 지워진다. 열린 PR은 새 QA 뒤 같은 브랜치에 다시 게시하고 `flow-attach-pr`로 다시 연결한다.
 
      ```powershell
      node .agents/harness/launch.mjs flow-resume HH-123 --stage research --decision copy-timing --revision 2 --evidence "copy-check를 배포 후 실기기 확인(follow-up)으로 이동"
@@ -71,7 +71,7 @@ node .agents/harness/launch.mjs dispatch HH-001
 
 BLOCKED 업무의 재조사(2)에도 `--decision KEY --revision N`을 붙이면 같은 검증을 거쳐 `x_flow.recovery.decision`에 남는다.
 
-collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 수 없는 항목의 필수 지정, 선언되지 않은 실행 수단, QA runner 전용 `hh-suite` 행의 `command`, follow-up `environment`·`verify`의 링크·이미지 대괄호·꺾쇠·백틱·HTML 엔티티 등) 대장은 바뀌지 않는다. 같은 조사 회차의 verification-plan.json을 고치게 한 뒤 다시 collect한다. 오류 메시지에 원인 검사·AC ID가 있다.
+collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 수 없는 항목의 필수 지정, 선언되지 않은 실행 수단(HH-020 이후 선언에서 빠진 `hh-suite` 포함), node-test 행의 와일드카드·전체 suite 명령, follow-up `environment`·`verify`의 링크·이미지 대괄호·꺾쇠·백틱·HTML 엔티티 등) 대장은 바뀌지 않는다. 같은 조사 회차의 verification-plan.json을 고치게 한 뒤 다시 collect한다. 오류 메시지에 원인 검사·AC ID가 있다.
 
 ## PR 본문 남은 검증 누락 복구
 
@@ -95,22 +95,15 @@ collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 �
 - **운영 위험**: AC 정상 경로 실패·데이터 유실·병합/운영 차단은 severity와 관계없이 FAIL(code finding)이며 수리로 돌린다.
 - **strict-off 저장소**: 보호 규칙 조회가 성공하고 strict 요구 규칙이 없으며 필수 검사 이름이 있으면 동기화 없이 확인한 head를 `--match-head-commit`으로 한 번 squash한다. 병합 직전 재조회와 서버 병합 사이의 main 이동은 막지 못하는 경쟁 구간이다. 사후 증명이 `proof-blocked`이면 PR·main을 직접 대조하고 문제는 후속 업무로 고친다. strict 요구 규칙이 있는데 ruleset 상세 조회가 403 등으로 실패하면 strict-off로 보지 않고 `blocked`로 멈춘다. 토큰 권한·ruleset 우회 주체를 확인한다.
 
-## QA 실행 영수증 발급과 PR 본문
+## HH 자체 QA: 바뀐 파일 시험만
 
-HH의 필수 CI(`harness-ci (ubuntu-latest)`, `harness-ci (windows-latest)`)는 전체 시험 대신 PR 본문의 QA 실행 영수증 줄만 검증한다([공통 규칙](../../README.md#qa-실행-영수증과-ci-검증)). PR #7 이하만 면제다. 영수증 줄이 없으면 PR은 병합되지 않으므로 게시 전에 줄을 확보한다.
+HH-020(2026-11-24 사용자 결정)부터 HH 자체 QA는 QA runner(verify.mjs)·QA 실행 영수증을 쓰지 않는다. 동결 계획은 바뀐 모듈에 대응하는 시험 파일을 적은 node-test 행과, 대응 시험이 없는 변경의 git-read 행만 둔다. 독립 QA는 그 명령을 Windows 후보 worktree에서 실행하고 Docker Linux 실행은 없다. 절차는 [README](README.md#시험-범위-바뀐-파일-시험만hh-020)에 있다.
 
-1. QA PASS 뒤 `publish-check HH-123`의 `qaReceipt.line`을 확인한다. 이 저장소의 QA runner(verify.mjs)가 Windows·Docker Linux 검사를 통과했을 때 그 QA 회차의 `target/hh-verify/receipts/<QA token>/envelope.txt`에 남긴 줄이다.
-2. `qaReceipt`가 없으면(HH-005 병합 전의 QA runner로 PASS했거나 회차 폴더가 지워졌다) `publish-check HH-123`이 허용하는지(업무 worktree 후보 = QA 후보) 확인한 뒤 업무 worktree에서 같은 runner로 발급한다. 원본 checkout(main)의 runner·정책을 쓴다. Windows와 Linux 전체 suite를 한 번씩 실행하고 OS마다 heavy 슬롯을 잡으므로 heavy로 다시 감싸지 않는다. Docker Desktop이 실행 중이어야 한다.
-
-   ```powershell
-   node <원본 checkout>/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <QA 회차> --heavy <고정 release>/bin/heavy.mjs --policy <원본 checkout>/policy/qa-receipt.json
-   ```
-
-   exit 0이면 출력의 `out`/envelope.txt가 본문에 넣을 줄이다. exit 1(FAIL)은 결함이므로 `flow-resume --stage implement`로 되돌린다. exit 3(BLOCKED)은 `reasons`의 Docker·이미지 문제를 해결한 뒤 같은 명령을 다시 실행한다.
-3. 게시자에게 envelope 줄을 넘겨 «남은 검증» 목록 뒤, 줄 맨 앞에 그대로 넣게 한다. 게시자는 그 본문으로 PR을 처음 만든다. 줄 없이 만든 PR은 첫 CI가 실패로 남아 같은 head의 병합 판정이 그 결과를 읽을 수 있다.
-4. CI가 «QA 영수증 거부»로 실패하면 사유를 본다. «없다·형식·해독»은 본문 줄을 고치고(`gh pr edit N --body-file <본문 파일>`, edited 이벤트로 재검사), «후보 지문 불일치»는 main이 후보 경로를 바꿨거나 PR 커밋이 QA 후보와 달라진 것이므로 현재 후보를 다시 QA하거나 2의 명령으로 다시 발급해 줄을 바꾼다. «필수 검사 결과 없음·정책과 다른 명령»은 main의 정책이 바뀐 경우이므로 다시 발급한다. 전체 시험으로 돌아가는 폴백은 없다.
-
-HH-005 자체의 PR은 그 QA의 matrix-live 회차가 `target/hh-verify/receipts/<QA token>/envelope.txt`를 남긴다. 병합 전 원본 checkout에는 새 publish-check가 없으므로 이 파일을 직접 읽어 3을 따른다.
+- 조사 summary에서 각 node-test 행의 시험 파일이 예정 변경과 실제로 연결되는지(모듈 시험·통합 시험·바뀐 시험 파일) 본다. 와일드카드나 전체 suite는 동결에서 거부된다.
+- publish-check는 `qaReceipt`를 돌려주지 않는다. 게시자는 PR 본문에 영수증 줄을 넣지 않는다. 필수 CI(`harness-ci (ubuntu-latest)`, `harness-ci (windows-latest)`)는 `node scripts/build.mjs`만 실행한다.
+- 이 변경 전 hh-suite 행을 동결한 업무는 `flow-resume HH-123 --stage research --evidence "HH-020: 바뀐 파일 시험으로 재동결"`로 다시 동결한다.
+- 전체 회귀는 PR 전에 잡히지 않는다(사용자 수용 위험). 공통 release 배포 뒤 SW·VDP·VP에서 회귀가 보고되면 후속 업무로 고친다. 필요하면 Lead가 `node <고정 release>/bin/heavy.mjs -- node --test test/*.test.mjs mod/harness/*.test.mjs`로 별도 확인한다.
+- policy/qa-receipt.json과 공통 발급기·검증기(bin/qa-receipt.mjs, bin/verify-qa-receipt.mjs, core/qa-receipt-*)는 다른 저장소용 공통 기능이라 남긴다. HH는 사용하지 않는다.
 
 ## PR 없는 업무의 정책 예외 종결
 

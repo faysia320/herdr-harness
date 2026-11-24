@@ -14,8 +14,7 @@
   },
   "execution_overrides": {},
   "qa_executors": {
-    "hh-suite": { "description": "QA 지시서의 QA runner(verify.mjs)가 고정 release로 전체 시험을 실행하고 회차 영수증을 남긴다", "ids": ["hh-suite"] },
-    "node-test": { "description": "후보 worktree에서 지정한 시험 파일만 node --test로 실행한다", "pattern": "node --test(?: (?:test|mod/[a-z-]+)/[A-Za-z0-9_.-]+\\.test\\.mjs)+" },
+    "node-test": { "description": "후보 worktree에서 바뀐 모듈에 대응하는 시험 파일만 node --test로 실행한다(전체 suite·와일드카드 금지)", "pattern": "node --test(?: (?:test|mod/[a-z-]+)/[A-Za-z0-9_.-]+\\.test\\.mjs)+" },
     "git-read": { "description": "후보 worktree에서 Git 읽기 명령으로 변경 경로·문서 내용을 대조한다. 옵션은 허용 목록의 조회 옵션만 쓰며 파일 출력·외부 명령 옵션(--output, -O, --ext-diff 등)과 따옴표·괄호·와일드카드 같은 셸 확장 문자는 쓸 수 없다", "pattern": "git (?:diff|ls-files|show|log|grep)(?: (?:--|-[cdeilmnopqsuwzEF]|-n?[0-9]+|-U[0-9]+|--(?:name-only|name-status|stat|numstat|shortstat|summary|check|cached|staged|others|exclude-standard|deleted|modified|oneline|patch|no-patch|raw|no-color|no-ext-diff|no-textconv|no-merges|first-parent|reverse|exit-code|quiet|count|files-with-matches|line-number|ignore-case|fixed-strings|extended-regexp|word-regexp|error-unmatch)|--(?:max-count|unified)=[0-9]+|--diff-filter=[A-Za-z]+|--(?:format|pretty)=[A-Za-z0-9%:._-]+|[A-Za-z0-9_./:^][A-Za-z0-9_./:^~@+%=-]*))*" }
   },
   "cleanup": {

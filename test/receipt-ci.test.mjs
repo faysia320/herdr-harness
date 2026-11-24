@@ -160,13 +160,14 @@ test('CI 검증 OR 정책: anyPlatform 규칙은 한 OS 결과만으로 통과�
   assert.match(none.stderr, /플랫폼 하나\(windows\|linux\)에서 suite 통과 필요/);
 });
 
-test('HH workflow: 두 필수 검사 이름을 유지하고 PR 이벤트(본문 수정 포함)에서 영수증 검증만 실행한다', () => {
+test('HH workflow: 두 필수 검사 이름을 유지하고 PR 이벤트에서 build 단계 하나만 실행한다(영수증 검사 없음)', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
   assert.match(workflow, /name: harness-ci \(\$\{\{ matrix\.os \}\}\)/);
   assert.match(workflow, /os: \[ubuntu-latest, windows-latest\]/);
-  assert.match(workflow, /types: \[opened, synchronize, reopened, edited\]/);
-  assert.match(workflow, /fetch-depth: 0/);
-  assert.match(workflow, /- run: node bin\/verify-qa-receipt\.mjs\r?\n/);
-  // main push·nightly 사후 검사, 전체 시험 폴백, 경로 필터·job skip이 없다.
-  for (const forbidden of [/^\s*push:/m, /schedule:/, /npm test/, /node --test/, /paths(?:-ignore)?:/, /^\s*if:/m, /concurrency:/]) assert.doesNotMatch(workflow, forbidden);
+  assert.match(workflow, /^\s*pull_request:/m);
+  const runs = workflow.match(/^\s*- run: .*$/gm);
+  assert.deepEqual(runs.map(r => r.trim()), ['- run: node scripts/build.mjs']);
+  // 영수증 검증·전체 시험·main push·nightly 사후 검사, 경로 필터·job skip이 없다.
+  for (const forbidden of [/verify-qa-receipt/, /qa-receipt/, /^\s*push:/m, /schedule:/, /npm test/, /node --test/, /heavy/, /paths(?:-ignore)?:/, /^\s*if:/m, /concurrency:/])
+    assert.doesNotMatch(workflow, forbidden);
 });

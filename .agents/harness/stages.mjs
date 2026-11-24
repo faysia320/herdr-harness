@@ -1,14 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appendEvent, artifact, save, transition, withoutDecision } from './ledger.mjs';
-import { adapter, candidate, check, config, git, now, project } from './repository.mjs';
-import { suiteInvocation, suiteTestCount } from './suite.mjs';
+import { candidate, check, config, git, now, project } from './repository.mjs';
 import { closeTerminal, reclaimTerminals } from './terminals.mjs';
 
-export const receiptPath = 'target/hh-verify/latest-qa.json';
-// QA 실행 영수증 v2의 저장소 정책. output/<QA 회차>/envelope.txt가 PR 본문에 넣을 줄이다.
-export const policyPath = 'policy/qa-receipt.json';
 const stateForStage = { research: 'RESEARCHING', architect: 'RESEARCHING', implement: 'IMPLEMENTING', qa: 'QA' };
 const allowedDispatch = { research: ['QUEUED', 'RESEARCHING'], architect: ['RESEARCHING'], implement: ['READY_TO_IMPLEMENT'], qa: ['QA'] };
 const isText = s => typeof s === 'string' && s.trim().length > 0;
@@ -20,7 +16,12 @@ const includesPath = (scope, path) => scope.endsWith('/') ? path.startsWith(scop
 export const activeRun = task => task.current ? task.runs[task.current.run] : null;
 // 고정 release가 검증 계획 실행 위치 분류·해소 결정 주입을 지원하는지. 없으면 기존 계획 형식·지시서로 동작하고 새 동작을 호출하지 않는다.
 export const scoped = ctx => ctx.release('workflow.cjs').planScopeVersion === 1;
-const scopeOptions = () => ({ executors: config.qa_executors, required: ['hh-suite'] });
+// HH 자체 QA는 바뀐 모듈에 대응하는 시험 파일(node-test)과 Git 대조(git-read)만 쓴다. 전체 suite·QA 실행 영수증을 필수로 두지 않는다.
+const scopeOptions = () => ({ executors: config.qa_executors });
+// 시험 선택 규칙. 조사(동결)·구현·수리·QA 지시서가 같은 기준을 쓴다.
+const changedTests = 'Test scope is changed-file tests only: run node --test with the literal test files that cover the changed modules ' +
+  "(the module's own test file, integration tests that import or exercise it, and changed test files themselves; e.g. .agents/harness/stages.mjs is covered by test/self-harness.test.mjs). " +
+  'Never run the full suite, a wildcard, heavy.mjs, Docker or the QA receipt issuer. If no test covers the change, run a Git read command (for example git diff --stat <Base>) instead.';
 
 // 결정 조회와 공통 지시서 작성은 run 폴더·대장 변경 전에 한다. 조회 실패를 결정 0건으로 바꾸지 않고 위임을 멈춘다.
 function guide(ctx, ledger, task, stage) {
@@ -40,16 +41,19 @@ function notifyCommand(release, lead) {
 
 function prompt(ctx, ledger, task, run, instructions) {
   const stage = run.stage, release = ctx.binding.release;
-  const plan = scoped(ctx) ? 'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite], checkScopes:[one row per check]} following the plan rules below.' :
-    'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs including hh-suite]}.';
+  const plan = (scoped(ctx) ? 'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs], checkScopes:[one row per check]} following the plan rules below. ' +
+    'Freeze one node-test row listing the covering test files, or only a git-read row when no test covers the change.' :
+    'Write verification-plan.json with {run, version:2, criteria:[IDs], checks:[IDs]}. In summary name the exact node --test files (or the Git read command when no test covers the change) for each check ID.') +
+    ' ' + changedTests;
   const file = join(run.dir, stage === 'qa' ? 'verification.json' : stage + '.json');
   const shape = {
     research: 'Write research.json with {run, summary, planned_files: [literal paths or directory paths ending in /]}. ' + plan + ' Describe what each ID verifies in summary. Inspect the request and baseline. Keep the source tree unchanged.',
     architect: 'Independently review the frozen plan, including boundary and failure cases. Write architect.json with {run, verdict:"PASS"|"BLOCKED", reason}. Keep the source tree unchanged.',
-    implement: 'Implement within planned_files and report implement.json as {run, verdict:"DONE"|"BLOCKED", summary, checks:[{command,exit}]}. Use the actual exit code for an executed check and null for a check you did not run. Keep changes in the worktree. Finish background processes before reporting.',
-    qa: 'Evaluate the original request and the frozen plan independently. Read the implementation report as context. Leave the candidate unchanged. Run the QA command below before a PASS. In verification.json include run plus all common verification fields and the evidence for every frozen ID. Finish background processes before reporting.',
+    implement: 'Implement within planned_files and report implement.json as {run, verdict:"DONE"|"BLOCKED", summary, checks:[{command,exit}]}. Use the actual exit code for an executed check and null for a check you did not run. Keep changes in the worktree. Finish background processes before reporting. ' + changedTests,
+    qa: 'Evaluate the original request and the frozen plan independently. Read the implementation report as context. Leave the candidate unchanged. ' +
+      'Before a PASS, run every frozen independent-QA command exactly as written in the candidate worktree on this Windows host and compare the frozen test files with the actual changed paths (git diff --name-only <Base>). ' +
+      'No QA receipt, hh-suite log or Docker Linux run is required. In verification.json include run plus all common verification fields and the evidence for every frozen ID with the command and its actual result. Finish background processes before reporting. ' + changedTests,
   }[stage];
-  const qa = [process.execPath, join(ctx.root, '.agents/harness/verify.mjs'), ctx.file, task.id].map(s => JSON.stringify(s.replaceAll('\\', '/'))).join(' ');
   return [
     '[' + task.id + ' ' + stage + '] ' + task.title,
     'Original request: ' + task.description,
@@ -62,7 +66,6 @@ function prompt(ctx, ledger, task, run, instructions) {
     'Planned files: ' + JSON.stringify(task.planned_files ?? []),
     'Prior run directories: ' + task.runs.filter(r => r.token !== run.token).map(r => r.dir).join(', '),
     instructions,
-    stage === 'qa' ? 'QA runner: ' + qa : '',
     'Pinned release: ' + release,
     'Do not change the ledger, binding, baseline release, remote Git state or other tasks. When finished, send the result to the Lead: ' +
       notifyCommand(release, ledger.lead.terminal) + ' "' + task.id + ' ' + stage + ' complete; report: ' + file + '"',
@@ -131,10 +134,10 @@ export async function dispatch(ctx, ledger, task) {
   return { id: task.id, run };
 }
 
-// 새 release는 공통 freeze가 실행 위치 분류·QA 실행 수단·hh-suite를 검사한 정규화 계획을 저장한다. 이전 release는 기존 ID 배열 계획을 쓴다.
+// 새 release는 공통 freeze가 실행 위치 분류·QA 실행 수단을 검사한 정규화 계획을 저장한다. 이전 release는 기존 ID 배열 계획을 쓴다.
 function freezePlan(ctx, plan, report) {
   const frozen = scoped(ctx) ? ctx.flow({ action: 'freeze', plan, options: scopeOptions() }) : null;
-  if (!frozen) check(plan.version === 2 && identifiers(plan.criteria) && identifiers(plan.checks) && plan.checks.includes('hh-suite'), '유효한 AC·필수 검사 ID와 hh-suite가 필요하다.');
+  if (!frozen) check(plan.version === 2 && identifiers(plan.criteria) && identifiers(plan.checks), '유효한 AC·필수 검사 ID가 필요하다.');
   check(isText(report.summary) && Array.isArray(report.planned_files) && report.planned_files.length &&
     report.planned_files.every(relative) && new Set(report.planned_files).size === report.planned_files.length, '조사 결과·수정 예정 경로가 필요하다.');
   return frozen ?? { version: 2, criteria: plan.criteria, checks: plan.checks };
@@ -202,26 +205,6 @@ export async function collect(ctx, ledger, task) {
     const { run: token, ...verification } = report;
     check(identifiers(verification.checks?.map(c => c?.id)), '검증 보고서의 검사 ID가 없거나 중복된다.');
     const result = ctx.flow({ action: 'collect', flow: task.x_flow, report: verification, candidate: current.fingerprint });
-    if (report.verdict === 'PASS') {
-      const receipt = ctx.flow({ action: 'verify-receipt', cwd: task.worktree, since: run.started, base: task.base, receipt: receiptPath });
-      const raw = artifact(join(task.worktree, receiptPath), run);
-      const log = readFileSync(join(run.dir, 'hh-suite.log'), 'utf8');
-      const split = log.indexOf('\n');
-      check(split > 0, '현재 QA 세션의 필수 검사 영수증·로그가 필요하다.');
-      const resultLine = JSON.parse(log.slice(0, split));
-      const { stdoutLength } = resultLine;
-      check(Number.isSafeInteger(stdoutLength) && stdoutLength > 0 && log[split + 1 + stdoutLength] === '\n',
-        '현재 QA 세션의 필수 검사 영수증·로그가 필요하다.');
-      const stdout = log.slice(split + 1, split + 1 + stdoutLength);
-      const tests = suiteTestCount(stdout);
-      const suite = receipt.checks[0];
-      check(raw.terminal === (terminal?.address ?? run.terminal) && raw.releaseHash === ctx.binding.manifestHash &&
-        receipt.checks.length === 1 && suite.id === 'hh-suite' && suite.state === 'passed' && suite.exit === 0 &&
-        tests && suite.tests === tests && resultLine.tests === tests &&
-        suite.logDigest === adapter.hash(log) && resultLine.exit === 0 && resultLine.run === run.token && resultLine.tree === current.tree &&
-        JSON.stringify(resultLine.argv) === JSON.stringify(suiteInvocation(ctx)), '현재 QA 세션이 고정 release로 실행한 필수 검사 영수증·로그가 필요하다.');
-      result.flow.runner = receipt;
-    }
     task.x_flow = result.flow;
     task.pending = result.pending;
     verdict = report.verdict;

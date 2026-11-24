@@ -9,7 +9,6 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { build, root } from '../scripts/build.mjs';
 import { adapter, git, samePath } from '../.agents/harness/repository.mjs';
-import { suiteInvocation } from '../.agents/harness/suite.mjs';
 import { archiveKeep } from '../.agents/harness/cleanup.mjs';
 import { closeTerminal, reclaimTerminals } from '../.agents/harness/terminals.mjs';
 import { atomic } from '../.agents/harness/ledger.mjs';
@@ -17,11 +16,14 @@ import { atomic } from '../.agents/harness/ledger.mjs';
 const frozenRelease = process.env.HH_TEST_PINNED_RELEASE;
 const built = frozenRelease ? { release: frozenRelease, manifestHash: frozenRelease.split(/[\\/]/).at(-1) } : build();
 const prefix = ['.agents/harness', 'adapters/runtime.cjs', '.gitignore', 'package.json', 'bin/harness.mjs',
-  'core/process.js', 'core/preparation.mjs', 'core/metrics.mjs', 'core/qa-receipt-policy.cjs', 'core/dev14.cjs', 'policy/qa-receipt.json'];
+  'core/process.js', 'core/preparation.mjs', 'core/metrics.mjs', 'core/dev14.cjs'];
 // 검증 계획 실행 위치 분류·해소 결정 주입 표지. HH_TEST_PINNED_RELEASE가 이전 release면 기존 계획 형식으로 분기한다.
 const scopedRelease = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs')).planScopeVersion === 1;
 // QA 보고서 limitations(남는 한계)를 남은 검증에 싣는 release인지. 이전 release는 계획 항목만 돌려준다.
 const limitsRelease = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs')).remainingVerification?.length >= 2;
+// HH 자체 QA의 바뀐 파일 시험 행. 전체 suite·QA runner 전용 hh-suite 행은 더 이상 선언하지 않는다.
+const focusedRow = (criteria = ['AC1']) => ({ id: 'hh-focused', location: 'independent-qa', executor: 'node-test', command: 'node --test test/tracked.test.mjs', criteria });
+const focusedPlan = run => ({ run, version: 2, criteria: ['AC1'], checks: ['hh-focused'], ...(scopedRelease ? { checkScopes: [focusedRow()] } : {}) });
 const writeJson = (file, value) => {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(value));
@@ -168,9 +170,8 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await assert.rejects(run('dispatch ' + task.id), /위임 가능한/);
   await assert.rejects(run('collect ' + task.id), /아직 실행 중/);
   writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'fixture AC1 and suite', planned_files: ['tracked.txt'] });
-  const plan = { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-suite'],
-    ...(scopedRelease ? { checkScopes: [{ id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1'] }] } : {}) };
-  writeJson(join(research.dir, 'verification-plan.json'), { ...plan, checks: ['hh-suite','hh-suite'] });
+  const plan = focusedPlan(research.token);
+  writeJson(join(research.dir, 'verification-plan.json'), { ...plan, checks: ['hh-focused','hh-focused'] });
   await assert.rejects(run('collect ' + task.id), /필수 검사 ID/);
   if (scopedRelease) {
     // 새 release의 동결은 실행 위치 분류가 없는 기존 형식 계획을 받지 않는다.
@@ -187,6 +188,9 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
   const implementation = (await run('dispatch ' + task.id)).run;
   assert.equal(implementation.model, 'claude-opus-5-5');
+  // 구현·수리 지시서는 바뀐 파일 시험만 요구하고 전체 suite를 요구하지 않는다.
+  assert.match(promptOf(implementation), /changed-file tests only: run node --test with the literal test files that cover the changed modules/);
+  assert.match(promptOf(implementation), /Never run the full suite, a wildcard, heavy\.mjs, Docker or the QA receipt issuer\. If no test covers the change, run a Git read command/);
   const target = join(task.worktree, 'tracked.txt');
   writeFileSync(target, 'candidate\n');
   writeFileSync(join(task.worktree, 'outside.txt'), 'out of scope\n');
@@ -206,45 +210,34 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   writeJson(join(research.dir, 'verification-plan.json'), { ...plan, criteria: ['replaced'] });
   const qa = (await run('dispatch ' + task.id)).run;
   assert.equal(qa.model, 'gpt-6.2-sol');
+  // QA 지시서에는 QA runner·영수증 발급 명령이 없고, 동결한 명령을 Windows 후보에서 그대로 실행하게 한다.
+  assert.doesNotMatch(promptOf(qa), /QA runner:|verify\.mjs/);
+  assert.match(promptOf(qa), /run every frozen independent-QA command exactly as written in the candidate worktree on this Windows host/);
+  assert.match(promptOf(qa), /No QA receipt, hh-suite log or Docker Linux run is required/);
   assert.notEqual(qa.terminal, implementation.terminal);
   assert.equal(fixture.ledger().tasks[task.id].runs[1].x_terminal.outcome, 'still-live');
   assert.ok(fixture.kills.includes(implementation.terminal));
   await refused(() => close(task.id, 'fixture exception'), /게시 대기/);
-  const reportFile = join(qa.dir, 'verification.json'), receiptFile = join(task.worktree, 'target/hh-verify/latest-qa.json');
+  const reportFile = join(qa.dir, 'verification.json');
   const report = { run: qa.token, version: 2, verdict: 'PASS', candidate: implemented.candidate.fingerprint, findings: [],
     criteria: [{ id: 'AC1', status: 'passed', evidence: 'fixture contents' }],
-    checks: [{ id: 'hh-suite', command: 'fixture', status: 'passed', evidence: 'fixture log' }] };
+    checks: [{ id: 'hh-focused', command: 'node --test test/tracked.test.mjs', status: 'passed', evidence: 'fixture log' }] };
   writeJson(reportFile, { ...report, criteria: [{ ...report.criteria[0], id: 'replaced' }] });
   await assert.rejects(run('collect ' + task.id), /검증 누락/);
   writeJson(reportFile, { ...report, checks: [report.checks[0], report.checks[0]] });
   await assert.rejects(run('collect ' + task.id), /중복/);
+  // 실패한 바뀐 파일 시험은 PASS로 수집하지 않는다.
+  writeJson(reportFile, { ...report, checks: [{ ...report.checks[0], status: 'failed' }] });
+  await assert.rejects(run('collect ' + task.id), /실패|failed|PASS/);
   writeJson(reportFile, report);
-  await assert.rejects(run('collect ' + task.id), /latest-qa.json/);
-  const tap = tests => ['TAP version 13', '# tests ' + tests, '# suites 0', '# pass ' + tests, '# fail 0',
-    '# cancelled 0', '# skipped 0', '# todo 0', '# duration_ms 5.5', ''].join('\n');
-  const saveLog = (stdout, stderr = '') => {
-    const result = { argv: suiteInvocation({ binding: built }), exit: 0, run: qa.token, tree: implemented.candidate.tree,
-      stdoutLength: stdout.length, tests: 1 };
-    const log = [JSON.stringify(result), stdout, stderr].join('\n');
-    writeFileSync(join(qa.dir, 'hh-suite.log'), log);
-    return { id: 'hh-suite', state: 'passed', exit: 0, tests: 1, logDigest: adapter.hash(log) };
-  };
-  const receipt = { run: qa.token, version: 1, role: 'qa', stable: true, base, scope: 'changed-paths',
-    tree: implemented.candidate.tree, completedAt: new Date().toISOString(), checks: [saveLog(tap(1))],
-    releaseHash: built.manifestHash, terminal: qa.terminal };
-  writeJson(receiptFile, { ...receipt, terminal: implementation.terminal });
-  await assert.rejects(run('collect ' + task.id), /현재 QA 세션/);
-  writeJson(receiptFile, { ...receipt, checks: [{ id: 'hh-suite', state: 'passed' }] });
-  await assert.rejects(run('collect ' + task.id), /영수증·로그/);
-  writeJson(receiptFile, { ...receipt, checks: [saveLog(tap(0))] });
-  await assert.rejects(run('collect ' + task.id), /영수증·로그/);
-  writeJson(receiptFile, { ...receipt, checks: [saveLog('fixture without a test summary\n', tap(1))] });
-  await assert.rejects(run('collect ' + task.id), /영수증·로그/);
-  writeJson(receiptFile, { ...receipt, checks: [saveLog(tap(1))] });
   writeFileSync(target, 'changed after dispatch\n');
   await assert.rejects(run('collect ' + task.id), /후보가 변경/);
   writeFileSync(target, 'candidate\n');
-  assert.equal((await run('collect ' + task.id)).x_flow.phase, 'publish');
+  // QA 실행 영수증·hh-suite 로그·envelope 없이 PASS를 수집한다.
+  const collected = await run('collect ' + task.id);
+  assert.equal(collected.x_flow.phase, 'publish');
+  assert.equal(collected.x_flow.runner, undefined);
+  assert.deepEqual([existsSync(join(qa.dir, 'hh-suite.log')), existsSync(join(task.worktree, 'target/hh-verify'))], [false, false]);
   assert.equal(sessions.has(qa.terminal), false);
   assert.ok((await main(['--help'])).commands.includes('flow-close'));
   assert.ok((await main(['--help'])).commands.includes('cleanup-worktree'));
@@ -266,7 +259,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
     [t => { t.pending = 'qa'; }, /PR이 연결되지 않은/],
     [t => { t.x_flow.verification.verdict = 'FAIL'; }, /독립 QA PASS/],
     [t => { t.x_flow.verification.candidate = 'other'; }, /독립 QA PASS/],
-    [t => { delete t.x_flow.runner; }, /독립 QA PASS/],
+    [t => { delete t.candidate.tree; }, /독립 QA PASS/],
   ];
   for (const [change, pattern] of forged) {
     const ledger = JSON.parse(verifiedLedger);
@@ -290,7 +283,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   const reviewed = await run('flow-resume ' + task.id + ' --decision fixture --revision 2 --evidence no-plan-impact');
   assert.deepEqual([reviewed.state, reviewed.phase, reviewed.reviewed.id, reviewed.reviewed.revision], ['QA', 'publish', 'fixture', 2]);
   const allowed = await run('publish-check ' + task.id, 't-other');
-  // QA runner가 이 회차의 QA 실행 영수증을 남기지 않았으면 envelope 줄을 돌려주지 않는다.
+  // HH는 QA 실행 영수증을 쓰지 않으므로 envelope 줄을 돌려주지 않는다.
   assert.deepEqual([allowed.allowed, allowed.qaReceipt], [true, undefined]);
   git(task.worktree, 'add', '--', 'tracked.txt');
   git(task.worktree, 'commit', '-m', 'verified candidate');
@@ -321,7 +314,7 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   assert.deepEqual(saved.x_flow.closure, closed.closure);
   assert.deepEqual(last.closure, closed.closure);
   assert.equal(saved.x_flow.delivery ?? null, null);
-  assert.equal(saved.x_flow.runner.tree, implemented.candidate.tree);
+  assert.equal(saved.x_flow.runner, undefined);
   const retry = 'node .agents/harness/launch.mjs cleanup-worktree ' + task.id;
   assert.deepEqual([closed.cleanup.status, closed.cleanup.retry, saved.x_cleanup.status], ['failed', retry, 'failed']);
   assert.match(closed.cleanup.reasons.join('\n'), /지원하지 않는다/);
@@ -368,7 +361,8 @@ test('HH fixture: launcher, Lead ownership, stage collection, frozen QA, commit 
   assert.ok(refExists(repo, task.branch));
   assert.deepEqual([cleaned.branch.state, cleaned.patch.paths, cleaned.patch.tree], ['kept', ['tracked.txt'], implemented.candidate.tree]);
   assert.equal(adapter.hash(readFileSync(join(state, cleaned.patch.file))), cleaned.patch.sha256);
-  assert.deepEqual(Object.keys(cleaned.preserved.files), ['target/hh-verify/latest-qa.json']);
+  // HH QA는 영수증(target/hh-verify/)을 남기지 않으므로 보관할 무시 파일이 없다.
+  assert.deepEqual(Object.keys(cleaned.preserved.files), []);
   assert.equal(fixture.ledger().tasks[task.id].x_cleanup.status, 'done');
   assert.equal(archiveKeep(Object.values(fixture.ledger().tasks), new Set()).includes(task.id), false);
   const settled = stored();
@@ -444,8 +438,7 @@ test('남겨 둔 위임 터미널 재회수: 다음 위임 직전과 FAILED 뒤 
     { cwd: repo, terminal: 't-lead', herdr });
   const research = (await run('next --go')).run;
   writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'fixture', planned_files: ['tracked.txt'] });
-  writeJson(join(research.dir, 'verification-plan.json'), { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-suite'],
-    ...(scopedRelease ? { checkScopes: [{ id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1'] }] } : {}) });
+  writeJson(join(research.dir, 'verification-plan.json'), focusedPlan(research.token));
   sessions.get(research.terminal).status = { state: 'working' };
   await run('collect ' + task.id);
   assert.equal(fixture.ledger().tasks[task.id].runs[0].x_terminal.outcome, 'kept');
@@ -655,15 +648,6 @@ const injected = run => {
   const line = promptOf(run).split('\n').find(l => l.startsWith('해소 결정: '));
   return line ? JSON.parse(line.slice('해소 결정: '.length)) : null;
 };
-// 현재 QA 회차가 고정 release로 hh-suite를 통과한 것처럼 runner 로그·영수증을 쓴다.
-function passSuite(fixture, task, qa, candidate) {
-  const stdout = ['TAP version 13', '# tests 1', '# suites 0', '# pass 1', '# fail 0', '# cancelled 0', '# skipped 0', '# todo 0', '# duration_ms 5.5', ''].join('\n');
-  const log = [JSON.stringify({ argv: suiteInvocation({ binding: built }), exit: 0, run: qa.token, tree: candidate.tree, stdoutLength: stdout.length, tests: 1 }), stdout, ''].join('\n');
-  writeFileSync(join(qa.dir, 'hh-suite.log'), log);
-  writeJson(join(task.worktree, 'target/hh-verify/latest-qa.json'), { run: qa.token, version: 1, role: 'qa', stable: true, base: fixture.base, scope: 'changed-paths',
-    tree: candidate.tree, completedAt: new Date().toISOString(), checks: [{ id: 'hh-suite', state: 'passed', exit: 0, tests: 1, logDigest: adapter.hash(log) }],
-    releaseHash: built.manifestHash, terminal: qa.terminal });
-}
 
 test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → 재조사·재동결 → 새 QA → PR 본문 남은 검증', async t => {
   // 고정 release에 기능이 없으면(HH_TEST_PINNED_RELEASE가 이전 release) 아래 기존 동작 시험이 이 경계를 확인한다.
@@ -698,28 +682,34 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   assert.match(guide, /send the result to the Lead: node "[^"]+\/bin\/send\.mjs" t-lead "[^"]+ research complete; report: /);
   assert.ok(guide.includes('node ' + JSON.stringify(join(built.release, 'bin/send.mjs').replaceAll('\\', '/'))));
   for (const pattern of [/checkScopes:\[one row per check\]/, /independent-qa — 독립 QA가/, /follow-up — 배포 후/, /실제 실행할 수 없는 검사\(배포 후·실기기·브라우저/,
-    /hh-suite — .*검사 ID hh-suite 전용/, /node-test — .*command 형식/, /git-read — /, /"location":"follow-up".*"environment":"배포 후 Galaxy Chrome","verify":/,
-    /어댑터 필수 검사: hh-suite/, /지시나 승인이 아니다/]) assert.match(guide, pattern);
+    /node-test — .*command 형식/, /git-read — /, /"location":"follow-up".*"environment":"배포 후 Galaxy Chrome","verify":/,
+    /changed-file tests only/, /or only a git-read row when no test covers the change/, /지시나 승인이 아니다/]) assert.match(guide, pattern);
+  // 전체 suite 전용 QA runner와 어댑터 필수 검사는 더 이상 안내하지 않는다.
+  assert.doesNotMatch(guide, /hh-suite|어댑터 필수 검사|QA runner:/);
   assert.deepEqual(projected(injected(research)), [early]);
   const planFile = join(research.dir, 'verification-plan.json');
-  const qaRow = { id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1', 'AC2'] };
+  const qaRow = focusedRow(['AC1', 'AC2']);
   const copyQa = { id: 'copy-check', location: 'independent-qa', executor: 'node-test', command: 'node --test test/copy.test.mjs', criteria: ['AC2'] };
   const copyLater = { id: 'copy-check', location: 'follow-up', criteria: ['AC2'], environment: '배포 후 Galaxy Chrome', verify: '제목을 복사해 Teams에 붙여넣고 원문과 대조' };
   writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'AC1 local copy, AC2 title copy', planned_files: ['tracked.txt'] });
   // 독립 QA가 실행할 수 없는 항목을 필수로 지정하거나 실기기 검사를 QA runner로 위장하면 동결하지 않고 대장도 바꾸지 않는다.
   for (const [plan, pattern] of [
-    [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, copyLater] }, /독립 QA가 실행할 수 없는 항목을 필수 검사로 지정했다: copy-check/],
-    [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'hh-suite', command: undefined }] }, /실행 수단 hh-suite로 실행할 수 없는 검사다: copy-check/],
-    [{ criteria: ['AC1', 'AC2', 'AC3'], checks: ['hh-suite'], checkScopes: [qaRow, copyLater] }, /검사나 후속 확인에 연결되지 않은 AC: AC3/],
-    [{ checks: ['hh-suite'], checkScopes: [qaRow, { ...copyLater, location: ['follow-up'] }] }, /지원하지 않는 실행 위치: copy-check/],
+    [{ checks: ['hh-focused', 'copy-check'], checkScopes: [qaRow, copyLater] }, /독립 QA가 실행할 수 없는 항목을 필수 검사로 지정했다: copy-check/],
+    // 전체 suite QA runner 수단(hh-suite)은 선언에서 빠졌다. 옛 형식 행은 동결하지 않는다.
+    [{ checks: ['hh-focused', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'hh-suite', command: undefined }] }, /선언된 독립 QA 실행 수단이 아니다: copy-check/],
+    [{ checks: ['hh-suite'], checkScopes: [{ id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1', 'AC2'] }] }, /선언된 독립 QA 실행 수단이 아니다: hh-suite/],
+    // 바뀐 파일 시험은 파일을 직접 적는다. 와일드카드로 전체 suite를 돌리는 명령은 동결하지 않는다.
+    [{ checks: ['hh-focused'], checkScopes: [{ ...qaRow, command: 'node --test test/*.test.mjs' }, copyLater] }, /실행 수단 node-test의 명령 형식과 다르다: hh-focused/],
+    [{ criteria: ['AC1', 'AC2', 'AC3'], checks: ['hh-focused'], checkScopes: [qaRow, copyLater] }, /검사나 후속 확인에 연결되지 않은 AC: AC3/],
+    [{ checks: ['hh-focused'], checkScopes: [qaRow, { ...copyLater, location: ['follow-up'] }] }, /지원하지 않는 실행 위치: copy-check/],
     // 후보를 그대로 두어야 하는 QA 수단으로 후보 파일을 쓰는 Git 명령을 필수 검사에 넣을 수 없다.
-    [{ checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'git-read', command: 'git diff --output=tracked.txt' }] },
+    [{ checks: ['hh-focused', 'copy-check'], checkScopes: [qaRow, { ...copyQa, executor: 'git-read', command: 'git diff --output=tracked.txt' }] },
       /실행 수단 git-read의 명령 형식과 다르다: copy-check/],
-    // QA runner 전용 hh-suite 행에 배포 사이트를 여는 명령을 적으면 그 명령을 버리고 동결하지 않는다.
-    [{ checks: ['hh-suite'], checkScopes: [{ ...qaRow, command: 'chrome https://example.com/deployed/mobile-copy' }, copyLater] },
-      /ID 전용 실행 수단 hh-suite에는 command를 적지 않는다.*: hh-suite/],
+    // 바뀐 파일 시험 행에 배포 사이트를 여는 명령을 적으면 동결하지 않는다.
+    [{ checks: ['hh-focused'], checkScopes: [{ ...qaRow, command: 'chrome https://example.com/deployed/mobile-copy' }, copyLater] },
+      /실행 수단 node-test의 명령 형식과 다르다: hh-focused/],
     // 후속 확인 방법이 빈 링크의 title에만 있으면 PR 화면에 보이지 않는다. 마크다운·HTML 문법 없는 일반 문장만 동결한다.
-    [{ checks: ['hh-suite'], checkScopes: [qaRow, { ...copyLater, verify: '[](https://example.com "Copy the title and compare it against the clipboard")' }] },
+    [{ checks: ['hh-focused'], checkScopes: [qaRow, { ...copyLater, verify: '[](https://example.com "Copy the title and compare it against the clipboard")' }] },
       /후속 확인 verify에 링크·이미지 대괄호.*일반 문장만 받는다.*: copy-check/],
   ]) {
     writeJson(planFile, { run: research.token, version: 2, criteria: ['AC1', 'AC2'], ...plan });
@@ -727,10 +717,10 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
     await refused(() => run('collect ' + task.id), pattern);
     assert.equal(readdirSync(join(fixture.state, 'tasks', task.id, 'runs')).length, runs);
   }
-  writeJson(planFile, { run: research.token, version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, copyQa] });
+  writeJson(planFile, { run: research.token, version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-focused', 'copy-check'], checkScopes: [qaRow, copyQa] });
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');
   assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.plan,
-    { version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-suite', 'copy-check'], checkScopes: [qaRow, copyQa] });
+    { version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-focused', 'copy-check'], checkScopes: [qaRow, copyQa] });
 
   const implement = async decisions => {
     const implementation = (await run('dispatch ' + task.id)).run;
@@ -757,10 +747,10 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   const candidate = fixture.ledger().tasks[task.id].candidate;
   const verdict = (verdict, checks, findings = []) => ({ version: 2, verdict, candidate: candidate.fingerprint, findings,
     criteria: [{ id: 'AC1', status: 'passed', evidence: 'local copy' }, { id: 'AC2', status: verdict === 'PASS' ? 'passed' : 'unverified', evidence: 'title copy' }],
-    checks: checks.map(([id, status]) => ({ id, command: id === 'hh-suite' ? 'QA runner' : 'node --test test/copy.test.mjs', status, evidence: 'fixture log' })) });
+    checks: checks.map(([id, status]) => ({ id, command: id === 'hh-focused' ? qaRow.command : 'node --test test/copy.test.mjs', status, evidence: 'fixture log' })) });
   const conflict = { id: 'D1', kind: 'decision', signature: 'browser-check-r2', evidence: '결정 browser-check revision 2가 copy-check를 배포 후 실기기 확인으로 옮긴다',
     next: '재조사로 copy-check를 후속 확인으로 옮겨 다시 동결한다' };
-  writeJson(join(qa1.dir, 'verification.json'), { ...verdict('BLOCKED', [['hh-suite', 'passed'], ['copy-check', 'blocked']], [conflict]), run: qa1.token });
+  writeJson(join(qa1.dir, 'verification.json'), { ...verdict('BLOCKED', [['hh-focused', 'passed'], ['copy-check', 'blocked']], [conflict]), run: qa1.token });
   assert.equal((await run('collect ' + task.id)).state, 'BLOCKED');
 
   // 결정 근거로 재조사한다. 기존 회차·계획 파일은 남고, 새 조사 지시서에 두 결정이 들어간다.
@@ -771,7 +761,7 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   assert.deepEqual(projected(injected(research2)), [browser, early]);
   assert.match(promptOf(research2), /조사는 결정을 계획에 반영/);
   writeJson(join(research2.dir, 'research.json'), { run: research2.token, summary: 'browser-check r2: copy-check → follow-up', planned_files: ['tracked.txt'] });
-  writeJson(join(research2.dir, 'verification-plan.json'), { run: research2.token, version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-suite'], checkScopes: [qaRow, copyLater] });
+  writeJson(join(research2.dir, 'verification-plan.json'), { run: research2.token, version: 2, criteria: ['AC1', 'AC2'], checks: ['hh-focused'], checkScopes: [qaRow, copyLater] });
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');
   assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.plan.checkScopes, [qaRow, copyLater]);
   await implement(['browser-check', 'scope-early']);
@@ -780,15 +770,14 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   const qa2 = (await run('dispatch ' + task.id)).run;
   assert.match(promptOf(qa2), /후속 확인 항목은 실행하지도 checks에 적지도 않는다: copy-check/);
   assert.deepEqual(projected(injected(qa2)), [browser, early]);
-  passSuite(fixture, task, qa2, candidate);
   for (const status of ['passed', 'blocked']) {
-    writeJson(join(qa2.dir, 'verification.json'), { ...verdict(status === 'passed' ? 'PASS' : 'BLOCKED', [['hh-suite', 'passed'], ['copy-check', status]],
+    writeJson(join(qa2.dir, 'verification.json'), { ...verdict(status === 'passed' ? 'PASS' : 'BLOCKED', [['hh-focused', 'passed'], ['copy-check', status]],
       status === 'passed' ? [] : [conflict]), run: qa2.token });
     await refused(() => run('collect ' + task.id), /후속 확인은 QA가 실행하거나 checks에 기록하지 않는다: copy-check/);
   }
   // 운영 위험이 아닌 Medium 결함은 QA 보고서 limitations로 남기고 PASS한다.
   const limitation = { id: 'L1', kind: 'limitation', severity: 'Medium', note: '긴 제목이 두 줄로 보인다' };
-  writeJson(join(qa2.dir, 'verification.json'), { ...verdict('PASS', [['hh-suite', 'passed']]), ...(limitsRelease ? { limitations: [limitation] } : {}), run: qa2.token });
+  writeJson(join(qa2.dir, 'verification.json'), { ...verdict('PASS', [['hh-focused', 'passed']]), ...(limitsRelease ? { limitations: [limitation] } : {}), run: qa2.token });
   const passed = await run('collect ' + task.id);
   assert.equal(passed.x_flow.phase, 'publish');
   assert.match(passed.runs.at(-1).note, limitsRelease ? /남은 검증 2건/ : /남은 검증 1건/);
@@ -798,13 +787,9 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   const remainingItem = { id: 'copy-check', criteria: ['AC2'], environment: '배포 후 Galaxy Chrome', verify: '제목을 복사해 Teams에 붙여넣고 원문과 대조', line };
   const limitLine = 'L1 | 남는 한계 Medium: 긴 제목이 두 줄로 보인다';
   const leftItems = limitsRelease ? [remainingItem, { ...limitation, source: 'qa', line: limitLine }] : [remainingItem];
-  // QA runner가 같은 회차에 남긴 QA 실행 영수증 줄(무시 경로)을 게시자에게 그대로 넘긴다.
-  const envelope = '<!-- herdr-qa-receipt:v2 ' + Buffer.from('{"kind":"herdr-qa-receipt"}').toString('base64url') + ' -->';
-  const envelopeFile = join(task.worktree, 'target/hh-verify/receipts', qa2.token, 'envelope.txt');
-  mkdirSync(dirname(envelopeFile), { recursive: true });
-  writeFileSync(envelopeFile, envelope + '\n');
+  // HH는 QA 실행 영수증을 쓰지 않는다. 게시 인계에 envelope 줄이 없다.
   const check = await run('publish-check ' + task.id, 't-other');
-  assert.deepEqual(check.qaReceipt, { file: envelopeFile, line: envelope });
+  assert.equal(check.qaReceipt, undefined);
   assert.deepEqual(check.remainingVerification, leftItems);
   assert.deepEqual(projected(check.decisions), [browser, early]);
   assert.deepEqual((await run('flow-status ' + task.id, 't-other')).remainingVerification, leftItems);
@@ -825,11 +810,11 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
     '## 남은 검증\n<div title="internal fixture\n- [ ] ' + line + '\n">Template</div>\n'])
     await refused(() => attach(body), new RegExp('남은 검증.*' + line.replace(/[|()]/g, '\\$&') + '.*목록 항목'));
   // 정상 게시 예: 인라인 코드의 리터럴 주석 표식은 주석이 아니므로 뒤의 목록 줄이 그대로 보인다.
-  // 남은 검증 목록 뒤 줄 맨 앞의 QA 실행 영수증 주석은 목록 판정을 바꾸지 않는다.
   const listed = '## 검증\r\nQA PASS. 템플릿 표식 `<!--`는 지웠다.\r\n\r\n## 남은 검증\r\n- [ ] copy-check (AC2) | 환경: 배포 후  Galaxy Chrome | 확인: 제목을 복사해 Teams에 붙여넣고 원문과 대조\r\n';
   // QA가 남긴 한계 줄이 빠져도 연결하지 않는다.
   if (limitsRelease) await refused(() => attach(listed), new RegExp('남은 검증.*' + limitLine.replace(/[|()]/g, '\\$&')));
-  const attached = await attach(listed + (limitsRelease ? '- [ ] ' + limitLine + '\r\n' : '') + '\r\n' + envelope + '\r\n');
+  // PR 본문에는 남은 검증 줄만 있으면 된다(영수증 줄 요구 없음).
+  const attached = await attach(listed + (limitsRelease ? '- [ ] ' + limitLine + '\r\n' : ''));
   assert.deepEqual([attached.phase, attached.pr], ['ci', 5]);
   // 병합 판정에는 동결 계획이 그대로 넘어가 공통 delivery가 병합 직전 본문을 다시 대조한다.
   const inputs = [];
@@ -859,7 +844,7 @@ test('HH 게시 대기 중 계획 변경 결정: QA·게시 허가 철회 → �
   const ask = (key, question) => { writeJson(join(repo, '.local/q.json'), question); return main(['decision', 'request', key, '--file', join(repo, '.local/q.json')], lead); };
   const answer = (key, value) => { writeJson(join(repo, '.local/a.json'), value);
     return main(['decision', 'resolve', key, '--file', join(repo, '.local/a.json'), '--revision', '1'], lead); };
-  const suiteRow = { id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1'] };
+  const suiteRow = focusedRow();
   const copyQa = { id: 'copy-check', location: 'independent-qa', executor: 'git-read', command: 'git diff -- tracked.txt', criteria: ['AC1'] };
   const copyLater = { id: 'copy-check', location: 'follow-up', criteria: ['AC1'], environment: 'On device after deployment', verify: 'Copy the title and compare with the source' };
   // 조사 → 구현 → 독립 QA PASS 한 바퀴. QA는 동결 계획의 독립 QA 검사만 보고한다.
@@ -875,14 +860,14 @@ test('HH 게시 대기 중 계획 변경 결정: QA·게시 허가 철회 → �
       checks: [{ command: 'git diff -- tracked.txt', exit: 0 }] });
     const implemented = await run('collect ' + task.id);
     const qa = (await run('dispatch ' + task.id)).run;
-    passSuite(fixture, task, qa, implemented.candidate);
     writeJson(join(qa.dir, 'verification.json'), { run: qa.token, version: 2, candidate: implemented.candidate.fingerprint, verdict: 'PASS',
       criteria: [{ id: 'AC1', status: 'passed', evidence: 'fixture evidence' }], findings: [],
-      checks: checks.map(id => ({ id, command: id === 'hh-suite' ? 'QA runner' : 'git diff -- tracked.txt', status: 'passed', evidence: 'fixture evidence' })) });
+      checks: checkScopes.filter(r => r.location === 'independent-qa').map(r => ({ id: r.id, command: r.command, status: 'passed', evidence: 'fixture evidence' })) });
     assert.equal((await run('collect ' + task.id)).x_flow.phase, 'publish');
     return { research, qa };
   };
-  await cycle([suiteRow, copyQa]);
+  // 대응 시험이 없는 변경은 git-read 한 행만으로 동결·QA PASS·게시 인계한다.
+  await cycle([copyQa]);
   assert.equal((await run('publish-check ' + task.id, 't-other')).allowed, true);
 
   // QA PASS 뒤 계획을 바꾸는 결정이 생겼다. 열린 동안은 물론 해소한 뒤에도 Lead가 판정하기 전에는 게시하지 않는다.
@@ -1004,13 +989,14 @@ test('HH git-read 실행 수단은 조회 옵션만 받고 파일 출력·외부
   if (!scopedRelease) return;
   const { freezePlan } = createRequire(import.meta.url)(join(built.release, 'core/workflow.cjs'));
   const { qa_executors: executors } = JSON.parse(readFileSync(join(root, '.agents/harness/config.json'), 'utf8'));
-  const freeze = command => freezePlan({ version: 2, criteria: ['AC1'], checks: ['hh-suite', 'docs'], checkScopes: [
-    { id: 'hh-suite', location: 'independent-qa', executor: 'hh-suite', criteria: ['AC1'] },
-    { id: 'docs', location: 'independent-qa', executor: 'git-read', command, criteria: ['AC1'] }] }, { executors, required: ['hh-suite'] });
+  // HH는 전체 suite 수단·어댑터 필수 검사를 두지 않는다. git-read 한 행만으로 동결된다.
+  assert.deepEqual(Object.keys(executors).sort(), ['git-read', 'node-test']);
+  const freeze = command => freezePlan({ version: 2, criteria: ['AC1'], checks: ['docs'], checkScopes: [
+    { id: 'docs', location: 'independent-qa', executor: 'git-read', command, criteria: ['AC1'] }] }, { executors });
   for (const command of ['git diff --name-only 2451c13adaf5e201e3b3d8712d16035ff11addc9', 'git ls-files --others --exclude-standard',
     'git diff --check 2451c13', 'git diff 2451c13 -- README.md .agents/harness/README.md', 'git show HEAD:README.md',
     'git log --oneline -5 origin/main..HEAD', 'git grep -n planScopeVersion -- core', 'git log --format=%H -n 1', 'git diff --diff-filter=AM --name-status main'])
-    assert.equal(freeze(command).checkScopes[1].command, command);
+    assert.equal(freeze(command).checkScopes[0].command, command);
   for (const command of ['git diff --output=README.md', 'git diff --output README.md', 'git log --output=x', 'git show --output=x HEAD',
     'git grep -O cat x', 'git grep -Ocat x', 'git grep --open-files-in-pager=cat x', 'git diff --ext-diff', 'git diff --textconv', 'git diff --no-index a b',
     "git diff '--output=README.md'", 'git diff "--output"=README.md', 'git diff {--output=README.md,x}', 'git diff [-]-output=README.md',
@@ -1038,15 +1024,16 @@ test('HH 이전 release: 기존 계획 형식·지시서를 유지하고 결정 
   assert.throws(() => adapter.bridge(binding, { project: 'herdr-harness', stateDir, ledger, action: 'resolved-for-task', task: task.id }), /Lead 세션만/);
   const research = (await run('dispatch ' + task.id)).run;
   const guide = promptOf(research);
-  assert.match(guide, /Write verification-plan\.json with \{run, version:2, criteria:\[IDs\], checks:\[IDs including hh-suite\]\}\./);
+  assert.match(guide, /Write verification-plan\.json with \{run, version:2, criteria:\[IDs\], checks:\[IDs\]\}\. In summary name the exact node --test files/);
+  assert.doesNotMatch(guide, /hh-suite/);
   assert.match(guide, /"checks":\["필수 검사 식별자"\]\}\./);
   assert.doesNotMatch(guide, /checkScopes|해소 결정|LEGACY_DECISION_QUOTE/);
   // 보정 전송 도구가 없는 release는 기존 hc send 완료 보고를 유지한다.
   assert.match(guide, /send the result to the Lead: hc send t-lead "/);
   writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'legacy plan', planned_files: ['tracked.txt'] });
-  writeJson(join(research.dir, 'verification-plan.json'), { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-suite', 'browser'] });
+  writeJson(join(research.dir, 'verification-plan.json'), { run: research.token, version: 2, criteria: ['AC1'], checks: ['hh-focused', 'browser'] });
   assert.equal((await run('collect ' + task.id)).state, 'READY_TO_IMPLEMENT');
-  assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.plan, { version: 2, criteria: ['AC1'], checks: ['hh-suite', 'browser'] });
+  assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.plan, { version: 2, criteria: ['AC1'], checks: ['hh-focused', 'browser'] });
   const implementation = (await run('dispatch ' + task.id)).run;
   assert.doesNotMatch(promptOf(implementation), /해소 결정|LEGACY_DECISION_QUOTE/);
   const status = await run('flow-status ' + task.id, 't-other');

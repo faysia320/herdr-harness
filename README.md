@@ -237,10 +237,10 @@ v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 
 새 계획은 기존 v2 형식에 `checkScopes`를 더한다. `checkScopes`에는 모든 검사를 한 번씩 적는다.
 
 ```json
-{"version":2,"criteria":["AC1","AC2"],"checks":["hh-suite","copy-unit"],
+{"version":2,"criteria":["AC1","AC2"],"checks":["copy-unit","docs-review"],
  "checkScopes":[
-  {"id":"hh-suite","location":"independent-qa","executor":"hh-suite","criteria":["AC1"]},
   {"id":"copy-unit","location":"independent-qa","executor":"node-test","command":"node --test test/copy.test.mjs","criteria":["AC1","AC2"]},
+  {"id":"docs-review","location":"independent-qa","executor":"git-read","command":"git diff main -- README.md","criteria":["AC1"]},
   {"id":"mobile-browser-copy","location":"follow-up","criteria":["AC2"],"environment":"배포 후 Galaxy Chrome","verify":"제목을 복사해 Teams에 붙여넣고 원문과 대조"}]}
 ```
 
@@ -253,14 +253,14 @@ v-project VP-TASK-029에서 두 가지 결함이 드러났다. 조사가 독립 
 
 - `checkScopes`가 없거나 비었다. 검사 행이 빠졌거나 같은 ID가 두 번 나온다. 지원하지 않는 위치거나 위치가 문자열이 아니다(`["follow-up"]` 같은 배열 포함).
 - `checks`에 `follow-up` 항목이 있다(독립 QA가 실행할 수 없는 필수 지정). `independent-qa` 항목이 `checks`에 없다. 즉 `checks`는 `independent-qa` 항목의 ID 집합과 정확히 같다.
-- `independent-qa` 행의 `executor`가 어댑터 선언에 없다. 특정 검사 ID 전용 수단(예: QA runner `hh-suite`)을 다른 검사에 쓰거나, 전용 ID를 다른 수단으로 적었다. ID 전용 수단 행에 `command`를 적었다(빈 문자열·`null` 포함. 버리고 동결하면 적은 명령과 실제 실행이 달라진다). `command`가 수단의 형식과 다르다. 행에 `environment`·`verify`를 함께 적었다.
+- `independent-qa` 행의 `executor`가 어댑터 선언에 없다. 특정 검사 ID 전용 수단(예: SW의 QA runner 전용 ID)을 다른 검사에 쓰거나, 전용 ID를 다른 수단으로 적었다. ID 전용 수단 행에 `command`를 적었다(빈 문자열·`null` 포함. 버리고 동결하면 적은 명령과 실제 실행이 달라진다). `command`가 수단의 형식과 다르다. 행에 `environment`·`verify`를 함께 적었다.
 - `follow-up` 행에 `executor`·`command`가 있다. `environment`·`verify`가 없거나 개행·제어문자를 포함하거나 300자(`plan.text_max`)를 넘는다. 두 문구는 PR 본문 목록 줄에 그대로 옮기는 일반 문장이어야 한다. 글을 숨기거나 다른 요소로 바꿀 수 있는 링크·이미지 대괄호(`[`, `]`), 꺾쇠(`<`, `>`: HTML 태그·주석·`<URL>` 자동 링크), 백틱, HTML 엔티티(`&lt;`, `&#60;` 등)가 있으면 필드·이유·ID를 넣어 거부한다. 예: `[](https://… "확인 방법")`처럼 빈 링크의 title에만 확인 방법이 있는 문구.
 - 행의 `criteria`가 계획에 없는 AC를 가리킨다. 어느 행(`independent-qa`·`follow-up`)에도 연결되지 않은 AC가 있다. 로컬에서 판정할 수 있는 AC는 `independent-qa`에 연결한다. 실기기·배포 후로만 판정되는 AC는 `follow-up`에만 연결해 동결할 수 있다. QA는 그 AC를 `unverified`와 미검증 근거로 적고 PASS하며, 원래 AC ID·환경·확인 방법이 계획 후속 확인 줄로 게시 PR «남은 검증»에 실린다.
-- 어댑터 필수 검사(`required`, HH의 `hh-suite`)가 `checks`에 없다.
+- 어댑터 필수 검사(`required`)가 `checks`에 없다. HH는 HH-020부터 필수 검사를 두지 않는다(바뀐 파일 시험만).
 
 동결 결과는 알려진 필드만 남긴 정규화 계획이다. 명령 형식 수단 행만 `command`를 남기고, 후속 설명의 앞뒤 공백을 지운다.
 
-**실행 수단 선언.** 어댑터는 `executors`에 `{이름: {description, ids}}`(그 검사 ID 전용, 행에 command를 적으면 거부) 또는 `{이름: {description, pattern}}`(행 `command` 전체가 맞아야 하는 정규식)을 선언한다. HH는 `.agents/harness/config.json`의 `qa_executors`에 `hh-suite`(QA runner 전용), `node-test`(지정 시험 파일), `git-read`(Git 읽기 명령. 허용 목록의 조회 옵션만 받고 `--output`·`-O`·`--ext-diff` 같은 파일 출력·외부 명령 옵션과 따옴표·중괄호·와일드카드 같은 셸 확장 문자를 거부한다)를 둔다. 독립 QA 수단은 후보를 바꾸지 않아야 하므로, 명령 형식을 선언할 때 부작용 있는 옵션이 형식에 들어가지 않게 허용 목록으로 좁힌다. 수단 대조는 «선언된 QA 수단의 형식에 맞는다»까지만 기계로 확인한다. 실기기 검사를 일반 로컬 명령 형식으로 적으면 형식상 통과할 수 있으므로, architect 검토와 Lead가 검사 내용이 그 수단으로 실제 판정되는지 확인한다. 실행 위치는 환경이 정상일 때 그 역할이 실행할 수 있는지를 뜻한다. 허용된 QA 검사가 회차 중 환경 장애로 실패하면 기존 BLOCKED 경로를 따른다.
+**실행 수단 선언.** 어댑터는 `executors`에 `{이름: {description, ids}}`(그 검사 ID 전용, 행에 command를 적으면 거부) 또는 `{이름: {description, pattern}}`(행 `command` 전체가 맞아야 하는 정규식)을 선언한다. HH는 `.agents/harness/config.json`의 `qa_executors`에 `node-test`(바뀐 모듈에 대응하는 시험 파일. 와일드카드 거부), `git-read`(Git 읽기 명령. 허용 목록의 조회 옵션만 받고 `--output`·`-O`·`--ext-diff` 같은 파일 출력·외부 명령 옵션과 따옴표·중괄호·와일드카드 같은 셸 확장 문자를 거부한다)를 둔다. 독립 QA 수단은 후보를 바꾸지 않아야 하므로, 명령 형식을 선언할 때 부작용 있는 옵션이 형식에 들어가지 않게 허용 목록으로 좁힌다. 수단 대조는 «선언된 QA 수단의 형식에 맞는다»까지만 기계로 확인한다. 실기기 검사를 일반 로컬 명령 형식으로 적으면 형식상 통과할 수 있으므로, architect 검토와 Lead가 검사 내용이 그 수단으로 실제 판정되는지 확인한다. 실행 위치는 환경이 정상일 때 그 역할이 실행할 수 있는지를 뜻한다. 허용된 QA 검사가 회차 중 환경 장애로 실패하면 기존 BLOCKED 경로를 따른다.
 
 ### QA와 남은 검증
 
@@ -339,6 +339,8 @@ QA 재작업 왕복(40~60분)을 줄이려고 PASS 판정을 운영 위험 기�
 
 ## QA 실행 영수증과 CI 검증
 
+> **HH는 사용 안 함(HH-020, 2026-11-24).** HH 자체 QA는 바뀐 파일 시험만 Windows에서 실행하고 영수증을 발급하지 않는다. HH CI는 필수 job 이름(`harness-ci (ubuntu-latest)`/`(windows-latest)`)만 유지하고 `node scripts/build.mjs`만 실행한다([HH 어댑터](.agents/harness/README.md#시험-범위-바뀐-파일-시험만hh-020)). 아래 발급기·검증기·정책 형식은 다른 저장소가 쓰는 공통 기능이다. `policy/qa-receipt.json`은 공통 시험 fixture와 형식 예로 남긴다.
+
 CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계에서 저장소 정책이 선언한 OS마다 실행하고, 같은 runner가 발급한 QA 실행 영수증(v2)을 PR 본문에 남긴다. PR CI는 PR head에서 후보 지문을 다시 계산해 영수증의 후보·검사 목록과 저장소 정책 파일만 검사한다. 영수증에는 서명이 없다(아래 «남는 한계»).
 
 | 구성 | 파일 | 실행하는 곳 |
@@ -346,7 +348,7 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 | 공유 계약(후보 지문·정책·PR 본문 봉투·PR 판정) | `core/qa-receipt-policy.cjs`(`core/dev14.cjs`의 `changes`를 쓴다) | 발급기·CI |
 | 발급기 | `core/qa-receipt-runner.mjs`, `bin/qa-receipt.mjs` | 독립 QA·로컬 |
 | CI 검증기 | `bin/verify-qa-receipt.mjs` | 저장소 CI(release 없음) |
-| 저장소 정책 | HH는 `policy/qa-receipt.json` | 저장소별 |
+| 저장소 정책 | 저장소별 파일(`policy/qa-receipt.json`은 형식 예·fixture. HH는 사용 안 함) | 저장소별 |
 
 발급기와 검증기는 release에도 실린다. 저장소 정책 파일은 release에 싣지 않는다(공통 `policy/execution.json` 등과 다르다).
 
@@ -407,7 +409,7 @@ node bin/qa-receipt.mjs [--worktree <checkout>] [--base <B>] [--run <회차 ID>]
 
 ### 사후 검사
 
-main push·nightly 사후 검사는 공통 규칙으로 두지 않는다. 기존 HH CI의 main push 전체 시험도 없앴다. 독립 main 변경과 결합해 생긴 문제는 발견했을 때 수정 PR로 고치는 것을 기본 운영으로 한다.
+main push·nightly 사후 검사는 공통 규칙으로 두지 않는다. 기존 HH CI의 main push 전체 시험도 없앴다. HH는 PR 전 전체 회귀도 돌리지 않으므로(HH-020) 공통 release 배포 뒤 SW·VDP·VP에서 회귀가 발견될 수 있다(사용자 수용 위험). 독립 main 변경과 결합해 생긴 문제는 발견했을 때 수정 PR로 고치는 것을 기본 운영으로 한다.
 
 ### OS별 시험 시간
 
@@ -445,7 +447,7 @@ SW·VDP·VP는 병합 뒤 저장소별 업무와 사용자 확인으로 전환�
     "required":[{"checks":["suite"],"platforms":["windows","linux"],"anyPlatform":true}]}
    ```
 3. **CI**: 기존 필수 check 이름을 그대로 둔 job에서 `fetch-depth: 0` checkout 뒤 검증기만 실행하고 `pull_request` types에 `edited`를 더한다. 경로 필터·job skip으로 필수 이름이 사라지지 않게 한다. 제거·QA 이관할 기존 검사의 분류는 저장소별 업무에서 정한다.
-4. **QA runner**: 독립 QA 명령이 `node tools/hh/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <회차> --policy <정책>`을 실행하거나 HH의 verify.mjs처럼 `issueReceipt`를 직접 부르게 하고, 게시자에게 envelope 줄을 넘긴다. Docker Linux를 선언하면 QA PC에 Docker가 있어야 한다.
+4. **QA runner**: 독립 QA 명령이 `node tools/hh/bin/qa-receipt.mjs --worktree <업무 worktree> --base <업무 base> --run <QA token> --round <회차> --policy <정책>`을 실행하거나 `issueReceipt`(`core/qa-receipt-runner.mjs`)를 직접 부르게 하고, 게시자에게 envelope 줄을 넘긴다. Docker Linux를 선언하면 QA PC에 Docker가 있어야 한다.
 5. **하네스 밖 PR 안내**: 저장소 PR 템플릿·기여 안내에 로컬 발급 명령과 본문 위치를 적는다.
 
 ## 단계 수집 판정
