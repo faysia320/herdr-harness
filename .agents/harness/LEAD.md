@@ -22,6 +22,8 @@ node .agents/harness/launch.mjs whoami
 
 두 명령에서 새 터미널이 Lead로 일치하는지 확인한다. `recover`가 돌려준 활성 실행은 기존 산출물과 터미널부터 확인한 뒤 수집한다. `next --go`는 남은 실행과 열린 결정을 확인한 후 사용한다.
 
+`dispatch` 직후에는 같은 Lead 환경에서 `run_in_background`로 `node <고정 release>/bin/watch-stage.mjs .local/hh-harness/harness-binding.json HH-123`을 띄운다. 감시기는 그 업무를 수집하고 다음 단계를 같은 업무 한 건만 위임하며, 판단이 필요한 상태·publish·상한에서 JSON 한 줄과 exit 1(CLI 오류는 2)로 Lead를 깨운다([단계 자동 진행](../../README.md#공용-자원과-단계-공통-규칙)).
+
 ## 실행 중인 Codex 터미널에 보내기
 
 실행 중인 Codex 터미널에 추가 지시나 Lead 주소 변경 알림 등을 보낼 때는 `hc send` 대신 `node <고정 release>/bin/send.mjs <터미널> "<텍스트>"`를 쓴다. `hc send`는 성공을 돌려줘도 Codex 입력창에 원문이 남을 수 있다. 이 도구는 남은 경우 Enter만 다시 누르고, 끝까지 남으면 0이 아닌 코드로 끝난다. 그때는 `hc read <터미널>`로 입력창을 확인한다. 원문을 다시 보내지 않는다.
