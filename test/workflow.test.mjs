@@ -33,6 +33,9 @@ test('head/base 이동·필수 CI 실패·리뷰 차단은 자동 병합 불가'
  assert.equal(mergeGate(f,{...pr,statusCheckRollup:[{status:'IN_PROGRESS'}]},[{bucket:'pending'}]).blocked,false);
  assert.equal(mergeGate(f,{...pr,statusCheckRollup:[{status:'COMPLETED',conclusion:'FAILURE'}]},checks).blocked,true);
  assert.equal(mergeGate(f,{...pr,mergeStateStatus:'BLOCKED'},checks).blocked,true);
+ const meta=(t,conclusion)=>({__typename:'CheckRun',workflowName:'PR',name:'PR 후보·메타데이터',status:'COMPLETED',conclusion,startedAt:t});
+ assert.equal(mergeGate(f,{...pr,statusCheckRollup:[meta('2026-11-25T01:00:00Z','FAILURE'),meta('2026-11-25T02:00:00Z','SUCCESS')]},checks).ready,true);
+ assert.equal(mergeGate(f,{...pr,statusCheckRollup:[meta('2026-11-25T02:00:00Z','SUCCESS'),meta('2026-11-25T03:00:00Z','FAILURE')]},checks).blocked,true);
 });
 
 // 검증 계획 실행 위치 분류. HH처럼 QA runner 전용 수단과 명령 형식 수단을 선언한 어댑터를 가정한다.
