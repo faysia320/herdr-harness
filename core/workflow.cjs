@@ -329,7 +329,14 @@ function mergeGate(flow, pr, required) {
   if (pr.mergeable !== 'MERGEABLE' || pr.mergeStateStatus !== 'CLEAN') reasons.push('병합 상태 미확정·차단');
   if (['CHANGES_REQUESTED','REVIEW_REQUIRED'].includes(pr.reviewDecision)) reasons.push('필수 리뷰 미충족');
   if (!Array.isArray(required) || !required.length || required.some(c=>c.bucket!=='pass')) reasons.push('필수 CI 미완료·실패·없음');
-  const checks = pr.statusCheckRollup ?? [];
+  // 같은 이름 검사가 여러 번 돌면(본문 수정 뒤 재실행 등) 가장 늦게 시작한 실행만 본다.
+  const latest = new Map();
+  for (const c of pr.statusCheckRollup ?? []) {
+    const key = c.__typename==='StatusContext' ? `s:${c.context}` : `c:${c.workflowName ?? ''}/${c.name}`;
+    const prev = latest.get(key);
+    if (!prev || !(String(c.startedAt ?? '') < String(prev.startedAt ?? ''))) latest.set(key, c);
+  }
+  const checks = [...latest.values()];
   if (!checks.length || checks.some(c=>c.__typename==='StatusContext' ? c.state!=='SUCCESS' : c.status!=='COMPLETED' || !['SUCCESS','NEUTRAL','SKIPPED'].includes(c.conclusion))) reasons.push('PR 검사 미완료·실패');
   // 아직 실행 중인 CI만 폴링한다. 실패·누락·사람의 조치가 필요한 상태는 즉시 Lead로 돌린다.
   const pending = (Array.isArray(required) && required.some(c=>c.bucket==='pending')) || checks.some(c=>c.__typename==='StatusContext' ? c.state==='PENDING' : ['QUEUED','IN_PROGRESS','PENDING','WAITING'].includes(c.status));
