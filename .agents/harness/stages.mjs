@@ -168,8 +168,10 @@ export async function collect(ctx, ledger, task) {
   }
   check(run.x_execution_policy.release === ctx.binding.manifestHash, '실행을 위임한 release와 현재 binding이 다르다.');
   const report = artifact(file, run);
-  const current = candidate(ctx, task);
   const stage = run.stage;
+  // revalidate 재구현이 병합한 main이 있으면 그 기준으로 후보를 검사한다. 기준은 아래 DONE 판정에서만 저장한다. 이전 release는 기존 기준을 쓴다.
+  const moved = stage === 'implement' && ctx.release('workflow.cjs').mergedBase ? ctx.flow({ action: 'merged-base', task }) : null;
+  const current = candidate(ctx, moved ? { ...task, base: moved.to } : task);
   if (stage !== 'implement') check(current.fingerprint === run.before, '현재 단계에서 후보가 변경됐다.');
   let verdict, note, to, awaiting;
   if (stage === 'research') {
@@ -189,7 +191,11 @@ export async function collect(ctx, ledger, task) {
         report.checks.every(c => isText(c?.command) && (c.exit === null || Number.isInteger(c.exit))) &&
         report.checks.some(c => Number.isInteger(c.exit))),
         '후보 변경과 구현 실행 검사 근거가 필요하다.');
-      if (report.verdict === success) task.candidate = current;
+      if (report.verdict === success) {
+        task.candidate = current;
+        if (moved) task.base = moved.to;
+        delete task.x_flow.recovery?.revalidate;
+      }
     }
     verdict = report.verdict === success ? 'ok' : 'BLOCKED';
     if (verdict === 'ok') {
@@ -214,7 +220,10 @@ export async function collect(ctx, ledger, task) {
   }
   finish(run, task, verdict, note);
   await transition(ctx, task, to, note, awaiting);
-  save(ctx, ledger, { task: task.id, event: 'collect', stage, outcome: verdict });
+  // 기준을 옮겼으면 이전·새 기준을 history와 event에 남긴다.
+  const base = moved && verdict === 'ok' ? { base: moved } : {};
+  if (base.base) Object.assign(task.history.at(-1), base);
+  save(ctx, ledger, { task: task.id, event: 'collect', stage, outcome: verdict, ...base });
   // 수집을 저장한 뒤 그 회차의 위임 터미널을 닫는다. 실패해도 수집 결과는 그대로 두고 사유를 회차에 남긴다.
   run.x_terminal = closeTerminal(ctx, ledger, task, run);
   save(ctx, ledger);

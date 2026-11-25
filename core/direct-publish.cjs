@@ -98,9 +98,14 @@ function publish(task, options, hooks, exec = execute) {
     };
     // 이전 시도가 만든 커밋이 있으면 새로 커밋하지 않고 아래 커밋 검사로 같은 후보인지 확인한다.
     const reusedCommit = git('rev-parse', 'HEAD') !== task.candidate.head;
+    // QA 전에 이미 커밋한 후보(HEAD가 QA HEAD이고 작업 트리가 깨끗함)는 커밋을 건너뛴다.
+    let committed = false;
     if (!reusedCommit) {
       hooks.prepare?.();
       hooks.checkCandidate();
+      committed = git('rev-parse', 'HEAD') === task.candidate.head && !git('status', '--porcelain=v1', '--untracked-files=all');
+    }
+    if (!reusedCommit && !committed) {
       const names = new Set(paths.map(p => p.path)), unstaged = new Set(list());
       const unrelated = list('--cached', 'HEAD').filter(p => !names.has(p) || unstaged.has(p));
       check(!unrelated.length, '후보와 무관하거나 일부만 stage된 경로가 있다: ' + unrelated.join(', '));
@@ -112,9 +117,10 @@ function publish(task, options, hooks, exec = execute) {
     }
     done.head = git('rev-parse', 'HEAD');
     done.stage = '커밋 대조';
-    // push는 조상까지 공개한다. QA 당시 HEAD 바로 위에 이 명령이 만든 커밋 하나일 때만 올린다.
+    // push는 조상까지 공개한다. QA 당시 HEAD 자체이거나 그 바로 위에 이 명령이 만든 커밋 하나일 때만 올린다.
     const [header, ...text] = git('cat-file', 'commit', done.head).split('\n\n');
-    check(header.split('\n').filter(l => l.startsWith('parent ')).join() === 'parent ' + task.candidate.head && text.join('\n\n').trim() === message.trim(),
+    check(committed ? done.head === task.candidate.head :
+      header.split('\n').filter(l => l.startsWith('parent ')).join() === 'parent ' + task.candidate.head && text.join('\n\n').trim() === message.trim(),
       'QA 당시 HEAD ' + task.candidate.head + ' 바로 위에 이 명령이 만든 게시 커밋 하나가 아니다(부모·커밋 메시지 불일치).');
     assertTree(git('rev-parse', done.head + '^{tree}'));
     hooks.checkCommitted();
@@ -123,28 +129,34 @@ function publish(task, options, hooks, exec = execute) {
     const same = text => String(text ?? '').replace(/\r\n/g, '\n').trimEnd();
     const open = JSON.parse(run('gh', ['pr', 'list', '--repo', options.repository, '--head', task.branch, '--state', 'open',
       '--json', 'number,url,isCrossRepository,isDraft,headRefOid,baseRefName,body'])).filter(p => !p.isCrossRepository);
-    check(open.length <= 1 && open.every(p => p.headRefOid === done.head && p.baseRefName === target && !p.isDraft && same(p.body) === same(body)),
+    // 이미 커밋된 후보의 열린 PR은 재구현 전 head·본문일 수 있다. 일반 push로 head를 올리고 본문을 갱신해 재사용한다.
+    check(open.length <= 1 && open.every(p => p.baseRefName === target && !p.isDraft && (committed || p.headRefOid === done.head && same(p.body) === same(body))),
       '업무 브랜치의 열린 PR이 이번 게시와 다르다: ' + open.map(p => '#' + p.number).join(', '));
     let pr = open[0];
-    if (!pr) {
+    done.pr = pr?.number ?? null;
+    if (!pr || committed) {
       done.stage = 'push';
       // 사용자의 push.followTags 설정을 물려받지 않고 승인된 업무 브랜치만 올린다.
       run('git', ['push', '--no-follow-tags', 'origin', done.head + ':refs/heads/' + task.branch]);
-      done.stage = 'PR 생성';
+      done.stage = pr ? 'PR 본문 갱신' : 'PR 생성';
       const scratch = mkdtempSync(join(tmpdir(), 'herdr-publish-'));
       try {
         writeFileSync(join(scratch, 'body.md'), body);
-        const out = run('gh', ['pr', 'create', '--repo', options.repository, '--base', target, '--head', task.branch, '--title=' + title,
-          '--body-file', join(scratch, 'body.md')]);
-        const [url, number] = /https:\/\/github\.com\/\S+\/pull\/(\d+)/.exec(out) ?? [];
-        check(url, '만든 PR 주소를 확인할 수 없다: ' + out.trim());
-        pr = { url, number: Number(number) };
+        if (!pr) {
+          const out = run('gh', ['pr', 'create', '--repo', options.repository, '--base', target, '--head', task.branch, '--title=' + title,
+            '--body-file', join(scratch, 'body.md')]);
+          const [url, number] = /https:\/\/github\.com\/\S+\/pull\/(\d+)/.exec(out) ?? [];
+          check(url, '만든 PR 주소를 확인할 수 없다: ' + out.trim());
+          pr = { url, number: Number(number) };
+        } else if (same(pr.body) !== same(body)) {
+          run('gh', ['pr', 'edit', String(pr.number), '--repo', options.repository, '--body-file', join(scratch, 'body.md')]);
+        }
       } finally { rmSync(scratch, { recursive: true, force: true }); }
     }
     done.pr = pr.number;
     done.stage = 'PR 연결';
     const attached = hooks.attach?.(pr.number);
-    return { pr: pr.number, url: pr.url, head: done.head, reusedCommit, reusedPr: open.length === 1, ...(attached ? { attached } : {}) };
+    return { pr: pr.number, url: pr.url, head: done.head, reusedCommit: reusedCommit || committed, reusedPr: open.length === 1, ...(attached ? { attached } : {}) };
   } catch (error) {
     error.message = '게시 중단(' + done.stage + '): ' + error.message + (done.head ? ' [커밋 ' + done.head + ']' : '') + (done.pr ? ' [PR #' + done.pr + ']' : '');
     throw error;

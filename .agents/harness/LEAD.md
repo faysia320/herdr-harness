@@ -83,8 +83,8 @@ QA PASS 뒤 게시가 승인됐으면 `node .agents/harness/launch.mjs direct-pu
 |---|---|
 | 게시 자격·QA 영수증 봉투·PR 본문·후보 대조 | 커밋 전이다. 이유를 해소한 뒤 다시 실행한다. 후보가 바뀌었으면 재QA한다. 일부만 stage된 경로는 사람이 확인해 stage를 정리한다 |
 | 커밋·커밋 대조 | pre-commit 훅 실패나 커밋 뒤 남은 변경이다. 출력된 커밋을 확인한다. 이 명령이 만든 커밋은 재실행 때 재사용된다. 부모·커밋 메시지 불일치는 QA 뒤 다른 커밋이 끼었거나 Git 훅이 메시지를 바꾼 것이다. 사람이 원인을 확인해 정리한 뒤 다시 실행한다 |
-| 기존 PR 조회 | head·본문이 다른 열린 PR이 있거나 gh 조회가 실패했다. 본문만 다르면 기존 PR을 확인해 `gh pr edit` 뒤 `flow-attach-pr`로 연결하고, 재조사 뒤 재게시는 기존 게시자 경로를 쓴다 |
-| push·PR 생성 | 원인을 해소한 뒤 다시 실행한다. 강제 push하지 않는다. 만든 PR이 있으면 재실행이 재사용한다 |
+| 기존 PR 조회 | head·본문이 다른 열린 PR이 있거나 gh 조회가 실패했다. QA 전에 모두 커밋한 후보는 head·본문이 달라도 기존 PR을 갱신하므로 여기서 멈추지 않는다. 본문만 다르면 기존 PR을 확인해 `gh pr edit` 뒤 `flow-attach-pr`로 연결하고, 재조사 뒤 재게시는 기존 게시자 경로를 쓴다 |
+| push·PR 생성·PR 본문 갱신 | 원인을 해소한 뒤 다시 실행한다. 강제 push하지 않는다. 만든 PR이 있으면 재실행이 재사용한다 |
 | PR 연결 | PR은 이미 있다. 다시 실행하거나 `flow-attach-pr HH-123 --pr N`을 쓴다 |
 
 ## PR 본문 남은 검증 누락 복구
@@ -104,6 +104,7 @@ QA PASS 뒤 게시가 승인됐으면 `node .agents/harness/launch.mjs direct-pu
 속도 우선 정책에 따라 재QA·재작업은 실제 위험이 있을 때만 한다([공통 규칙](../../README.md#dev-14-동기화와-병합-증명)).
 
 - **main 이동**: `flow-deliver`가 `revalidate`를 돌려주는 경우는 QA 후보 경로와 main 변경 경로의 겹침, main·PR 병합 충돌, 병합 결과의 후보 경로·모드 불일치, 설명되지 않는 PR 커밋뿐이다. lockfile·`.agents`·`package.json` 같은 경로라는 이유만으로는 재QA하지 않는다. `config.json`의 `sensitive_paths`는 더 이상 판정에 쓰지 않는다.
+  - `--apply`·`watch-delivery`에서 revalidate로 BLOCKED가 되면 `flow-resume HH-123 --stage implement --evidence "main 이동"` 뒤 `dispatch`한다. 구현자가 최신 main을 병합·커밋하고, DONE 수집이 병합된 main으로 `base`를 옮겨 history와 collect 이벤트에 `base: {from, to}`를 남긴다. 대장을 손으로 고치지 않는다. 새 QA PASS 뒤 `direct-publish`가 기존 PR에 push·본문 갱신·연결한다.
 - **조건부 PASS**: QA가 운영 위험이 아닌 Medium·Low 결함을 `limitations`(kind=limitation)로, 브라우저·실기기·배포 후에만 확인되는 AC를 `limitations`(kind=follow-up)로 넘기면 PASS로 수집된다. `publish-check`·`flow-status`의 `remainingVerification`에 `source: "qa"` 항목으로 나오며, 계획 후속 확인과 같이 PR 본문 «남은 검증»에 `- [ ] <line>`으로 넣어야 연결·병합된다. 병합 뒤 남는 한계는 필요하면 `add`로 후속 업무를 만든다.
 - **후속 확인 전용 AC**: 계획에서 실기기·배포 후로만 판정되는 AC는 `follow-up` 항목에만 연결해 동결할 수 있다. QA는 그 AC를 `unverified`로 적고 PASS하며, 계획 후속 확인 줄이 같은 PR 본문 «남은 검증»으로 넘어간다.
 - **운영 위험**: AC 정상 경로 실패·데이터 유실·병합/운영 차단은 severity와 관계없이 FAIL(code finding)이며 수리로 돌린다.

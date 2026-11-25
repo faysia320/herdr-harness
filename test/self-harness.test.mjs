@@ -1016,6 +1016,108 @@ test('HH direct-publish: QA 후보만 커밋·push·PR 생성해 ci로 연결하
   assert.deepEqual([again.reusedPr, again.attached.phase, remote.slice(writes)], [true, 'ci', ['pr list']]);
 });
 
+test('HH revalidate 재구현: 병합한 main으로 기준을 옮겨 수집하고, 이미 커밋된 후보를 기존 PR에 push·본문 갱신·연결한다', async t => {
+  const load = createRequire(import.meta.url);
+  if (!load(join(built.release, 'core/workflow.cjs')).mergedBase) return;
+  const { execute } = load(join(built.release, 'core/direct-publish.cjs'));
+  const fixture = await setup(t);
+  const { repo, base, main, herdr, run, refused } = fixture;
+  await run('recover');
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Revalidate.\n');
+  const { id, worktree, branch } = await main(['add', '--title', 'Revalidate', '--desc-file', request, '--workflow', 'v2', '--kind', 'bug-fix', '--slug', 'revalidate',
+    '--authorization', 'Fixture authorization'], { cwd: repo, terminal: 't-lead', herdr });
+  const dispatch = async () => (await run('dispatch ' + id)).run;
+  const report = (r, verdict = 'DONE') => writeJson(join(r.dir, 'implement.json'), { run: r.token, verdict, summary: 'fixture', checks: [{ command: 'x', exit: 0 }] });
+  const pass = async () => {
+    const qa = await dispatch();
+    writeJson(join(qa.dir, 'verification.json'), { run: qa.token, version: 2, verdict: 'PASS', candidate: fixture.ledger().tasks[id].candidate.fingerprint, findings: [],
+      criteria: [{ id: 'AC1', status: 'passed', evidence: 'contents' }], checks: [{ id: 'hh-focused', command: focusedRow().command, status: 'passed', evidence: 'exit 0' }] });
+    await run('collect ' + id);
+    return qa;
+  };
+  const research = await dispatch();
+  writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'fixture', planned_files: ['tracked.txt'] });
+  writeJson(join(research.dir, 'verification-plan.json'), focusedPlan(research.token));
+  await run('collect ' + id);
+  const first = await dispatch();
+  assert.doesNotMatch(promptOf(first), /main 이동 재구현/);
+  writeFileSync(join(worktree, 'tracked.txt'), 'candidate\n');
+  git(worktree, 'commit', '-qam', 'candidate');
+  const published = git(worktree, 'rev-parse', 'HEAD');
+  report(first);
+  await run('collect ' + id);
+  await pass();
+  const prView = number => ({ number, url: 'https://github.com/faysia320/herdr-harness/pull/9', state: 'OPEN', isCrossRepository: false, isDraft: false,
+    headRefName: branch, headRefOid: git(worktree, 'rev-parse', 'HEAD'), baseRefName: 'main', body: 'old body' });
+  await run('flow-attach-pr ' + id + ' --pr 9', 't-lead', { prView });
+
+  // main이 후보 경로까지 옮겨 revalidate가 나온다. 재구현이 병합하면 새 main을 기준으로 후보를 잡는다.
+  writeFileSync(join(repo, 'tracked.txt'), 'upstream\n');
+  writeFileSync(join(repo, 'upstream-only.txt'), 'upstream\n');
+  git(repo, 'add', '--', 'tracked.txt', 'upstream-only.txt');
+  git(repo, 'commit', '-qm', 'upstream');
+  const moved = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'update-ref', 'refs/remotes/origin/main', moved);
+  await run('flow-deliver ' + id + ' --apply', 't-lead', { delivery: () => ({ phase: 'revalidate', reasons: ['QA 경로 겹침: tracked.txt'] }) });
+  await run('flow-resume ' + id + ' --stage implement --evidence main-moved');
+  let again = await dispatch();
+  assert.match(promptOf(again), /main 이동 재구현: .*git merge origin\/main/);
+  git(worktree, 'merge', '-q', '--no-edit', '-X', 'ours', 'origin/main');
+  // 병합 뒤 origin/main이 더 움직여도 병합된 지점까지만 옮긴다.
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'later');
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  report(again);
+  writeFileSync(join(worktree, 'outside.txt'), 'outside\n');
+  await refused(() => run('collect ' + id), /예정 경로 밖/);
+  rmSync(join(worktree, 'outside.txt'));
+  // BLOCKED 회차는 기준을 저장하지 않고, 재개한 다음 회차가 이어서 옮긴다.
+  report(again, 'BLOCKED');
+  assert.equal((await run('collect ' + id)).base, base);
+  await run('flow-resume ' + id + ' --evidence retry');
+  again = await dispatch();
+  report(again);
+  const task = await run('collect ' + id);
+  assert.deepEqual([task.base, task.candidate.x_base, task.candidate.paths.map(p => p.path), task.x_flow.recovery.revalidate], [moved, moved, ['tracked.txt'], undefined]);
+  assert.deepEqual(task.history.at(-1).base, { from: base, to: moved });
+  const event = fixture.stored()[1].trim().split('\n').map(line => JSON.parse(line)).findLast(e => e.event === 'collect');
+  assert.deepEqual([event.stage, event.base], ['implement', { from: base, to: moved }]);
+  const qa = await pass();
+  assert.match(promptOf(qa), new RegExp('Base: ' + moved));
+
+  // 이미 커밋된 후보: 커밋 없이 검증한 HEAD를 push하고 뒤처진 기존 PR의 본문을 갱신해 연결한다.
+  const head = git(worktree, 'rev-parse', 'HEAD'), bare = join(repo, '.local/origin.git');
+  git(repo, 'init', '-q', '--bare', bare);
+  git(worktree, 'push', '-q', bare, published + ':refs/heads/' + branch);
+  const open = { number: 9, url: 'https://github.com/faysia320/herdr-harness/pull/9', isCrossRepository: false, isDraft: false, headRefOid: published, baseRefName: 'main', body: 'old body' };
+  const calls = [];
+  let failing = null, body = null;
+  const exec = (cwd, file, args, options) => {
+    assert.notEqual(args[0], 'commit');
+    const name = file === 'gh' ? args.slice(0, 2).join(' ') : args[0];
+    if (file !== 'gh' && name !== 'push') return execute(cwd, file, args, options);
+    calls.push(name);
+    if (failing === name) throw new Error('fixture ' + name + ' failed');
+    if (name === 'push') return execute(cwd, file, args.map(a => a === 'origin' ? bare : a), options);
+    if (name === 'pr list') return JSON.stringify([open]);
+    assert.deepEqual([name, args[2]], ['pr edit', '9']);
+    body = readFileSync(args[args.indexOf('--body-file') + 1], 'utf8');
+    return '';
+  };
+  const direct = () => run('direct-publish ' + id, 't-lead', { publishExec: exec, prView });
+  failing = 'push';
+  await refused(direct, /게시 중단\(push\).*\[PR #9\]/);
+  failing = 'pr edit';
+  await refused(direct, /게시 중단\(PR 본문 갱신\)/);
+  failing = null;
+  calls.length = 0;
+  const result = await direct();
+  assert.deepEqual([result.pr, result.head, result.reusedCommit, result.reusedPr, result.attached.phase, calls], [9, head, true, true, 'ci', ['pr list', 'push', 'pr edit']]);
+  assert.equal(git(bare, 'rev-parse', 'refs/heads/' + branch), head);
+  assert.ok(body.includes(qa.token) && body.includes(moved));
+  assert.deepEqual(fixture.ledger().tasks[id].x_flow.delivery.original, { head, base: moved, tree: task.candidate.tree });
+});
+
 test('HH 게시 대기 중 계획 변경 결정: QA·게시 허가 철회 → 재조사·재동결 → 새 QA → 게시 인계', async t => {
   if (!scopedRelease) return;
   const fixture = await setup(t);

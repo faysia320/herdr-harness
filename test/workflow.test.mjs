@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-const { create, collect, closeLocal, mergeGate, instructions, freezePlan, remainingVerification, missingRemaining, planScopeVersion }=createRequire(import.meta.url)('../core/workflow.cjs');
+const { create, collect, closeLocal, mergedBase, mergeGate, instructions, freezePlan, remainingVerification, missingRemaining, planScopeVersion }=createRequire(import.meta.url)('../core/workflow.cjs');
 const fingerprint='a'.repeat(64);
 const flow=()=>({...create('bug-fix','사용자: 기준 충족 시 자동 병합'),plan:{criteria:['AC1'],checks:['repro']}});
 const report=(kind)=>({version:2,candidate:fingerprint,verdict:kind==='code'?'FAIL':kind?'BLOCKED':'PASS',criteria:[{id:'AC1',status:kind?'unverified':'passed',evidence:'원래 사용자 경로'}],checks:[{id:'repro',command:'node test.mjs',status:kind?'failed':'passed',evidence:'로그'}],findings:kind?[{id:'F1',kind,signature:'same-root',evidence:'재현 명령과 출력',next:'원인 수정'}]:[]});
@@ -193,6 +193,20 @@ test('각 단계 지시는 속도 우선 판정 기준을 담고 수리 회차�
    [repair,'qa',/FAIL과 High 결함은 AC 정상 경로 실패/]];
  for(const [f,stage,pattern] of cases) assert.match(instructions(f,stage,fingerprint),pattern,`${stage}/${f.phase}`);
  assert.doesNotMatch(instructions(base,'implement',fingerprint),/수리 회차는/);
+});
+test('revalidate 재구현만 병합을 지시하고 병합된 main을 새 기준으로 고른다',()=>{
+ const [old,next]=['1'.repeat(40),'2'.repeat(40)];
+ const task=(recovery)=>({base:old,x_flow:{...flow(),phase:'repair',recovery}});
+ const git=(merged,ancestor=old)=>(...args)=>args.at(-1)==='HEAD'?(assert.equal(args[1],'refs/remotes/origin/main'),merged):ancestor;
+ assert.deepEqual(mergedBase(task({revalidate:true}),git(next)),{from:old,to:next});
+ assert.equal(mergedBase(task({revalidate:true}),git(old)),null);
+ assert.throws(()=>mergedBase(task({revalidate:true}),git(next,'3'.repeat(40))),/조상이 아니다/);
+ for(const recovery of [undefined,{evidence:'CI'}]) {
+  assert.equal(mergedBase(task(recovery),()=>assert.fail('git 호출')),null);
+  assert.doesNotMatch(instructions(task(recovery).x_flow,'implement',fingerprint),/main 이동 재구현/);
+ }
+ assert.match(instructions(task({revalidate:true}).x_flow,'implement',fingerprint),/main 이동 재구현: 먼저 업무 브랜치에서 git fetch origin main 뒤 git merge origin\/main로 .*새 기준으로 기록한다\.\n/);
+ assert.doesNotMatch(instructions(task({revalidate:true}).x_flow,'qa',fingerprint),/main 이동 재구현/);
 });
 test('해소 결정은 인용 JSON 데이터로 넣고 조회 결과가 없으면 0건으로 바꾸지 않는다',()=>{
  const flow=create('feature','사용자 승인');
