@@ -11,7 +11,7 @@
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
 - v2 업무가 독립 QA PASS 후 `publish`에 도달하면, [direct-publish](#명령-하나로-pr-게시)를 연결한 저장소의 Lead는 그 명령 하나로 PR을 올린다. 아직 연결하지 않은 저장소의 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
-- `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
+- `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고(squash 제목은 병합 직전 PR 제목 + ` (#N)`이라 PR 제목을 고치면 반영된다) 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
 - `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. DEV-14 후보는 strict가 꺼진 규칙도 조회로 확인되고 필수 검사 이름이 있으면 병합한다(아래 DEV-14). 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
 - CI 실패·필수 검사 누락·리뷰 조치는 즉시 `delivery-blocked`로 반환한다. `flow-resume --evidence`는 해결된 CI만 다시 확인하고, 코드 수정은 `--stage implement`, 요구사항 변경은 `--stage research`로 보낸다. watcher의 대기 상한 도달은 nonzero이며 완료로 보고하지 않는다.
 
@@ -21,7 +21,7 @@ v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 O
 
 ### 명령 하나로 PR 게시
 
-`direct-publish <ID>`는 게시 에이전트(모델) 없이 QA 후보 커밋 → push → PR 생성 → `flow-attach-pr` 처리를 한 번에 한다. 검사를 다시 실행하거나 영수증을 발급하지 않으며 병합 판단은 PR CI와 `flow-deliver`가 한다. 공통 부분은 `core/direct-publish.cjs`이고 저장소 어댑터가 자기 Lead 명령으로 연결한다(HH는 연결돼 있다). 명령이 없는 어댑터·이전 release는 `publisher-command`를 그대로 쓴다.
+`direct-publish <ID>`는 게시 에이전트(모델) 없이 QA 후보 커밋 → push → PR 생성 → `flow-attach-pr` 처리를 한 번에 한다. 검사를 다시 실행하거나 영수증을 발급하지 않으며 병합 판단은 PR CI와 `flow-deliver`가 한다. 공통 부분은 `core/direct-publish.cjs`이고 저장소 어댑터가 자기 Lead 명령으로 연결한다(HH는 연결돼 있다). 명령이 없는 어댑터·이전 release는 `publisher-command`를 그대로 쓴다. 커밋·PR 제목은 기본이 대장 업무 제목이고, 저장소 제목 규칙(예: 영문 Conventional Commit)이 따로 있으면 `options.title`(HH는 `direct-publish ID --title "…"`)로 바꾼다.
 
 ```powershell
 node <release>/bin/harness.mjs --binding <binding> direct-publish <ID>
