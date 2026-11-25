@@ -683,7 +683,8 @@ export default class Harness extends View {
       return [s.state === "stale" ? "소유 프로세스 종료" : "점유 중", s.project, `PID ${s.pid}`,
         since ? `시작 후 ${Math.max(0, Math.floor((Date.now() - since) / 1000))}초` : null].filter(Boolean).join(" · ");
     };
-    const pair = values => values ? values.map(v => `${v} ms`).join(" / ") : "—";
+    // 1초 미만은 ms, 그 이상은 초 단위 소수 한 자리로 보여 준다.
+    const pair = values => values ? values.map(v => v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)}초`).join(" / ") : "—";
     const card = v_flex().flex_none().min_w(0).p(10).gap(6).rounded(8)
       .bg(open ? t.selected : t.raised).border_1().border_color(open ? t.accent : t.border)
       .child(div().id("harness-resource-toggle").font_medium().text_size(13).cursor_pointer()
@@ -696,13 +697,13 @@ export default class Harness extends View {
     if (!data) return card.child(line(this.resourceError ?? "자원 상태 조회 중…"));
     card.child(line(`준비 슬롯 · ${slotLabel(data.preparation)}`));
     data.heavy.forEach((s, i) => card.child(line(`시험·빌드 슬롯 ${i + 1} · ${slotLabel(s)}`)));
-    card.child(div().pt(4).font_medium().child(`프로젝트별 계측 · 종류별 최근 최대 ${data.limit}행`));
+    card.child(div().pt(4).font_medium().child(`최근 기록 · 종류별 최근 ${data.limit}건을 프로젝트별로 나눔(누계 아님)`));
     if (!data.projects.length) card.child(line("표시할 계측 기록이 없습니다."));
     for (const p of data.projects) {
       card.child(div().pt(4).font_medium().whitespace_normal().child(p.project));
       if (p.preparations) {
-        card.child(line(`대기 ${p.preparations}건 · p50 / p95   ${pair(p.wait)}`))
-          .child(line(`점유 ${p.acquired}건 · p50 / p95   ${pair(p.run)}`))
+        card.child(line(`준비 ${p.preparations}건 · 슬롯 대기 시간 p50 / p95   ${pair(p.wait)}`))
+          .child(line(`슬롯 획득 ${p.acquired}건 · 점유 시간 p50 / p95   ${pair(p.run)}`))
           .child(line(`미획득 ${p.missed}건 · 0 이외 종료 코드 ${p.nonzero}건 · 종료 코드 없음 ${p.noExit}건`));
       }
       if (p.installs) {
