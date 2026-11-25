@@ -75,20 +75,9 @@ function worktreeCleanup(file, input) {
   if (input.action === 'cleanup') return api.cleanup({ ...input.task, stateDir: input.stateDir });
   throw new Error('지원하지 않는 worktree 정리 동작이다.');
 }
-// 사용자 결정으로 QA 게이트를 예외 처리한 업무의 게시 허가·종결. 호출자는 대장 잠금 안에서 부르고 돌려받은 업무·사건을 저장한다.
-// 병합 확인은 release 쪽에서 gh로 직접 한다. 호출자가 PR 조회 결과를 넘겨 근거를 대신할 수 없다.
-function decisionClosure(file, input) {
-  const b = binding(file);
-  if (b.project !== input.project || path.resolve(path.dirname(file)) !== path.resolve(input.stateDir)) throw new Error('결정 종결 연결의 프로젝트·상태 경계가 다르다.');
-  if (input.task?.project !== input.project) throw new Error('업무 프로젝트가 연결과 다르다.');
-  const api = require(path.join(b.release, 'core/decision-closure.cjs'));
-  if (input.action === 'authorize') return api.authorize(input.task, input.evidence, { now: input.now });
-  if (input.action === 'gate') return api.gate(input.task);
-  if (input.action === 'close') {
-    if (!path.isAbsolute(input.cwd ?? '')) throw new Error('PR 조회 위치(cwd)는 절대 경로여야 한다.');
-    return api.close(input.task, input.evidence, api.viewPr(input.cwd, Number(input.evidence?.pr)), { now: input.now });
-  }
-  throw new Error('지원하지 않는 결정 종결 동작이다.');
+// 폐지한 사용자 결정 게시·종결(v1). 일반 결정함 진입점으로 넘어가지 않게 이름을 남겨 거부한다.
+function decisionClosure() {
+  throw new Error('사용자 결정 게시·종결(v1)은 폐지됐다. 병합된 업무는 workflow accept-merged로 종결한다.');
 }
 function workflow(file, input) {
   const b = binding(file);
@@ -130,7 +119,7 @@ function workflow(file, input) {
   }
   throw new Error('지원하지 않는 workflow 동작');
 }
-module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, worktreeCleanup, decisionClosure, workflow };
+module.exports = { hash, verify, binding, bridge, executionPolicy, artifactPolicy, ledgerArchive, worktreeCleanup, workflow };
 if (require.main === module) {
   const handler = { policy: executionPolicy, artifacts: artifactPolicy, ledger: ledgerArchive, cleanup: worktreeCleanup, closure: decisionClosure, workflow }[process.argv[3]] ?? bridge;
   try { process.stdout.write(`${JSON.stringify(handler(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8'))))}\n`); }

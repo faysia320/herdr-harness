@@ -4,6 +4,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const raw = fs.readFileSync(path.join(__dirname, '../policy/execution.json'));
 const defaults = JSON.parse(raw);
+const workflow = require('../policy/workflow.json');
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const stages = ['research', 'architect', 'implement', 'qa'];
 const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -35,7 +36,9 @@ function configure(local) {
     const adapter = local.roles[stage], patch = extra.roles?.[stage] ?? {};
     if (!object(adapter) || Object.keys(adapter).some((k) => !['skill', 'invoke'].includes(k))) fail(`${stage}: 모델·effort·실행 옵션은 공통 정책 또는 명시적 execution_overrides에서만 설정한다.`);
     if (!object(patch) || Object.keys(patch).some((k) => !roleKeys.includes(k))) fail(`${stage}: 지원하지 않는 실행 예외 필드다.`);
-    roles[stage] = { ...defaults.roles[stage], ...patch, ...adapter };
+    // 모델·effort 기본은 workflow.json, CLI·Fast·권한 기본은 execution.json이 정본이다.
+    const { model, effort } = workflow.roles[stage];
+    roles[stage] = { ...defaults.roles[stage], model, effort, ...patch, ...adapter };
     roleCheck(roles[stage]);
     // 표준 스킬 경로와 명시 호출 접두사는 선택한 CLI에 맞춘다.
     // 프로젝트별 스킬 이름·인자와 표준 경로 밖의 사용자 지정 경로는 보존한다.
@@ -51,10 +54,11 @@ function configure(local) {
     const metadata = local.profile_metadata?.[name] ?? local.profile_metadata?.[canonical] ?? {};
     routing[name] = { ...profile, label: metadata.label ?? canonical, focus: metadata.focus ?? [], architect: profile.stages.includes('architect'), canonical };
   }
-  const limits = { ...local.limits, ...defaults.limits, ...extra.limits, escalate_after_rework: 1 };
+  const limits = { ...local.limits, ...defaults.limits, ...extra.limits };
   limits.max_parallel_tasks = limits.max_parallel;
   return { ...local, roles, routing, profiles: routing, default_profile: defaults.default_profile, limits,
-    escalation: defaults.escalation,
+    // SW swh·VDP vdh의 set --effort가 허용 목록으로 읽는다. 재작업 자동 상향은 없다.
+    escalation: { effort_ladder: efforts },
     execution_policy: { version: defaults.version, sha256: digest(raw), overrides_sha256: digest(JSON.stringify(extra)), override_reason: extra.reason ?? null } };
 }
 
@@ -67,25 +71,16 @@ function resolve(local, task, stage) {
   const override = task.overrides?.[stage] ?? {};
   if (!object(override) || Object.keys(override).some((k) => !['model', 'effort', 'reason'].includes(k))) fail('업무별 예외 형식이 올바르지 않다.');
   if ((override.model != null || override.effort != null) && (typeof override.reason !== 'string' || !override.reason.trim())) fail('업무별 모델·effort 변경에는 사유가 필요하다.');
-  const role = { ...config.roles[stage], effort: route.effort[stage] ?? config.roles[stage].effort };
-  if (task.x_flow?.version === 2) {
-    const selected = require('../policy/workflow.json').roles[stage];
-    // config.roles는 execution.json 기본과 합쳐져 있으므로 저장소가 명시한 예외만 workflow 기본보다 우선한다.
-    const patch = local.execution_overrides?.roles?.[stage] ?? {};
-    role.model = patch.model ?? selected.model;
-    role.effort = patch.effort ?? (route.canonical === 'high-risk' && stage === 'implement' ? 'xhigh' : selected.effort);
-  } else if (stage === 'implement') {
-    const ladder = config.escalation.effort_ladder;
-    role.effort = ladder[Math.min(ladder.indexOf(role.effort) + (task.rework ?? 0) * config.escalation.implement_step_per_rework, ladder.length - 1)];
-  }
-  // 명시적 업무 예외는 자동 상향보다 우선한다. 선택한 effort를 다시 올리지 않는다.
+  // 공통 역할 → 프로필 effort → 저장소 예외 → 업무 예외 순서다. x_flow 없는 조회 입력도 v2 정책으로 해석한다.
+  const role = { ...config.roles[stage] };
+  role.effort = local.execution_overrides?.roles?.[stage]?.effort ?? route.effort[stage] ?? role.effort;
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
   return { ...role, argv: launchArgs(role, stage), policy: { ...config.execution_policy, profile: route.canonical, rework: task.rework ?? 0, task_override: override } };
 }
 
-// 게시는 독립 QA가 끝난 뒤 Lead가 위임한다. 일반 작업 단계와 별개이므로 v1 프로필에 추가하지 않는다.
+// 게시는 독립 QA가 끝난 뒤 Lead가 위임한다. 일반 작업 단계와 별개이므로 프로필에 추가하지 않는다.
 function publisherCommand(task, project, id) {
   if (task?.project !== project || task?.id !== id) fail('조회된 게시 업무의 프로젝트 또는 ID가 다르다.');
   const flow = task.x_flow;
@@ -93,7 +88,7 @@ function publisherCommand(task, project, id) {
     || flow.verification?.verdict !== 'PASS' || typeof flow.authorization !== 'string' || !flow.authorization.trim())
     fail('독립 QA를 통과한 v2 게시 대기 업무가 필요하다.');
   if (typeof task.worktree !== 'string' || !path.isAbsolute(task.worktree)) fail('게시 worktree의 절대 경로가 필요하다.');
-  const role = require('../policy/workflow.json').delivery.publisher;
+  const role = workflow.delivery.publisher;
   roleCheck(role);
   return { id, worktree: task.worktree, ...role, argv: launchArgs(role, 'publish') };
 }

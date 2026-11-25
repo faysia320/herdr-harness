@@ -18,7 +18,7 @@ function run(steps, { hh = false, deadline = Infinity, start = 0, slots = [] } =
     sleep: async ms => { sleeps.push(ms); clock.t += ms; }, log: () => {} })
     .then(r => ({ ...r, calls, sleeps, left: steps.length }));
 }
-const task = (over = {}) => ({ id: 'T-1', state: 'IMPLEMENTING', pending: null, current: null, awaiting: null, ...over });
+const task = (over = {}) => ({ id: 'T-1', state: 'IMPLEMENTING', pending: null, current: null, awaiting: null, x_flow: { version: 2, phase: 'work' }, ...over });
 const show = ['show', 'T-1'], collect = ['collect', 'T-1'], decisions = ['decision', 'list'];
 
 test('산출물 대기는 30초 뒤 다시 수집하고 hc 판단 불가의 exit 0도 같은 회차면 기다린다', async () => {
@@ -35,29 +35,48 @@ test('산출물 대기는 30초 뒤 다시 수집하고 hc 판단 불가의 exit
   assert.deepEqual([r.code, r.result.state, r.result.reason, r.sleeps, r.left], [1, 'DONE', '상태 DONE', [30000, 30000], 0]);
 });
 
+test('대장 잠금 충돌은 수집·위임 모두 다음 주기에 다시 시도한다', async () => {
+  const busy = task({ current: { run: 0 } }), lock = err(2, '대장 잠금이 사용 중이다. 종료된 실행이면 소유 PID를 확인한다.');
+  const next = task({ state: 'QA', pending: 'qa' });
+  const r = await run([
+    [show, ok(busy)], [collect, lock], [show, ok(busy)], [show, ok(busy)],
+    [collect, ok({})], [show, ok(next)],
+    [decisions, ok([])], [['dispatch', 'T-1', 'qa'], lock], [show, ok(next)],
+    [decisions, ok([])], [['dispatch', 'T-1', 'qa'], ok({})], [show, ok(task({ state: 'DONE' }))],
+  ]);
+  assert.deepEqual([r.code, r.result.state, r.sleeps, r.left], [1, 'DONE', [30000, 30000], 0]);
+});
+
 test('v2 HH repair는 단계 없이 위임하고 QA PASS 뒤 publish에서 멈춘다', async () => {
   const r = await run([
-    [show, ok(task({ state: 'QA', pending: 'implement', x_flow: { phase: 'repair' } }))],
+    [show, ok(task({ state: 'QA', pending: 'implement', x_flow: { version: 2, phase: 'repair' } }))],
     [decisions, ok([{ id: 'other', task: 'T-2', status: 'open' }])],
     [['dispatch', 'T-1'], ok({})],
-    [show, ok(task({ pending: 'implement', current: { run: 3 }, x_flow: { phase: 'repair' } }))],
+    [show, ok(task({ pending: 'implement', current: { run: 3 }, x_flow: { version: 2, phase: 'repair' } }))],
     [collect, ok({})],
-    [show, ok(task({ state: 'QA', pending: 'qa', x_flow: { phase: 'repair' } }))],
+    [show, ok(task({ state: 'QA', pending: 'qa', x_flow: { version: 2, phase: 'repair' } }))],
     [decisions, ok([])],
     [['dispatch', 'T-1'], ok({})],
-    [show, ok(task({ state: 'QA', pending: 'qa', current: { run: 4 }, x_flow: { phase: 'repair' } }))],
+    [show, ok(task({ state: 'QA', pending: 'qa', current: { run: 4 }, x_flow: { version: 2, phase: 'repair' } }))],
     [collect, ok({})],
-    [show, ok(task({ state: 'QA', x_flow: { phase: 'publish' } }))],
+    [show, ok(task({ state: 'QA', x_flow: { version: 2, phase: 'publish' } }))],
   ], { hh: true });
   assert.deepEqual([r.code, r.result.phase, r.result.dispatched, r.left], [1, 'publish', ['implement', 'qa'], 0]);
 });
 
 test('사람·Lead 판단 상태는 수집·위임 없이 멈춘다', async () => {
   for (const t of [task({ state: 'BLOCKED', awaiting: 'ac-approval', pending: 'implement' }), task({ state: 'FAILED' }),
-    task({ state: 'QA', awaiting: 'flow-diagnose', pending: 'implement', x_flow: { phase: 'diagnose' } }), task({ state: 'QA' })]) {
+    task({ state: 'QA', awaiting: 'flow-diagnose', pending: 'implement', x_flow: { version: 2, phase: 'diagnose' } }), task({ state: 'QA' })]) {
     const r = await run([[show, ok(t)]]);
     assert.equal(r.code, 1);
     assert.equal(r.calls.length, 1);
+  }
+  // 과거 v1·보관 업무는 조회만 하고 종결 상태는 그대로 돌려준다.
+  for (const [over, reason] of [[{ x_flow: undefined, current: { run: 0 } }, /v2 업무가 아니다/], [{ x_flow: undefined, pending: 'qa' }, /v2 업무가 아니다/],
+    [{ archived: true, pending: 'qa' }, /보관/], [{ x_flow: undefined, state: 'DONE' }, /상태 DONE/]]) {
+    const r = await run([[show, ok(task(over))]]);
+    assert.deepEqual([r.code, r.calls.length], [1, 1]);
+    assert.match(r.result.reason, reason);
   }
   // VP 사람 확인(exit 9)과 SW·VDP status=blocked
   for (const res of [err(9, '', 't 이 사람 확인을 기다립니다(blocked).'), ok({ id: 'T-1', status: 'blocked', note: '에이전트가 아직 작업 중이다.' })]) {
@@ -123,10 +142,10 @@ test(`release의 watch-stage가 launcher로 ${id} 구현 수집 → 같은 업�
   const dir = mkdtempSync(join(tmpdir(), 'herdr-watch-stage-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const built = build(), stub = join(dir, 'adapter.mjs'), file = join(dir, 'harness-binding.json'), state = join(dir, 'state.json'), log = join(dir, 'calls.jsonl');
-  // 가짜 v1 대장: 대상은 구현 회차 실행 중, 다른 위임 가능 업무가 함께 있다.
+  // 가짜 대장: 대상은 구현 회차 실행 중, 다른 위임 가능 업무가 함께 있다.
   writeFileSync(state, JSON.stringify({
-    [id]: { id, state: 'IMPLEMENTING', pending: null, current: { run: 0 }, awaiting: null },
-    [other]: { id: other, state: 'READY_TO_IMPLEMENT', pending: 'implement', current: null, awaiting: null },
+    [id]: { id, state: 'IMPLEMENTING', pending: null, current: { run: 0 }, awaiting: null, x_flow: { version: 2, phase: 'work' } },
+    [other]: { id: other, state: 'READY_TO_IMPLEMENT', pending: 'implement', current: null, awaiting: null, x_flow: { version: 2, phase: 'work' } },
   }));
   writeFileSync(log, '');
   writeFileSync(stub, `import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -145,7 +164,7 @@ else process.exitCode = 2;
   assert.equal(r.status, 1, r.stderr);
   const lines = r.stdout.trim().split('\n');
   assert.equal(lines.length, 1);
-  assert.deepEqual(JSON.parse(lines[0]), { id, state: 'DONE', pending: null, phase: null, awaiting: null, dispatched: ['qa'], reason: '상태 DONE' });
+  assert.deepEqual(JSON.parse(lines[0]), { id, state: 'DONE', pending: null, phase: 'work', awaiting: null, dispatched: ['qa'], reason: '상태 DONE' });
   const calls = readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.deepEqual(calls, [['show', id], ['collect', id], ['show', id], ['decision', 'list'], ['dispatch', id, 'qa'],
     ['show', id], ['collect', id], ['show', id]]);

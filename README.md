@@ -2,15 +2,15 @@
 
 이 저장소의 업무는 [자체 v2 운영 지침](.agents/harness/README.md)에 따라 등록하고 게시한다.
 
-## 작업 흐름 v2 — smart-workspace 파일럿
+## 작업 흐름 v2
 
-기존 대장은 그대로 두고 `add --workflow v2 --kind bug-fix|feature|ui|performance|refactor --authorization <사용자의 자동 게시·병합 지시>`로 만든 업무만 새 흐름을 따른다. 모델 선택·작업별 절차는 `policy/workflow.json`, 실패 분류·진행 판정은 `core/workflow.cjs`가 정본이다. Herdr의 기존 단계는 호환 표시이며 `x_flow.phase`가 게시·CI·복구 진행을 구분한다.
+모든 저장소는 v2 업무 흐름만 쓴다. `x_flow` 없는 과거 업무는 상세·이력·보관·복원만 지원한다. `add --workflow v2 --kind bug-fix|feature|ui|performance|refactor --authorization <사용자의 자동 게시·병합 지시>`로 업무를 만든다. 모델 선택·작업별 절차는 `policy/workflow.json`, 실패 분류·진행 판정은 `core/workflow.cjs`가 정본이다. Herdr의 기존 단계는 호환 표시이며 `x_flow.phase`가 게시·CI·복구 진행을 구분한다.
 
 - 조사에서 `verification-plan.json`의 AC·필수 검사 ID와 검사별 실행 위치를 동결하고 구현자는 실패 검사부터 짧게 확인한다. 고위험 업무는 기존 설계 검토를 유지한다. 독립 QA가 실행할 수 없는 배포 후·실기기 확인은 필수 검사가 아니라 후속 확인으로 남기고, 업무에 연결된 해소 결정은 다음 단계 지시서에 들어간다([검증 계획 실행 위치와 해소 결정 인계](#검증-계획-실행-위치와-해소-결정-인계)).
 - QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다. 운영 위험이 아닌 Medium·Low 결함과 QA 환경에서 확인할 수 없는 AC는 PASS를 막지 않고 «남은 검증»으로 넘긴다([QA 남는 한계](#qa-남는-한계와-환경상-확인-불가-ac)).
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
-- v2 업무가 독립 QA PASS 후 `publish`에 도달하면 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
+- v2 업무가 독립 QA PASS 후 `publish`에 도달하면, [direct-publish](#명령-하나로-pr-게시)를 연결한 저장소의 Lead는 그 명령 하나로 PR을 올린다. 아직 연결하지 않은 저장소의 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
 - `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
 - `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. DEV-14 후보는 strict가 꺼진 규칙도 조회로 확인되고 필수 검사 이름이 있으면 병합한다(아래 DEV-14). 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
 - CI 실패·필수 검사 누락·리뷰 조치는 즉시 `delivery-blocked`로 반환한다. `flow-resume --evidence`는 해결된 CI만 다시 확인하고, 코드 수정은 `--stage implement`, 요구사항 변경은 `--stage research`로 보낸다. watcher의 대기 상한 도달은 nonzero이며 완료로 보고하지 않는다.
@@ -18,6 +18,41 @@
 v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 Opus/high(고위험 xhigh), 독립 QA에는 `gpt-6.2-sol`/high를 사용한다. 세 저장소의 PR 게시자는 Codex `gpt-6-luna`/medium이다. 정책은 다음 위임부터 적용한다. 조사·설계·구현·QA의 30/30/60/45분은 진단 점검 시점이며 재작업 횟수만으로 effort를 올리지 않는다. Lead는 기존 세션 모델을 사용하고, CI 대기와 병합 조건 판정은 스크립트가 수행한다.
 
 완료는 Git 병합 증명을 뜻한다. 운영 버전 통합검증·배포·티켓 전이는 별도 기존 절차를 유지한다. 실제 QA 단축 효과와 자동 병합은 fixture 결과만으로 실측 완료라고 부르지 않는다.
+
+### 명령 하나로 PR 게시
+
+`direct-publish <ID>`는 게시 에이전트(모델) 없이 QA 후보 커밋 → push → PR 생성 → `flow-attach-pr` 처리를 한 번에 한다. 검사를 다시 실행하거나 영수증을 발급하지 않으며 병합 판단은 PR CI와 `flow-deliver`가 한다. 공통 부분은 `core/direct-publish.cjs`이고 저장소 어댑터가 자기 Lead 명령으로 연결한다(HH는 연결돼 있다). 명령이 없는 어댑터·이전 release는 `publisher-command`를 그대로 쓴다.
+
+```powershell
+node <release>/bin/harness.mjs --binding <binding> direct-publish <ID>
+```
+
+순서는 게시 자격 → 봉투 → PR 본문 → 후보 대조 → 커밋 → 커밋 대조 → 열린 PR 조회 → push → PR 생성 → 연결이다. 어긋나면 되돌리거나 고치지 않고 `게시 중단(<단계>): <이유> [커밋 …] [PR #…]`로 던지며 CLI는 nonzero로 끝난다. 다시 실행하면 QA 당시 HEAD 바로 위에 이 명령이 만든 커밋(부모·메시지·후보 일치)과 head·본문이 같은 열린 PR을 재사용한다. QA 뒤 다른 커밋이 끼면 최종 tree가 같아도 push 전에 멈춘다. head나 본문이 다른 열린 PR이 있으면 push 전에 멈춘다(재조사 뒤 같은 브랜치 재게시는 Lead가 기존 방식으로 처리한다). push는 업무 브랜치만 보내고 태그를 따라 보내지 않는다(`push.followTags` 무시). 강제 push·병합은 하지 않는다.
+
+**어댑터 계약** — `publish(task, options, hooks)`(동기, 반환 `{pr, url, head, reusedCommit, reusedPr, attached?}`). 어댑터는 자기 Lead 잠금 안에서 등록된 Lead·열린 결정·활성 회차를 확인한 뒤 부른다. 훅은 같은 잠금을 다시 잡는 CLI가 아니라 처리기 함수를 직접 부른다.
+
+| 입력 | 내용 |
+|---|---|
+| `task` | 대장의 v2 업무. `id`·`title`·`worktree`·`branch`·`base`·`candidate`(DEV-14 형식 `head`·`fingerprint`·`paths`)·`runs`·`x_flow` |
+| `options.repository` | `owner/name`. origin push 주소와 같아야 한다 |
+| `options.envelope` | `required` 또는 `none`. 생략할 수 없다 |
+| `options.base`·`trailers` | PR 대상 브랜치(기본 `main`), 커밋 trailer 줄 배열(기본 `Published-by: herdr-harness`) |
+| `options.summary`·`qa` | 기본은 마지막 구현 회차(outcome `ok`)의 `note`와 마지막 QA PASS 회차의 `{round, token}`. 대장 형식이 다르면 덮어쓴다 |
+| `hooks.checkCandidate`·`checkCommitted` | 필수. 저장소의 publish-check(커밋 전/후) 처리기. 어긋나면 던진다 |
+| `hooks.prepare` | 선택. 후보 대조 전에 과정 문서를 보관·제외하는 저장소 명령 |
+| `hooks.envelope` | `required`일 때 승인된 QA 회차의 봉투 한 줄을 돌려준다. `run`(QA token)·`base`·후보 지문이 게시할 커밋과 같아야 한다 |
+| `hooks.body` | 선택. 만든 본문을 받아 최종 본문을 돌려준다. 봉투 줄을 직접 넣어도 되고, 없으면 공통부가 끝에 붙인다. 최종 본문에서 «남은 검증» 줄과 봉투 줄 수를 다시 대조한다 |
+| `hooks.attach` | 선택. PR 번호를 받아 `flow-attach-pr` 처리기를 부른다 |
+
+stage 대상은 `candidate.paths`뿐이다. 후보 밖이나 일부만 stage된 경로가 있으면 멈춘다. 커밋 전 index와 커밋 뒤 tree를 후보의 경로·mode·바이트와 대조하고, 커밋의 부모가 `candidate.head` 하나이며 메시지가 이 명령이 쓴 그대로인지 본다(메시지를 바꾸는 Git 훅이 있으면 멈춘다). 커밋·PR 제목은 업무 제목이다. 본문은 요약, 독립 QA 판정·회차·AC, 실행 검사, 한계, «남은 검증»(`remainingVerification`의 line 그대로), 봉투 순서다. 보고서 문장의 HTML·코드·멘션은 글자로 바꿔 «남은 검증»을 가리지 않는다. 보고서 글에 든 봉투 식별자(`herdr-qa-receipt:v2`)는 화면 표시를 그대로 두고 원문만 끊어 CI 해독기가 실제 봉투 줄만 세게 한다. `hooks.body`가 직접 넣는 글은 바꾸지 않는다.
+
+Python 어댑터는 `node <release>/core/direct-publish.cjs`에 stdin JSON `{task, options, commands}`를 준다. `commands`는 `prepare`·`checkCandidate`·`checkCommitted`·`envelope`·`body`의 argv 배열이고 업무 worktree에서 셸 없이 실행한다(`envelope`는 stdout 한 줄, `body`는 stdin→stdout). 성공하면 `{pr, url, head}` JSON을 출력하고 exit 0, 실패하면 stderr에 이유를 쓰고 exit 2다. 연결은 호출한 어댑터가 돌려받은 `pr`로 직접 한다. 검사 명령이 대장 잠금을 잡으면 안 된다.
+
+저장소 연결은 각 Lead가 새 release binding을 채택한 뒤 한다. 저장소 게시 명령이 검사를 다시 실행하지 않게 한다.
+
+- **SW**: `prepare`=swh 보관 처리, 검사=publish-check 처리기, `envelope: required`(승인 회차의 QA 봉투).
+- **VDP**: `prepare`=archive-artifacts, 검사=check-artifacts와 publish-check 처리기, `envelope`=`x_qa_receipt.envelope`, `body`=`pr-receipt-body.mjs`.
+- **VP**: 위 stdin 형식으로 부르고 기존 경로·승인 검사와 `flow-attach-pr` 처리기를 잇는다.
 
 ### DEV-14 동기화와 병합 증명
 
@@ -33,7 +68,7 @@ v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 O
 
 Herdr 패널은 모든 저장소와 원격 공간에서 작업 브리핑을 제공한다. 현재 공간의 CLI 활동과 원문 보고를 보여주고 해당 터미널로 이동할 수 있다. `projects.json`에 등록된 로컬 저장소에서는 결정 질문·새 결과·업무 대장·QA 상태를 추가로 보여준다. 하네스가 없는 저장소의 CLI 입력 대기를 승인 질문으로 해석하거나, 연결되지 않은 기능을 0건으로 표시하지 않는다.
 
-v2 업무 카드는 독립 QA 통과 뒤 게시 대기·CI 대기·병합 차단·병합 완료를 구분한다. 설계 검토가 포함된 업무는 진행 막대에 해당 단계를 표시한다. 카드를 펼치면 현재 릴리스의 단계별 위임 모델과 업무별 모델 예외, 각 회차에 기록된 모델, 최근 검증 판정, PR 번호와 병합 커밋을 확인할 수 있다. v1 업무의 완료 표시는 로컬 QA 기준을 따른다.
+v2 업무 카드는 독립 QA 통과 뒤 게시 대기·CI 대기·병합 차단·병합 완료를 구분한다. 설계 검토가 포함된 업무는 진행 막대에 해당 단계를 표시한다. 카드를 펼치면 현재 릴리스의 단계별 위임 모델과 업무별 모델 예외, 각 회차에 기록된 모델, 최근 검증 판정, PR 번호와 병합 커밋을 확인할 수 있다. 과거 v1 업무의 완료 표시는 로컬 QA 기준이다.
 
 좁은 패널에서도 결정 질문과 진행 업무를 훑도록 구성했다. 모델·단계 이력은 업무를 펼쳤을 때 표시한다. 질문은 선택지의 설명까지 한 행으로 묶고, 선택 후 별도 보내기를 눌러 전달한다. 하네스 연결 저장소의 «알아둘 변화»는 패널 맨 아래에 고정하며, 별도 스크롤과 접기·펼치기를 제공한다. 개별 확인과 전체 읽음은 읽음 상태만 바꾸며 결정 질문을 해소하지 않는다.
 
@@ -42,7 +77,7 @@ v2 업무 카드는 독립 QA 통과 뒤 게시 대기·CI 대기·병합 차단
 | 여기에서 한 번 관리 | 프로젝트에서 관리 | 로컬에만 보관 |
 |---|---|---|
 | 질문 등록·수정·해소와 revision | 조사·구현·QA·architect 스킬 | `projects.json`, 설치 계획 |
-| 모델·effort·Fast·프로필·재작업 상향·실행 한도 | 스킬 경로·호출명·품질 기준 | 고정 release 경로와 binding |
+| 모델·effort·Fast·프로필·실행 한도 | 스킬 경로·호출명·품질 기준 | 고정 release 경로와 binding |
 | 결정함 검증·원자 저장·mod 브리핑 | 승인 근거·후보 지문·파일 겹침 판정 | 대장·결정 기록·실행 로그·인증 |
 | 실행 결과·timeout·설치/복구 | 기존 CLI와 대장 writer·잠금 | UI 읽음 상태와 개인 설정 |
 | 과정 산출물 커밋 여부·보관 위치·PR 검사·증거 항목 | 과정 문서 경로 선언·게시 지침·CI 스크립트 | 업무별 과정 산출물 보관본 |
@@ -166,20 +201,20 @@ rollback은 직전 소스·binding을 복원한다. 설치 이후 수동 변경�
 
 ## 위임 정책
 
-정본은 [policy/execution.json](policy/execution.json) 하나다. 변경 후 검사·build·설치하면 세 프로젝트에 같은 정책이 적용된다. 새 CLI는 공통 설치가 없거나 지문이 다르면 실패하며 예전 모델로 조용히 돌아가지 않는다. 이미 실행 중인 에이전트는 유지하고 다음 위임부터 적용한다. 구 checkout의 직접 CLI 호출은 설치된 command를 우회하므로 Lead는 binding의 release와 공통 launcher를 사용한다.
+단계별 모델·effort는 [policy/workflow.json](policy/workflow.json), CLI·Fast·권한·프로필·실행 한도는 [policy/execution.json](policy/execution.json)이 정본이다. 변경 후 검사·build·설치하면 세 프로젝트에 같은 정책이 적용된다. 새 CLI는 공통 설치가 없거나 지문이 다르면 실패하며 예전 모델로 조용히 돌아가지 않는다. 이미 실행 중인 에이전트는 유지하고 다음 위임부터 적용한다. 구 checkout의 직접 CLI 호출은 설치된 command를 우회하므로 Lead는 binding의 release와 공통 launcher를 사용한다.
 
 | 단계 | 모델 | 기본 effort | Fast |
 |---|---|---|---|
-| 조사 | gpt-6-astra | high | 끔 |
+| 조사 | gpt-6.2-astra | high | 끔 |
 | 구현 | claude-opus-5-5 | high | 끔 |
-| QA | gpt-6.1-sol | xhigh | 켬 |
+| QA | gpt-6.2-sol | high | 켬 |
 | 설계 검토 | claude-fable-5-2 | high | 끔 |
 
-`simple`과 `normal`은 기본값, `complex`는 구현 xhigh(조사는 모든 프로필 high, QA는 모든 프로필 xhigh), `high-risk`는 complex에 설계 검토와 단독 구현을 추가한다. 옛 이름은 모든 저장소에서 같은 별칭으로 지원한다: ui-simple→simple, feature→normal, shared-component→complex, token/architecture/high→high-risk. 재작업마다 구현 effort를 한 단계 올려 max에서 멈춘다. 프로젝트별 동시 실행 6, 재작업 최대 2, 자동 실행 재시도 0이다.
+`simple`·`normal`·`complex`는 기본값이고, `high-risk`는 설계 검토·단독 구현·구현 xhigh를 더한다. 옛 이름은 모든 저장소에서 같은 별칭으로 지원한다: ui-simple→simple, feature→normal, shared-component→complex, token/architecture/high→high-risk. 재작업해도 effort를 자동으로 올리지 않는다. 프로젝트별 동시 실행 6, 재작업 최대 2, 자동 실행 재시도 0이다.
 
-사용자 지정 배치는 조사 Astra/high, 설계 Fable 5.2/high, 구현 Opus 5.5/high, QA Sol/xhigh다. Fast는 QA에서만 켜고 나머지 단계는 끈다. 모델의 CLI가 바뀌면 표준 `.agents/skills`·`.claude/skills` 경로와 `$`·`/` 호출도 공통 resolver가 함께 맞춘다. 저장소별 스킬 이름·인자와 사용자 지정 경로는 유지한다. Codex danger-full-access, Claude auto를 실행 인자로 지정한다. Windows의 Codex sandbox(workspace-write)에서는 하네스 단계를 수행할 수 없다. elevated는 별도 계정이라 사용자 프로필의 python·node·hc를 읽지 못한다. unelevated는 Node의 자식 프로세스(git, node --test worker)가 EPERM으로 실패하고, pnpm 저장소 잠금과 hc의 Herdr pipe에도 접근하지 못한다. 그래서 Claude 단계와 같이 OS sandbox 없이 실행한다. 쓰기 범위는 worktree와 작업 지시서 규칙으로 제한한다. Codex 셸로 쓰는 PowerShell 7은 MSI판(`C:\Program Files\PowerShell\7`)을 설치한다. Codex 승인·네트워크 등 지정하지 않은 사용자 설정은 계속 상속하며 전역 설정을 쓰지 않는다. Fast 비활성화는 Codex의 `service_tier="default"`와 Claude의 `fastMode:false`로 명시한다([Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude Fast 설정](https://code.claude.com/docs/en/fast-mode)). Claude 하위 에이전트는 `statusLine`을 빈 명령으로 덮어 사용자 statusline을 실행하지 않는다. 짧은 실행이 끝날 때 statusline용 Git Bash가 고아로 남아 쌓이는 것을 막기 위해서다.
+사용자 지정 배치는 조사 Astra/high, 설계 Fable 5.2/high, 구현 Opus 5.5/high, QA Sol/high다. Fast는 QA에서만 켜고 나머지 단계는 끈다. 모델의 CLI가 바뀌면 표준 `.agents/skills`·`.claude/skills` 경로와 `$`·`/` 호출도 공통 resolver가 함께 맞춘다. 저장소별 스킬 이름·인자와 사용자 지정 경로는 유지한다. Codex danger-full-access, Claude auto를 실행 인자로 지정한다. Windows의 Codex sandbox(workspace-write)에서는 하네스 단계를 수행할 수 없다. elevated는 별도 계정이라 사용자 프로필의 python·node·hc를 읽지 못한다. unelevated는 Node의 자식 프로세스(git, node --test worker)가 EPERM으로 실패하고, pnpm 저장소 잠금과 hc의 Herdr pipe에도 접근하지 못한다. 그래서 Claude 단계와 같이 OS sandbox 없이 실행한다. 쓰기 범위는 worktree와 작업 지시서 규칙으로 제한한다. Codex 셸로 쓰는 PowerShell 7은 MSI판(`C:\Program Files\PowerShell\7`)을 설치한다. Codex 승인·네트워크 등 지정하지 않은 사용자 설정은 계속 상속하며 전역 설정을 쓰지 않는다. Fast 비활성화는 Codex의 `service_tier="default"`와 Claude의 `fastMode:false`로 명시한다([Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude Fast 설정](https://code.claude.com/docs/en/fast-mode)). Claude 하위 에이전트는 `statusLine`을 빈 명령으로 덮어 사용자 statusline을 실행하지 않는다. 짧은 실행이 끝날 때 statusline용 Git Bash가 고아로 남아 쌓이는 것을 막기 위해서다.
 
-현재 세 저장소의 `execution_overrides`는 모두 `{}`다. 앞으로 의도적 예외가 필요하면 프로젝트 config에 `execution_overrides: {"reason":"구체적인 사유", "roles":{"implement":{"effort":"medium"}}, "limits":{"max_parallel":1}}`처럼 선언한다. roles에는 모델·effort·Fast·실행 모드만, limits에는 공통 한도만 허용한다. 예전 roles의 model/args나 별도 routing은 거부하므로 중복 설정이 조용히 살아남지 않는다. 적용 순서는 공통 역할 → 명시적 저장소 예외 → 프로필 effort → 재작업 상향 → 사유 있는 업무별 model/effort 예외다. run의 `x_execution_policy`에 정책 지문·release·예외·실제 요청 Fast를 남긴다. 이 기록은 요청값이며 실제 모델 사용 증거는 각 CLI의 evidence로 구분한다.
+현재 세 저장소의 `execution_overrides`는 모두 `{}`다. 앞으로 의도적 예외가 필요하면 프로젝트 config에 `execution_overrides: {"reason":"구체적인 사유", "roles":{"implement":{"effort":"medium"}}, "limits":{"max_parallel":1}}`처럼 선언한다. roles에는 모델·effort·Fast·실행 모드만, limits에는 공통 한도만 허용한다. 예전 roles의 model/args나 별도 routing은 거부하므로 중복 설정이 조용히 살아남지 않는다. 적용 순서는 공통 역할 → 프로필 effort → 명시적 저장소 예외 → 사유 있는 업무별 model/effort 예외다. `x_flow` 없이 부르는 정책 조회도 같은 순서로 답한다. run의 `x_execution_policy`에 정책 지문·release·예외·실제 요청 Fast를 남긴다. 이 기록은 요청값이며 실제 모델 사용 증거는 각 CLI의 evidence로 구분한다.
 
 ## 공용 자원과 단계 공통 규칙
 
@@ -371,6 +406,10 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 - `output`: 발급 결과를 둘 Git 무시 경로. 무시되지 않으면 발급을 거부한다(추적·미무시 경로에 쓰면 후보 지문이 바뀐다).
 - `exempt_pr_max`: 도입 시점에 열려 있던 PR까지의 마지막 PR 번호. 이 번호 이하 PR은 영수증 검사를 면제하고 정책 파일 검사는 그대로 한다. 도입 뒤 늘리지 않는다.
 
+### 발급기의 임시 폴더와 공유 객체
+
+영수증 발급기는 후보 tree를 계산하면서 Git 객체를 공유 `.git/objects`에 쓰고, 공용 temp에 `herdr-proof-*` 폴더(임시 index)를 만들었다 지운다. 이는 발급기 소유 동작이므로 QA는 외부 변경으로 보지 않는다. 실제 index·작업 파일·ref는 발급기의 후보 tree 계산이 바꾸지 않으며, 이런 변화까지 예외로 두지 않는다. 강제 종료로 남은 `herdr-proof-*` 폴더는 지워도 된다.
+
 ### 후보 지문
 
 영수증의 `base`(QA 기준 커밋 B)와, B에서 QA 후보 tree까지의 `git diff --raw --no-renames` 행(경로, 양쪽 mode·blob, 상태)을 경로 바이트순으로 정렬해 SHA-256한 값이다. 이동은 삭제·추가 두 행이다. 미커밋 후보는 `publishTree`(임시 index에 staged·미커밋·무시되지 않는 신규 파일을 담은 tree)로 계산하므로 같은 tree의 게시 커밋(부모 B)과 지문이 같다.
@@ -539,28 +578,9 @@ DONE 업무의 worktree와 로컬 업무 브랜치는 공통 release의 `core/wo
 - **재시도·멱등**: 첫 되돌리기·삭제 전에 경로·브랜치·예상 tip·보관·patch를 `<state_dir>/tasks/<ID>/cleanup.json`에 남긴다. 그 뒤 실패하면 `status: "partial"`이다. 재실행은 이 기록이 있는 같은 경로에서만 수렴시킨다. 등록만 남고 폴더가 없으면 비강제 remove로 등록을 해제한다. 등록 없이 폴더 골격만 남으면(Windows에서 사용 중 제거가 일부만 된 경우) 파일·링크가 하나도 없을 때만 아래부터 비재귀로 지운다. 파일이 있으면 목록을 보고하고 멈춘다. 재시도가 보존 대상을 다시 보관하면 기록(`cleanup.json`·결과·`x_cleanup`)의 `preserved.files`는 이전 지문 위에 이번 지문을 덮는다. 첫 실행에서 지운 과정 문서의 지문은 남고, 그 사이 바뀐 파일은 보관본·manifest와 같은 새 지문이 된다. 끝난 입력을 다시 주면 같은 결과를 돌려주고 새 삭제·patch 덮어쓰기가 없다. 정리한 경로에 새 worktree가 생겼거나 지운 브랜치가 다시 생기면 같은 업무의 정리로 보지 않는다.
 - **결과와 보관**: `{status: done|refused|partial, worktree, branch, preserved, patch, reasons, remaining, retry, journal}`이다. 호출자는 이를 업무의 `x_cleanup`에 기록한다. `archive-tasks`는 worktree가 남았거나 `x_cleanup.status`가 done이 아닌 업무를 keep으로 붙잡고, 정리가 끝나면 풀어 준다.
 
-## 사용자 결정 게시·종결
+## 과거 사용자 결정 종결 기록
 
-QA가 FAIL·CONDITIONAL PASS·BLOCKED로 끝나 BLOCKED가 된 업무를 사용자 결정으로 게시·병합하는 경로다. 규칙은 `core/decision-closure.cjs`가 정하고, 대장 잠금·저장·사건 append는 프로젝트 CLI가 맡는다. 진입점은 `node .agents/harness/runtime.cjs <binding> closure`이고 동작은 셋이다.
-
-| 동작 | 입력 | 결과 |
-|---|---|---|
-| `authorize` | `task`, `evidence: {quote, source, qa_round, qa_reason}` | 상태는 그대로 두고 `x_decision_publish`를 기록한 업무와 `x_decision_publish` 사건 |
-| `gate` | `task` | publish-check 판정 `{allowed, kind, reason?}` |
-| `close` | `task`, `cwd`(저장소 절대 경로), `evidence: {pr, merge_sha, quote?, source?, qa_round?, qa_reason?}` | BLOCKED→DONE 업무(`x_closure`)와 `state` 사건 |
-
-- **근거**: 사용자 결정 원문 `quote`와 출처 `source`, 예외 처리한 QA 회차 `qa_round`와 사유 `qa_reason`이 필요하다. 회차는 끝난 QA 실행이어야 하고 PASS 회차는 거부한다. `close`는 지금 막힘에서 남긴 `x_decision_publish`가 있으면 결정 근거를 이어받는다.
-- **병합 확인**: `close`는 release 쪽에서 `gh pr view <pr> --json number,state,mergeCommit,mergedAt,url,headRefName`을 직접 실행한다. `MERGED`가 아니거나 merge SHA·업무 브랜치가 다르면 종결하지 않는다. 호출자가 조회 결과를 넘겨 근거를 대신할 수 없다. 시험에서는 `HERDR_HARNESS_GH`(JSON 배열)로 gh 대신 실행할 명령을 준다.
-- **게시 판정**: BLOCKED 업무는 지금 막힘(마지막 →BLOCKED 전이) 이후 남긴 사용자 결정 기록이 있을 때만 `gate`가 허용한다. 이전 막힘의 결정은 인정하지 않는다. DONE과 다른 상태는 이 규칙의 판정 대상이 아니다.
-- **표지**: 종결한 업무는 `x_closure: {kind: "user-decision", at, by, quote, source, qa_round, qa_outcome, qa_reason, decided_at, pr, url, merge_sha, merged_at}`를 갖고, 마지막 history와 사건에 `x_closure`를 붙인다. QA PASS DONE에는 `x_closure`가 없다. 보관 요약도 `x_closure`를 남긴다.
-- **화면**: mod는 이 업무를 «결정 종결»로 표시하고 결정함에서 뺀다. 중요한 변화에는 «사용자 결정 종결»로, 상세에는 QA 회차·PR·merge SHA와 결정 원문을 보인다.
-- **보관·의존**: 상태가 DONE이라 `archive-tasks` 대상이고, 이 업무를 `depends`로 가진 업무는 선행 조건을 충족한 것으로 본다.
-
-### 계약 v1 호환
-
-- 상태·전이표를 바꾸지 않는다. 공통 전이표(`core/contract.js`)는 이미 BLOCKED→DONE을 허용한다. 계약 문서 표의 BLOCKED 행 «`resume_state` 또는 사람이 지정한 상태»에도 들어간다. 프로젝트 CLI 전이표가 더 좁으면 이 경로에서만 BLOCKED→DONE을 허용한다.
-- 새 값은 계약 §4가 허용한 `x_` 필드와 `x_` 사건 이름으로만 추가한다. 대장 `version`은 1 그대로이며 `x_`를 모르는 화면·CLI도 읽을 수 있다.
-- 알려진 한계: `x_closure`를 모르는 화면은 이 업무를 QA 통과 DONE으로 보인다. 계약 §1 «DONE은 로컬 독립 QA 통과다»의 예외이므로 각 저장소 GATES.md에 이 경로를 적는다. 다음 계약 버전에서 DONE 의미 문장을 함께 고친다.
+QA 예외 업무를 사용자 결정으로 게시·종결하던 v1 경로(`runtime.cjs <binding> closure`의 authorize·gate·close)는 폐지했다. 부르면 오류로 끝난다. 이미 남은 `x_decision_publish`·`x_closure`는 과거 기록으로 읽기만 한다. mod는 `x_closure.kind=user-decision`인 DONE을 «결정 종결»로 보이고, 보관 요약도 `x_closure`를 남긴다. 새로 병합된 업무는 아래 승인 병합 종결을 쓴다.
 
 ## 사용자 승인 병합 종결
 
@@ -579,27 +599,24 @@ PR이 이미 main에 병합됐지만 병합 증명(`flow-prove-merged`)이 막�
 '{"action":"accept-merged","project":"<id>","stateDir":"<상태폴더>","task":{...업무 원본...},"pr":1131,"explicit":true,"evidence":{"quote":"병합된 블록 정리해","source":"Lead 대화 2026-11-21"},"terminal":"<Lead 터미널>"}' | node .agents/harness/runtime.cjs <상태폴더>/harness-binding.json workflow
 ```
 
-- **계약 v1**: 공통 전이표를 넓히지 않는다. QA·BLOCKED가 아닌 상태(예: READY_TO_IMPLEMENT)에서의 DONE은 이 판정이 직접 기록하며 history의 `closure`로 일반 전이와 구분한다. `x_flow.closure`를 모르는 화면은 이 업무를 일반 DONE으로 보인다.
+- **계약**: 공통 전이표를 넓히지 않는다. QA·BLOCKED가 아닌 상태(예: READY_TO_IMPLEMENT)에서의 DONE은 이 판정이 직접 기록하며 history의 `closure`로 일반 전이와 구분한다. `x_flow.closure`를 모르는 화면은 이 업무를 일반 DONE으로 보인다.
 
 ## 다음 계약 버전 후보
 
-`CONTRACT.md`(계약 v1)는 세 저장소가 바이트 단위로 같고 대장 버전과 묶여 있다. 아래는 바로 바꾸지 않고, 다음 계약 버전을 올릴 때 함께 반영할 후보다.
+공통 계약 정본은 [.agents/harness/CONTRACT.md](.agents/harness/CONTRACT.md)다. SW·VDP·VP는 같은 경로에 바이트 동일 사본을 둔다. 정본이 바뀌면 각 Lead가 병합 커밋의 blob을 줄 끝 변환 없이 복사하고(`git show <커밋>:.agents/harness/CONTRACT.md`) SHA-256과 staged blob을 대조한 뒤 그 저장소의 고정 해시 시험을 함께 고친다. `계약 버전`은 대장 `version`과 묶여 있다. 아래는 다음 계약 버전을 올릴 때 함께 반영할 후보다.
 
 ### QA 실행 환경 차단 시 대체 QA와 사람 수용 경로
 
 - **배경**: 2026-11-10 SW-0060에서 일어났다.
   - Codex QA r2·r3가 실행 환경 문제로 BLOCKED가 됐다. Windows Codex sandbox에서 자식 프로세스 EPERM, Herdr pipe 접근 거부가 났다.
   - 사용자 결정으로 Claude 독립 QA r4를 돌렸고, CONDITIONAL PASS(Low 2)를 사용자가 받아들여 병합했다.
-  - 계약 v1에서 DONE은 QA `PASS` 수집으로만 들어간다. BLOCKED에서 DONE으로 가는 전이도 없다. 그래서 업무는 BLOCKED로 남았다.
+  - 당시 v1에서 DONE은 QA `PASS` 수집으로만 들어갔다. 그래서 업무는 BLOCKED로 남았다.
   - 그 업무에 의존하던 SW-0061·0062는 dispatch할 수 없었다. 결국 `fail`로 닫고 새 ID로 다시 등록했다.
 - **정할 것**:
   - 실행 환경 차단을 결함 판정과 구분하는 QA 결과 코드. 예: `BLOCKED`에 `awaiting: qa-environment`를 붙인다.
   - QA를 다른 CLI·모델로 바꿔 다시 돌릴 때의 기록 방식. 원래 단계 정책과의 차이, 사유, 사용자 결정 quote를 남긴다.
-  - 사람이 CONDITIONAL PASS를 받아들일 때의 종료 상태. 두 가지 안이 있다.
-    - DONE으로 보내되 `approval`처럼 `{by: "user", quote, report}` 근거를 남긴다.
-    - DONE과 구분되는 종료 상태를 따로 둔다.
-  - 의존 업무의 `depends` 판정이 위 종료 상태를 충족으로 볼지 여부. 이미 등록된 업무의 `depends`를 사람이 사유와 함께 바꾸는 명령이 필요한지도 함께 정한다.
-- **지금 처리 기준**(계약 v1): 사람이 받아들여 병합한 업무는 [사용자 결정 게시·종결](#사용자-결정-게시종결) 경로로 DONE(`x_closure`)으로 닫는다. 의존 업무는 그대로 진행한다. 남은 후보는 실행 환경 차단 결과 코드, 대체 QA 기록 방식, 계약 §1 DONE 의미 문장이다.
+  - 이미 등록된 업무의 `depends`를 사람이 사유와 함께 바꾸는 명령이 필요한지 정한다.
+- **지금 처리 기준**: 새 업무에는 CONDITIONAL PASS가 없다. 운영 위험이 아닌 Medium·Low와 환경상 확인할 수 없는 AC는 PASS의 남은 검증으로 넘긴다. 사용자가 받아들여 병합한 업무는 [승인 병합 종결](#사용자-승인-병합-종결)로 닫는다. 남은 후보는 실행 환경 차단 결과 코드와 대체 QA 기록 방식이다.
 
 #### 2026-11-18 사례에서 보강할 후보
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +32,7 @@ test('실행 Fast·권한은 상속에 맡기지 않고 명시하며 QA도 별�
   assert.equal(impl.model, 'claude-opus-5-5');
   assert.deepEqual({ ...claudeSettings(impl), env: undefined }, { fastMode: false, statusLine: { type: 'command', command: '' }, env: undefined });
   assert.ok(research.argv.includes('service_tier="default"'));
-  assert.equal(qa.model, 'gpt-6.1-sol'); assert.ok(qa.argv.includes('model_reasoning_effort="xhigh"'));
+  assert.equal(qa.model, 'gpt-6.2-sol'); assert.ok(qa.argv.includes('model_reasoning_effort="high"'));
   assert.ok(qa.argv.includes('service_tier="fast"'));
   assert.ok(qa.argv.includes('danger-full-access') && research.argv.includes('danger-full-access')); assert.ok(impl.argv.includes('auto'));
   assert.equal(qa.argv.includes('bypassPermissions'), false);
@@ -42,17 +42,23 @@ test('기존 프로필 별칭은 모든 프로젝트에서 같은 단계 구성�
   const c = configure(local());
   for (const name of ['high', 'architecture', 'token', 'high-risk']) assert.deepEqual(c.routing[name].stages, ['research', 'architect', 'implement', 'qa']);
   assert.equal(resolve(local(), { profile: 'ui-simple' }, 'research').effort, 'high');
-  assert.equal(resolve(local(), { profile: 'shared-component' }, 'implement').effort, 'xhigh');
+  assert.equal(resolve(local(), { profile: 'shared-component' }, 'implement').effort, 'high');
   assert.throws(() => resolve(local(), { profile: 'typo' }, 'implement'), /프로필/);
   const metadata = { 'high-risk': { focus: ['tokens', 'consumers'] } };
   assert.deepEqual(configure({ ...local(), profile_metadata: metadata }).routing.high.focus, metadata['high-risk'].focus);
 });
 
-test('재작업 상향은 max에서 멈추고 명시적 업무 예외는 자동 상향보다 우선한다', () => {
-  assert.deepEqual([0, 1, 2, 3].map((rework) => resolve(local(), { rework }, 'implement').effort), ['high', 'xhigh', 'max', 'max']);
-  const task = { rework: 3, overrides: { implement: { effort: 'high', reason: '이번 수정은 작은 후속 조치' } } };
-  assert.equal(resolve(local(), task, 'implement').effort, 'high');
-  assert.equal(resolve(local(), { rework: 3 }, 'qa').effort, 'xhigh');
+test('x_flow 없는 조회 입력도 v2 정책으로 해석하고 업무 예외는 사유를 요구한다', () => {
+  for (const profile of Object.keys(configure(local()).routing)) for (const stage of ['research', 'architect', 'implement', 'qa']) for (const rework of [0, 3])
+    assert.deepEqual(resolve(local(), { profile, rework }, stage), resolve(local(), { profile, rework, x_flow: { version: 2 } }, stage));
+  const config = configure(local());
+  for (const stage of ['research', 'architect', 'implement', 'qa']) {
+    const role = resolve(local(), {}, stage);
+    assert.deepEqual([role.model, role.effort], [config.roles[stage].model, config.roles[stage].effort]);
+  }
+  // SW swh·VDP vdh의 set --effort가 읽는 허용 목록만 남는다.
+  assert.deepEqual(config.escalation, { effort_ladder: ['low', 'medium', 'high', 'xhigh', 'max'] });
+  assert.equal(resolve(local(), { rework: 3, overrides: { implement: { effort: 'max', reason: '이번 업무 예외' } } }, 'implement').effort, 'max');
   assert.throws(() => resolve(local(), { overrides: { qa: { model: 'opus' } } }, 'qa'), /사유/);
 });
 
@@ -86,20 +92,11 @@ test('v2는 workflow 기본 → 저장소 예외 → 업무 예외 순서로 mod
   assert.throws(() => pick('implement', { overrides: { implement: { model: 'claude-opus-5-5', reason: '업무 예외' } } }), /제공자/);
 });
 
-test('중앙 정책의 재작업 상향 폭 변경이 resolver에 적용된다', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'herdr-escalation-')); t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, 'core')); mkdirSync(join(root, 'policy'));
-  copyFileSync(new URL('../core/execution-policy.cjs', import.meta.url), join(root, 'core/execution-policy.cjs'));
-  const policy = JSON.parse(readFileSync(new URL('../policy/execution.json', import.meta.url)));
-  policy.escalation.implement_step_per_rework = 2;
-  writeFileSync(join(root, 'policy/execution.json'), JSON.stringify(policy));
-  assert.equal(require(join(root, 'core/execution-policy.cjs')).resolve(local(), { rework: 1 }, 'implement').effort, 'max');
-});
-
 test('프로젝트별 변경은 사유를 가진 실행 예외만 허용하고 기존 중복 설정은 거부한다', () => {
   const c = local(); c.execution_overrides = { reason: '명시적 비용 예외', roles: { implement: { fast: false, effort: 'medium' } } };
   assert.equal(resolve(c, {}, 'implement').fast, false);
   assert.equal(resolve(c, {}, 'implement').policy.override_reason, '명시적 비용 예외');
+  assert.equal(resolve(c, { profile: 'high-risk', x_flow: { version: 2 } }, 'implement').effort, 'medium');
   assert.notEqual(configure(c).execution_policy.overrides_sha256, configure(local()).execution_policy.overrides_sha256);
   for (const patch of [{ roles: { implement: { fast: false } } }, { reason: 'x', roles: { typo: {} } }, { reason: 'x', roles: { implement: { args: ['-m', 'other'] } } }]) {
     assert.throws(() => configure({ ...local(), execution_overrides: patch }));
@@ -127,12 +124,12 @@ test('binding으로 고정한 정책은 Node·Python용 JSON 진입점에서 동
 });
 
 
-test('사용자 지정 모델 배치와 조사 high·QA xhigh는 모든 프로필에서 유지된다', () => {
+test('사용자 지정 모델 배치와 조사·QA high는 모든 프로필에서 유지된다', () => {
   for (const profile of Object.keys(configure(local()).routing)) {
     for (const [stage, cli, model, effort] of [
-      ['research', 'codex', 'gpt-6-astra', 'high'],
+      ['research', 'codex', 'gpt-6.2-astra', 'high'],
       ['architect', 'claude', 'claude-fable-5-2', 'high'],
-      ['qa', 'codex', 'gpt-6.1-sol', 'xhigh'],
+      ['qa', 'codex', 'gpt-6.2-sol', 'high'],
     ]) {
       const role = resolve(local(), { profile }, stage);
       assert.deepEqual([role.cli, role.model, role.effort], [cli, model, effort]);
@@ -166,6 +163,6 @@ test('모든 단계에 병렬도 상한과 무거운 작업 슬롯 규칙을, QA
     else assert.deepEqual(claudeSettings(role).env, resources.env);
     assert.ok(rules.includes(`node ${heavy} -- <명령>`) && rules.includes(`동시 ${resources.heavy_slots}개`));
     assert.doesNotMatch(rules, /\{(?:heavy|slots|env)\}|"/);
-    assert.equal(/후보와 무관한 실패/.test(rules) && /같은 조건 반복 금지/.test(rules) && /완료 보고 명령을 반드시 실행한다/.test(rules), stage === 'qa');
+    assert.equal(/후보와 무관한 실패/.test(rules) && /같은 조건 반복 금지/.test(rules) && /완료 보고 명령을 반드시 실행한다/.test(rules) && /herdr-proof-\*/.test(rules), stage === 'qa');
   }
 });

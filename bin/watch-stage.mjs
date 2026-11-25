@@ -10,6 +10,8 @@ import { preparationStatus } from '../core/preparation.mjs';
 const STAGES = ['research', 'architect', 'implement', 'qa'];
 // 산출물 대기: HH stderr «아직 실행 중이다», SW stderr·VDP stdout JSON·VP stdout «아직 작업 중»(모두 exit 2).
 const WAITING = /아직 (?:실행|작업) 중/;
+// 감시기 여러 개가 같은 대장을 쓰면 잠금이 겹친다. 아무것도 바뀌지 않았으므로 다음 주기에 다시 시도한다.
+const BUSY = /대장 잠금이 사용 중/;
 const json = text => { try { return JSON.parse(text); } catch { return undefined; } };
 
 // 반환 {code, result}. code 1은 Lead·사용자 판단이 필요한 정지 또는 대기 상한, 2는 CLI 오류·예상 밖 응답이다.
@@ -28,12 +30,15 @@ export async function watch({ id, hh, cli, sleep, now, deadline, interval = 3000
     if (['DONE', 'FAILED', 'BLOCKED'].includes(t.state)) return stop(1, t, `상태 ${t.state}`);
     // AC 승인·결정·진단·게시 차단 등은 awaiting으로, 게시(publish) 이후는 v2 phase로 드러난다.
     if (t.awaiting) return stop(1, t, `대기 ${t.awaiting}`);
-    const phase = t.x_flow?.phase;
-    if (phase && !['work', 'repair'].includes(phase)) return stop(1, t, `phase ${phase}`);
+    // x_flow 없는 업무(v1)와 보관 업무는 조회만 한다.
+    if (t.archived || t.x_archive) return stop(1, t, '보관된 업무다.');
+    if (t.x_flow?.version !== 2) return stop(1, t, 'v2 업무가 아니다. 과거 기록은 조회만 한다.');
+    const phase = t.x_flow.phase;
+    if (!['work', 'repair'].includes(phase)) return stop(1, t, `phase ${phase}`);
     if (t.current) {
       const c = cli(['collect', id]), out = json(c.stdout);
       if (c.code === 9 || out?.status === 'blocked') return stop(1, t, `에이전트가 사람 확인을 기다린다: ${(out?.note ?? c.stdout).trim().slice(0, 300)}`);
-      if (c.code !== 0 && !(c.code === 2 && WAITING.test(c.stdout + c.stderr))) return fail('collect', c, t);
+      if (c.code !== 0 && !(c.code === 2 && WAITING.test(c.stdout + c.stderr)) && !BUSY.test(c.stdout + c.stderr)) return fail('collect', c, t);
       const before = JSON.stringify(t.current);
       // 수집으로 회차가 닫히면 바로 다음 분기로 간다. 같은 회차가 남아 있으면 기다린 뒤 다시 수집한다.
       if (show() && JSON.stringify(t.current) === before) {
@@ -64,6 +69,13 @@ export async function watch({ id, hh, cli, sleep, now, deadline, interval = 3000
     }
     // HH dispatch는 업무 ID만, SW·VDP·VP는 ID와 단계를 받는다.
     const g = cli(hh ? ['dispatch', id] : ['dispatch', id, t.pending]);
+    if (g.code !== 0 && BUSY.test(g.stdout + g.stderr)) {
+      log({ id, waiting: 'ledger-lock', pending: t.pending });
+      await sleep(interval);
+      if (skip()) return skip();
+      show();
+      continue;
+    }
     if (g.code !== 0) return fail(`dispatch ${t.pending}`, g, t);
     dispatched.push(t.pending);
     log({ id, dispatched: t.pending });

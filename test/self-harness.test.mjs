@@ -518,7 +518,7 @@ test('로컬 업무 종결: 권한 없는 QA PASS 업무는 게시를 거부하�
   const { run: _, ...plan } = focusedPlan('fixture');
   fixture.edit(ledger => Object.assign(ledger.tasks[task.id], { state: 'QA', pending: null, candidate: current,
     x_flow: { ...task.x_flow, plan, phase: 'publish', verification: { verdict: 'PASS', candidate: current.fingerprint } } }));
-  await refused(() => run('publish-check ' + task.id), /권한이 없는 로컬 업무/);
+  for (const name of ['publish-check ', 'direct-publish ']) await refused(() => run(name + task.id), /권한이 없는 로컬 업무/);
   await refused(() => fixture.close(task.id, 'exception'), /권한이 없는 로컬 업무/);
   await refused(() => closeLocal('t-other'), /살아 있는 Lead/);
   await refused(() => closeLocal('t-lead', ' '), /--evidence/);
@@ -868,6 +868,152 @@ test('HH 검증 계획 실행 위치·해소 결정 인계: 결정 충돌 → �
   const closed = await fixture.close(task.id, 'fixture: PR 없는 검증 업무');
   assert.deepEqual(closed.closure.remainingVerification, leftItems);
   assert.deepEqual(fixture.ledger().tasks[task.id].x_flow.closure.remainingVerification, leftItems);
+});
+
+test('HH direct-publish: QA 후보만 커밋·push·PR 생성해 ci로 연결하고, 어긋나면 다음 쓰기 없이 멈춘 뒤 확인된 커밋을 재사용한다', async t => {
+  if (!existsSync(join(built.release, 'core/direct-publish.cjs'))) return;
+  const load = createRequire(import.meta.url);
+  const { publish, execute } = load(join(built.release, 'core/direct-publish.cjs'));
+  const receipts = load(join(built.release, 'core/qa-receipt-policy.cjs'));
+  const fixture = await setup(t);
+  const { repo, main, herdr, run, refused, binding } = fixture;
+  await run('recover');
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Publish directly.\n');
+  const task = await main(['add', '--title', 'feat: 게시  제목', '--desc-file', request, '--workflow', 'v2', '--kind', 'feature', '--slug', 'direct',
+    '--authorization', 'Fixture authorization'], { cwd: repo, terminal: 't-lead', herdr });
+  const research = (await run('dispatch ' + task.id)).run;
+  writeJson(join(research.dir, 'research.json'), { run: research.token, summary: 'direct', planned_files: ['tracked.txt', 'package.json', 'added/'] });
+  const later = { id: 'live', location: 'follow-up', criteria: ['AC1'], environment: '배포 후', verify: '화면의 herdr-qa-receipt:v2 대조' };
+  writeJson(join(research.dir, 'verification-plan.json'), { ...focusedPlan(research.token), checkScopes: [focusedRow(), later] });
+  await run('collect ' + task.id);
+  const implementation = (await run('dispatch ' + task.id)).run;
+  const target = join(task.worktree, 'tracked.txt');
+  writeFileSync(target, 'candidate\n');
+  mkdirSync(join(task.worktree, 'added'));
+  writeFileSync(join(task.worktree, 'added/공백 [1].txt'), 'literal\n');
+  rmSync(join(task.worktree, 'package.json'));
+  // 요약의 HTML·코드 울타리·멘션은 뒤의 «남은 검증»을 가리지 않고, 봉투 표기 설명은 봉투 줄로 세지 않는다.
+  writeJson(join(implementation.dir, 'implement.json'), { run: implementation.token, verdict: 'DONE', summary: '```\n<details> @someone <!-- 요약\nPR 본문 봉투(<!-- herdr-qa-receipt:v2 base64url --> 한 줄 주석)', checks: [{ command: 'x', exit: 0 }] });
+  const { candidate } = await run('collect ' + task.id);
+  const qa = (await run('dispatch ' + task.id)).run;
+  writeJson(join(qa.dir, 'verification.json'), { run: qa.token, version: 2, verdict: 'PASS', candidate: candidate.fingerprint, findings: [],
+    criteria: [{ id: 'AC1', status: 'passed', evidence: 'contents' }],
+    checks: [{ id: 'hh-focused', command: focusedRow().command, status: 'passed', evidence: 'exit 0' }],
+    limitations: [{ id: 'L1', kind: 'limitation', severity: 'Low', note: '한계 하나' }] });
+  await run('collect ' + task.id);
+
+  // push는 로컬 bare 저장소에 실제로 보낸다. 사용자의 followTags 설정과 미게시 주석 태그가 있어도 업무 브랜치만 올라가야 한다.
+  const bare = join(repo, '.local/origin.git');
+  git(repo, 'init', '-q', '--bare', bare);
+  git(repo, 'config', 'push.followTags', 'true');
+  git(repo, 'tag', '-a', 'unpublished', '-m', 'unpublished', fixture.base);
+  const remote = [];
+  let pushFails = false, open = [], created = null;
+  const head = () => git(task.worktree, 'rev-parse', 'HEAD');
+  const exec = (cwd, file, args, options) => {
+    if (file !== 'gh' && args[0] !== 'push') return execute(cwd, file, args, options);
+    remote.push(file === 'gh' ? args.slice(0, 2).join(' ') : args.join(' '));
+    if (file !== 'gh') {
+      if (pushFails) throw new Error('fixture push rejected');
+      return execute(cwd, file, args.map(a => a === 'origin' ? bare : a), options);
+    }
+    if (args[1] === 'list') return JSON.stringify(open);
+    created = { args, title: args.find(a => a.startsWith('--title=')).slice(8), body: readFileSync(args[args.indexOf('--body-file') + 1], 'utf8') };
+    return 'https://github.com/faysia320/herdr-harness/pull/9\n';
+  };
+  const prView = number => ({ number, url: 'https://github.com/faysia320/herdr-harness/pull/9', state: 'OPEN', isCrossRepository: false, isDraft: false,
+    headRefName: task.branch, headRefOid: head(), baseRefName: 'main', body: created?.body ?? null });
+  const direct = (terminal = 't-lead') => run('direct-publish ' + task.id, terminal, { publishExec: exec, prView });
+  const untouched = () => assert.deepEqual([head(), git(task.worktree, 'diff', '--cached', '--name-only'), remote.length], [fixture.base, '', 0]);
+
+  // 게시 자격·후보·기존 stage가 어긋나면 커밋도 원격 쓰기도 없다.
+  await refused(() => direct('t-other'), /살아 있는 Lead/);
+  const saved = readFileSync(fixture.ledgerFile, 'utf8');
+  fixture.edit(l => { l.tasks[task.id].x_flow.authorization = ' '; });
+  await refused(direct, /게시 중단\(게시 자격\).*게시 승인/);
+  writeFileSync(fixture.ledgerFile, saved);
+  writeFileSync(target, 'changed\n');
+  await refused(direct, /게시 중단\(후보 대조\).*QA 이후 후보/);
+  writeFileSync(target, 'candidate\n');
+  const pinned = readFileSync(binding, 'utf8');
+  writeJson(binding, { ...JSON.parse(pinned), ...patchedRelease(t, (dir, manifest) => {
+    rmSync(join(dir, 'core/direct-publish.cjs'));
+    delete manifest.files['core/direct-publish.cjs'];
+  }) });
+  await refused(direct, /direct-publish를 지원하지 않는다/);
+  writeFileSync(binding, pinned);
+  untouched();
+  writeFileSync(target, 'partial\n');
+  git(task.worktree, 'add', '--', 'tracked.txt');
+  writeFileSync(target, 'candidate\n');
+  await refused(direct, /일부만 stage된 경로가 있다: tracked\.txt/);
+  assert.equal(git(task.worktree, 'show', ':tracked.txt'), 'partial');
+  git(task.worktree, 'reset', '-q');
+  untouched();
+  // 봉투가 필수인 저장소: 없거나 다른 회차면 Git을 쓰기 전에 멈춘다.
+  const value = fixture.ledger().tasks[task.id];
+  value.x_flow.verification.checks[0].command += ' herdr-qa-receipt:v2';
+  const enveloped = envelope => publish(value, { repository: 'faysia320/herdr-harness', envelope: 'required' },
+    { checkCandidate() {}, checkCommitted() {}, envelope: () => envelope }, exec);
+  const { digest, count } = receipts.candidateBinding((...args) => git(task.worktree, ...args), task.base, task.base, candidate.tree);
+  const envelope = change => receipts.encodeEnvelope({ kind: receipts.kind, version: 2, run: qa.token, base: task.base, candidate: { digest, count }, ...change });
+  assert.throws(() => enveloped(''), /게시 중단\(QA 영수증 봉투\)/);
+  assert.throws(() => enveloped(envelope({ run: 'other' })), /승인된 QA 회차/);
+  untouched();
+
+  // push 실패는 PR을 만들지 않고 커밋 SHA를 알린다.
+  pushFails = true;
+  await refused(direct, /게시 중단\(push\): fixture push rejected \[커밋 [0-9a-f]{40}\]/);
+  const commit = head();
+  assert.equal(git(task.worktree, 'rev-parse', 'HEAD^{tree}'), candidate.tree);
+  assert.deepEqual(git(task.worktree, 'log', '-1', '--format=%s|%(trailers:key=Published-by,valueonly,separator=)').split('|'), ['feat: 게시 제목', 'herdr-harness']);
+  assert.deepEqual(remote, ['pr list', 'push --no-follow-tags origin ' + commit + ':refs/heads/' + task.branch]);
+  pushFails = false;
+  // 최종 tree가 후보와 같아도 QA 뒤 끼인 커밋·다른 부모·다른 메시지면 PR 조회·push 전에 멈춘다. push는 조상까지 공개한다.
+  const commitTree = (tree, message, ...parents) => git(task.worktree, 'commit-tree', tree, ...parents.flatMap(p => ['-p', p]), '-m', message);
+  const message = git(task.worktree, 'log', '-1', '--format=%B', commit);
+  writeFileSync(join(task.worktree, 'local-only.txt'), 'private\n');
+  git(task.worktree, 'add', '-f', '--', 'local-only.txt');
+  const stray = commitTree(git(task.worktree, 'write-tree'), 'stray', fixture.base);
+  git(task.worktree, 'rm', '-q', '-f', '--', 'local-only.txt');
+  for (const unapproved of [commitTree(candidate.tree, message, stray), commitTree(candidate.tree, message, fixture.base, stray), commitTree(candidate.tree, 'other', fixture.base)]) {
+    git(task.worktree, 'reset', '-q', '--soft', unapproved);
+    await refused(direct, /게시 중단\(커밋 대조\).*부모·커밋 메시지 불일치/);
+    assert.equal(head(), unapproved);
+  }
+  git(task.worktree, 'reset', '-q', '--soft', commit);
+  assert.equal(remote.length, 2);
+  // 같은 브랜치에 본문이 다른 열린 PR이 있으면 push 전에 멈춘다.
+  open = [{ number: 8, isCrossRepository: false, isDraft: false, headRefOid: commit, baseRefName: 'main', body: 'other' }];
+  await refused(direct, /게시 중단\(기존 PR 조회\).*#8/);
+  assert.equal(remote.length, 3);
+  open = [];
+  // 봉투 저장소는 다른 후보의 봉투를 원격 쓰기 전에 거부하고, 맞는 한 줄을 남은 검증 뒤에 싣는다.
+  assert.throws(() => enveloped(envelope({ candidate: { digest: '0'.repeat(64), count } })), /봉투의 후보 지문/);
+  assert.equal(remote.length, 3);
+  assert.equal(enveloped(envelope()).reusedCommit, true);
+  assert.equal(git(bare, 'for-each-ref', '--format=%(objectname) %(refname)'), commit + ' refs/heads/' + task.branch);
+  assert.ok(created.body.endsWith('- [ ] L1 | 남는 한계 Low: 한계 하나\n\n' + envelope() + '\n'));
+  assert.equal(receipts.decodeEnvelope(created.body).run, qa.token);
+  assert.ok(created.body.includes(focusedRow().command + ' herdr-qa-receipt`&#58;`v2`'));
+
+  // 재실행은 확인된 커밋을 재사용해 PR을 만들고 ci로 연결한다.
+  const result = await direct();
+  assert.deepEqual([result.pr, result.head, result.reusedCommit, result.reusedPr, result.attached.phase], [9, commit, true, false, 'ci']);
+  assert.deepEqual([created.title, created.args[created.args.indexOf('--base') + 1], created.args[created.args.indexOf('--head') + 1]], ['feat: 게시 제목', 'main', task.branch]);
+  for (const text of ['- 판정: PASS (1회차, `' + qa.token + '`)', candidate.fingerprint, '- hh-focused passed: `' + focusedRow().command + '` — exit 0', '- L1 (Low): 한계 하나',
+    '## 남은 검증\n\n- [ ] live (AC1) | 환경: 배포 후 | 확인: 화면의 herdr-qa-receipt<!-- -->:v2 대조\n- [ ] L1 | 남는 한계 Low: 한계 하나\n', '&lt;details> @&#8203;someone',
+    '(&lt;!-- herdr-qa-receipt<!-- -->:v2 base64url --> 한 줄 주석)']) assert.ok(created.body.includes(text), text + '\n' + created.body);
+  assert.throws(() => receipts.decodeEnvelope(created.body), /영수증\(herdr-qa-receipt:v2\)이 없다/);
+  const published = fixture.ledger().tasks[task.id].x_flow;
+  assert.deepEqual([published.phase, published.delivery.pr, published.delivery.original], ['ci', 9, { head: commit, base: task.base, tree: candidate.tree }]);
+  await refused(direct, /게시 대기 업무만/);
+  // PR 생성 뒤 연결만 실패한 재시도는 같은 head·본문의 열린 PR을 재사용한다.
+  writeFileSync(fixture.ledgerFile, saved);
+  open = [{ number: 9, url: result.url, isCrossRepository: false, isDraft: false, headRefOid: commit, baseRefName: 'main', body: created.body.replaceAll('\n', '\r\n') }];
+  const writes = remote.length, again = await direct();
+  assert.deepEqual([again.reusedPr, again.attached.phase, remote.slice(writes)], [true, 'ci', ['pr list']]);
 });
 
 test('HH 게시 대기 중 계획 변경 결정: QA·게시 허가 철회 → 재조사·재동결 → 새 QA → 게시 인계', async t => {
