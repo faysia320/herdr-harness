@@ -2,10 +2,10 @@
 // 모두 통과하고 후보가 그대로일 때만 receipt.json과 PR 본문용 envelope.txt를 쓴다.
 // Docker·이미지·사본 준비에 실패하면 영수증 없이 BLOCKED, 검사가 실패하면 FAIL이다. 하네스 독립 QA와 하네스 밖 PR이 같은 함수를 쓴다.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { arch, release as osRelease } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { arch, release as osRelease, tmpdir } from 'node:os';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { runTree } from './process.js';
 
 const require = createRequire(import.meta.url);
@@ -18,12 +18,22 @@ export const hostName = () => contract.hostNames[process.platform] ?? process.pl
 const environmentCodes = new Set([90, 125, 126, 127]);
 const tail = text => String(text ?? '').trim().split(/\r?\n/).slice(-3).join(' / ');
 
-function gitIn(cwd) {
+function gitIn(cwd, env = process.env) {
   return (...args) => {
-    const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20, timeout: 60000 });
+    const r = spawnSync('git', args, { cwd, env, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20, timeout: 60000 });
     if (r.error || r.status !== 0) throw Error('git ' + args[0] + ' 실패: ' + (r.error?.message ?? r.stderr.trim()));
     return r.stdout.includes('\0') ? r.stdout : r.stdout.trim();
   };
+}
+// 발급 한 번 동안만 쓰는 임시 객체 저장소. 발급기의 모든 git 호출이 이 env로 새 객체를 임시 폴더에 쓰고 원래 objects는 읽기만 한다.
+// 검사 명령에는 넘기지 않는다. 시험이 만드는 별도 저장소의 객체까지 이 폴더에 묶이기 때문이다.
+function privateObjects(worktree) {
+  const shared = resolve(worktree, gitIn(worktree)('rev-parse', '--git-path', 'objects'));
+  const dir = mkdtempSync(join(tmpdir(), 'herdr-proof-')), objects = join(dir, 'objects');
+  mkdirSync(objects);
+  const alternates = [shared, process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES].filter(Boolean).join(delimiter);
+  return { env: { ...process.env, GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates },
+    remove: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) };
 }
 const version = command => {
   const r = spawnSync(command, ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
@@ -88,7 +98,7 @@ async function dockerCheck(ctx, platform, check) {
   // 작업 사본 파일을 그대로 복사하지 않는다. 확정한 후보 tree를 Git에서 꺼내 줄 끝·실행 비트를 Git 기준으로 맞춘다.
   const input = join(ctx.out, platform + '-' + check);
   mkdirSync(input, { recursive: true });
-  const archive = spawnSync('git', ['archive', '--format=tar', '-o', join(input, 'candidate.tar'), ctx.tree], { cwd: ctx.worktree, encoding: 'utf8', windowsHide: true });
+  const archive = spawnSync('git', ['archive', '--format=tar', '-o', join(input, 'candidate.tar'), ctx.tree], { cwd: ctx.worktree, env: ctx.gitEnv, encoding: 'utf8', windowsHide: true });
   if (archive.status !== 0) throw new Blocked('후보 tree를 꺼낼 수 없다: ' + tail(archive.stderr));
   writeFileSync(join(input, 'phase.cjs'), `(${containerPhase})();\n`);
   writeFileSync(join(input, 'input.json'), JSON.stringify({ tree: ctx.tree, steps: ctx.policy.checks[check].steps }));
@@ -132,11 +142,18 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(run ?? '')) throw Error('run은 영문·숫자·_.-로 된 회차 식별자여야 한다.');
   if (round !== null && !(Number.isSafeInteger(round) && round > 0)) throw Error('round는 양의 정수여야 한다.');
   if (!heavy || !existsSync(heavy)) throw Error('공용 heavy 슬롯 실행기(bin/heavy.mjs)를 찾을 수 없다: ' + heavy);
-  const git = gitIn(worktree);
   const policy = contract.loadPolicy(resolve(worktree, policyFile));
+  const store = privateObjects(worktree);
+  try {
+    return await issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv: store.env });
+  } finally { store.remove(); }
+}
+// 반환하는 tree는 해시만 남고 객체는 발급이 끝나면 없다. 객체가 필요한 소비자는 publishTree로 직접 계산한다.
+async function issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv }) {
+  const git = gitIn(worktree, gitEnv);
   const rel = policy.output.replace(/\/$/, '') + '/' + run;
   // 후보 tree에 들어가지 않는 무시 경로에만 쓴다. 추적·미무시 경로에 쓰면 후보 지문이 바뀐다.
-  if (spawnSync('git', ['check-ignore', '-q', '--', rel + '/receipt.json'], { cwd: worktree, windowsHide: true }).status !== 0)
+  if (spawnSync('git', ['check-ignore', '-q', '--', rel + '/receipt.json'], { cwd: worktree, env: gitEnv, windowsHide: true }).status !== 0)
     throw Error('정책 output 경로가 Git 무시 대상이 아니다: ' + rel);
   const commit = git('rev-parse', '--verify', base + '^{commit}');
   try { git('merge-base', '--is-ancestor', commit, 'HEAD'); } catch { throw Error('기준 커밋이 작업공간 HEAD의 조상이 아니다: ' + base); }
@@ -146,9 +163,9 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   mkdirSync(out, { recursive: true });
   const startedAt = now();
   // 후보는 B 대비 실제 변경에 과정 산출물 게시 정책을 적용한 tree다. CI가 게시 커밋에서 다시 세는 행과 같다.
-  const tree = publishTree(worktree, commit);
+  const tree = publishTree(worktree, commit, gitEnv);
   const binding = contract.candidateBinding(git, commit, commit, tree);
-  const ctx = { worktree, policy, run, heavy, exec, timeout, hostOs, out, tree,
+  const ctx = { worktree, policy, run, heavy, exec, timeout, hostOs, out, tree, gitEnv,
     env: Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'NODE_TEST_CONTEXT')) };
   const environments = {}, results = [], outputs = [], phases = [], reasons = [];
   let status = 'PASS', pairs = [];
@@ -187,7 +204,7 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
       break;
     }
   }
-  if (status === 'PASS' && publishTree(worktree, commit) !== tree) {
+  if (status === 'PASS' && publishTree(worktree, commit, gitEnv) !== tree) {
     status = 'BLOCKED';
     reasons.push('검사 도중 후보가 바뀌었다. 후보를 고정한 뒤 다시 발급한다.');
   }

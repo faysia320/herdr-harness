@@ -6,11 +6,12 @@ const artifacts=require('./artifact-policy.cjs');
 // 임시 index를 실제 index의 mode·blob·stage와 skip-worktree 표시만으로 채운다. stat 캐시는 옮기지 않으므로
 // 같은 길이·같은 초 mtime으로 바뀐 미스테이지 파일도 뒤이은 add -A가 작업 트리 내용을 다시 읽는다.
 // 경로는 원시 바이트로 한 번에 넘겨 파일별 Git 프로세스를 만들지 않는다. 실제 index가 없으면 HEAD에서 시작한다.
-function seedIndex(cwd, env) {
+// base는 실제 index를 읽는 호출의 env다.
+function seedIndex(cwd, env, base=process.env) {
   const git=(args,e,input)=>execFileSync('git',args,{cwd,env:e,input,windowsHide:true,stdio:[input===undefined?'ignore':'pipe','pipe','pipe'],maxBuffer:256<<20,timeout:30000});
-  const real=path.resolve(cwd,git(['rev-parse','--git-path','index'],process.env).toString('utf8').trim());
+  const real=path.resolve(cwd,git(['rev-parse','--git-path','index'],base).toString('utf8').trim());
   if(!fs.existsSync(real)){git(['read-tree','HEAD'],env);return;}
-  const out=git(['ls-files','-s','-t','-z'],process.env),info=[],skip=[];
+  const out=git(['ls-files','-s','-t','-z'],base),info=[],skip=[];
   for(let at=0;at<out.length;){
     const end=out.indexOf(0,at),rec=out.subarray(at,end);at=end+1;
     info.push(rec.subarray(2),Buffer.of(0));
@@ -43,12 +44,13 @@ function processViolations(cwd, changes) {
   if(artifacts.configure(local).declared) return artifacts.violations(local,changes);
   return changes.filter(c=>c.status!=='D'&&/^docs\/(tasks|projects)\//.test(c.path));
 }
-function publishTree(cwd, base) {
+// source는 모든 git 호출의 바탕 env다. 발급기는 임시 객체 저장소를 가리키는 env를 넘긴다.
+function publishTree(cwd, base, source=process.env) {
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'herdr-proof-'));
-  const git=(args,env=process.env,input)=>execFileSync('git',args,{cwd,env,input,encoding:'utf8',windowsHide:true,stdio:[input===undefined?'ignore':'pipe','pipe','pipe'],maxBuffer:64<<20,timeout:30000});
+  const git=(args,env,input)=>execFileSync('git',args,{cwd,env,input,encoding:'utf8',windowsHide:true,stdio:[input===undefined?'ignore':'pipe','pipe','pipe'],maxBuffer:64<<20,timeout:30000});
   try {
-    const env={...process.env,GIT_INDEX_FILE:path.join(scratch,'index')};
-    seedIndex(cwd,env);
+    const env={...source,GIT_INDEX_FILE:path.join(scratch,'index')};
+    seedIndex(cwd,env,source);
     git(['add','-A'],env);
     const parts=git(['diff-index','--cached','--raw','--no-renames','--no-abbrev','-z',base],env).split('\0');
     const rows=[];

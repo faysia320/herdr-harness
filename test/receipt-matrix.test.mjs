@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { issueReceipt } from '../core/qa-receipt-runner.mjs';
-const { loadPolicy } = createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+const require = createRequire(import.meta.url);
+const { loadPolicy } = require('../core/qa-receipt-policy.cjs');
+const { publishTree } = require('../core/verification-receipt.cjs');
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const verifier = join(root, 'bin/verify-qa-receipt.mjs');
@@ -65,8 +67,11 @@ if (live) test('matrix-live: 현재 후보를 실제 Windows·Docker Linux에서
   assert.deepEqual(results.map(r => [r.platform, r.state]), [['windows', 'passed'], ['linux', 'passed']]);
   assert.ok(results.every(r => r.tests > 0 && r.pass === r.tests && r.fail === 0));
   assert.equal(environments.linux.image, loadPolicy(join(root, 'policy/qa-receipt.json')).platforms.linux.image);
+  // 발급기의 tree 객체는 임시 저장소와 함께 지워졌으므로 같은 후보를 다시 계산한다.
+  const tree = publishTree(root, issued.base);
+  assert.equal(tree, issued.tree);
   // 미커밋 후보는 게시 때와 같은 커밋(부모 base, 후보 tree)을 만들어 PR head로 쓴다. 참조가 없는 객체만 생긴다.
-  const head = git('commit-tree', issued.tree, '-p', issued.base, '-m', 'matrix-live CI rehearsal');
+  const head = git('commit-tree', tree, '-p', issued.base, '-m', 'matrix-live CI rehearsal');
   const main = (() => { try { return git('rev-parse', '--verify', 'refs/remotes/origin/main^{commit}'); } catch { return issued.base; } })();
   const ci = rehearseCi(root, issued.out, issued.envelope, issued.base, head, main);
   writeFileSync(join(issued.out, 'ci-rehearsal.json'), JSON.stringify({ head, main, ...ci }, null, 2) + '\n');
@@ -117,7 +122,9 @@ test('과정 문서가 커밋된 main: 발급기와 CI 검증기가 같은 후�
     c.edit?.(cwd);
     const issued = await issueReceipt({ worktree: cwd, base, run: c.name, heavy: join(root, 'bin/heavy.mjs'), hostOs: 'windows', exec });
     assert.equal(issued.status, 'PASS', c.name + ': ' + issued.reasons.join('\n'));
-    const rows = git('diff', '--name-status', '--no-renames', base, issued.tree).split('\n').map(line => line.split('\t'));
+    const tree = publishTree(cwd, base);
+    assert.equal(tree, issued.tree, c.name);
+    const rows = git('diff', '--name-status', '--no-renames', base, tree).split('\n').map(line => line.split('\t'));
     assert.deepEqual(rows.sort(), c.qa.sort(), c.name);
     assert.equal(issued.candidate.count, c.qa.length, c.name);
     // 실제 게시: 기능 파일과 이 사례가 게시하는 과정 문서만 커밋한다. 나머지 로컬 편집은 작업 사본에 남는다.

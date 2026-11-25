@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { issueReceipt } from '../core/qa-receipt-runner.mjs';
-const { decodeEnvelope, loadPolicy, verifyResults } = createRequire(import.meta.url)('../core/qa-receipt-policy.cjs');
+const require = createRequire(import.meta.url);
+const { decodeEnvelope, loadPolicy, verifyResults } = require('../core/qa-receipt-policy.cjs');
+const { publishTree } = require('../core/verification-receipt.cjs');
 
 const heavy = fileURLToPath(new URL('../bin/heavy.mjs', import.meta.url));
 const image = 'docker.io/library/node@sha256:' + 'c'.repeat(64);
@@ -95,6 +97,30 @@ test('PASS: 정책의 두 OS를 heavy 슬롯에서 하나씩 실행하고 영수
   writeFileSync(join(r.cwd, 'docs/x.md'), 'doc\n');
   const docs = await issue(r, fake({ windows: () => ({ code: 0, stdout: tap(1), stderr: '' }) }));
   assert.deepEqual(docs.receipt.results.map(x => x.platform + '/' + x.check), ['windows/suite', 'windows/docs', 'linux/suite']);
+});
+
+test('발급기는 임시 객체 저장소만 쓰고 지운다: 연결 worktree·빈 실제 index에서도 공유 objects와 tree 해시가 그대로다', async t => {
+  const r = repo(t), temp = mkdtempSync(join(tmpdir(), 'hh-qa-temp-')), keys = ['TEMP', 'TMP', 'TMPDIR'], saved = keys.map(key => process.env[key]);
+  t.after(() => rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const cwd = join(temp, 'linked'), scratch = join(temp, 'scratch');
+  mkdirSync(scratch);
+  r.git('worktree', 'add', '-q', '--detach', cwd, r.base);
+  writeFileSync(join(cwd, 'a.txt'), 'candidate only\n');
+  const objects = () => readdirSync(join(r.cwd, '.git/objects'), { recursive: true }).sort();
+  const before = objects(), runs = [];
+  t.after(() => keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }));
+  for (const key of keys) process.env[key] = scratch;
+  for (const empty of [false, true]) {
+    if (empty) assert.equal(spawnSync('git', ['read-tree', '--empty'], { cwd, windowsHide: true }).status, 0);
+    runs.push(await issue({ cwd, base: r.base }, fake()));
+  }
+  runs.push(await issue({ cwd, base: r.base }, fake({ windows: () => ({ code: 1, stdout: '', stderr: '' }) })));
+  await assert.rejects(issue({ cwd, base: r.base }, fake({ windows: () => { throw Error('boom'); } })), /boom/);
+  assert.deepEqual(runs.map(x => [x.status, x.candidate.count]), [['PASS', 1], ['PASS', 1], ['FAIL', 1]]);
+  assert.deepEqual(objects(), before);
+  assert.deepEqual(readdirSync(scratch), []);
+  const tree = publishTree(cwd, r.base);
+  assert.ok(runs.every(x => x.tree === tree));
 });
 
 test('검사별 timeout_ms: 지정한 검사의 heavy 실행에만 쓰고 생략한 검사는 기본 45분이다', async t => {

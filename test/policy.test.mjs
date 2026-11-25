@@ -163,6 +163,6 @@ test('모든 단계에 병렬도 상한과 무거운 작업 슬롯 규칙을, QA
     else assert.deepEqual(claudeSettings(role).env, resources.env);
     assert.ok(rules.includes(`node ${heavy} -- <명령>`) && rules.includes(`동시 ${resources.heavy_slots}개`));
     assert.doesNotMatch(rules, /\{(?:heavy|slots|env)\}|"/);
-    assert.equal(/후보와 무관한 실패/.test(rules) && /같은 조건 반복 금지/.test(rules) && /완료 보고 명령을 반드시 실행한다/.test(rules) && /herdr-proof-\*/.test(rules), stage === 'qa');
+    assert.equal(/후보와 무관한 실패/.test(rules) && /같은 조건 반복 금지/.test(rules) && /완료 보고 명령을 반드시 실행한다/.test(rules) && /herdr-proof-\* temp는 발급기가 만들고 지움/.test(rules) && /공유 \.git\/objects에는 쓰지 않는다/.test(rules), stage === 'qa');
   }
 });
