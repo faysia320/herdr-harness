@@ -68,9 +68,13 @@ PR을 만들지 않기로 승인된 업무는 flow-close ID --evidence "승인 �
 
     node .agents/harness/launch.mjs flow-close HH-123 --evidence "사용자 승인(대화 2026-01-01): PR 없는 검증 업무"
 
+게시·병합 권한 없이 로컬·QA까지만 하는 업무는 add에서 --authorization을 생략한다(x_flow.authorization=null). 독립 QA PASS 뒤 게시 없이 멈추고 publish-check·direct-publish·flow-attach-pr·flow-close를 거부한다. Lead가 flow-close-local ID --evidence "종결 근거"로 닫는다. 후보·결정 조건은 flow-close와 같고 사용자의 정책 예외 승인은 필요 없다. 대장에는 phase=closed와 x_flow.closure(kind=local-only, published=false, merged=false, 근거, 남은 검증)가 남고, 정리는 예외 종결과 같이 후보 patch와 브랜치를 보존한다. 나중에 게시하려면 권한을 받은 새 업무로 등록한다.
+
+    node .agents/harness/launch.mjs flow-close-local HH-123 --evidence "로컬 확인까지만 요청, 독립 QA PASS"
+
 ## 끝난 업무 정리
 
-DONE이 되면 같은 Lead 잠금 안에서 공통 [worktree 정리](../../README.md#끝난-업무-worktree-정리)를 한 번 부른다. 호출 시점은 flow-deliver ID --apply(watch-delivery 포함)와 flow-prove-merged ID가 병합을 증명했을 때, flow-close ID가 예외 종결했을 때다. 미병합·차단·조회 전용 결과에는 부르지 않는다. 명령 응답에 cleanup 항목이 붙고 대장의 x_cleanup과 x_cleanup 사건에 같은 결과가 남는다. 결과가 이전과 같으면 다시 기록하지 않는다.
+DONE이 되면 같은 Lead 잠금 안에서 공통 [worktree 정리](../../README.md#끝난-업무-worktree-정리)를 한 번 부른다. 호출 시점은 flow-deliver ID --apply(watch-delivery 포함)와 flow-prove-merged ID가 병합을 증명했을 때, flow-close ID가 예외 종결했을 때, flow-close-local ID가 로컬 종결했을 때다. 미병합·차단·조회 전용 결과에는 부르지 않는다. 명령 응답에 cleanup 항목이 붙고 대장의 x_cleanup과 x_cleanup 사건에 같은 결과가 남는다. 결과가 이전과 같으면 다시 기록하지 않는다.
 
 - 정리가 거부되거나 실패해도 DONE·병합 증명·예외 종결은 되돌리지 않고 명령의 종료 코드도 바꾸지 않는다. cleanup에는 status(done·refused·partial·failed), 사유, 남은 worktree·브랜치, 재시도 명령이 있다. failed는 binding·release 문제처럼 공통 정리를 실행하지 못한 경우다.
 - 병합 업무는 worktree를 지운 뒤 로컬 업무 브랜치를 -d, 거부되면 증명 조건을 다시 확인해 -D로 지운다. 예외 종결 업무는 미커밋 후보를 .local/hh-harness/tasks/ID/worktree-*.patch로 보존하고 브랜치를 남긴다.

@@ -79,6 +79,19 @@ test('v2는 재작업으로 모델 노력을 올리지 않고 고위험 별칭�
   }
 });
 
+test('v2는 workflow 기본 → 저장소 예외 → 업무 예외 순서로 model·effort를 정한다', () => {
+  const c = local(), task = { x_flow: { version: 2 } };
+  c.execution_overrides = { reason: 'CLI 교체', roles: { implement: { cli: 'codex', model: 'gpt-6.2-sol', effort: 'medium', sandbox: 'workspace-write' }, qa: { effort: 'low' } } };
+  const pick = (stage, extra) => { const r = resolve(c, { ...task, ...extra }, stage); return [r.cli, r.model, r.effort]; };
+  assert.deepEqual(pick('implement'), ['codex', 'gpt-6.2-sol', 'medium']);
+  assert.deepEqual(pick('implement', { profile: 'high-risk' }), ['codex', 'gpt-6.2-sol', 'medium']);
+  assert.deepEqual(resolve(c, task, 'implement').argv.slice(0, 6), ['codex', '--no-daemon', '-m', 'gpt-6.2-sol', '-c', 'model_reasoning_effort="medium"']);
+  assert.deepEqual(pick('qa'), ['codex', 'gpt-6.2-sol', 'low']);
+  assert.deepEqual(pick('research'), ['codex', 'gpt-6.2-astra', 'high']);
+  assert.deepEqual(pick('implement', { overrides: { implement: { effort: 'high', reason: '업무 예외' } } }), ['codex', 'gpt-6.2-sol', 'high']);
+  assert.throws(() => pick('implement', { overrides: { implement: { model: 'claude-opus-5-5', reason: '업무 예외' } } }), /제공자/);
+});
+
 test('프로젝트별 변경은 사유를 가진 실행 예외만 허용하고 기존 중복 설정은 거부한다', () => {
   const c = local(); c.execution_overrides = { reason: '명시적 비용 예외', roles: { implement: { fast: false, effort: 'medium' } } };
   assert.equal(resolve(c, {}, 'implement').fast, false);

@@ -16,7 +16,7 @@ const optionsByCommand = {
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string', decision: 'string', revision: 'string' },
   'publish-check': { committed: 'boolean' }, 'direct-publish': {}, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
-  'flow-close': { evidence: 'string' }, 'flow-accept-merged': { pr: 'string', evidence: 'string', source: 'string' },
+  'flow-close': { evidence: 'string' }, 'flow-close-local': { evidence: 'string' }, 'flow-accept-merged': { pr: 'string', evidence: 'string', source: 'string' },
   'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
 
@@ -54,7 +54,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
   const optionSpec = Object.fromEntries(Object.entries(optionsByCommand[name]).map(([k, type]) => [k, { type }]));
   const { values: a, positionals: p } = parseArgs({ args, options: optionSpec, allowPositionals: true });
   const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'direct-publish', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close',
-    'flow-accept-merged', 'cleanup-worktree'].includes(name);
+    'flow-close-local', 'flow-accept-merged', 'cleanup-worktree'].includes(name);
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
   ctx.delivery = delivery ?? ctx.flow;
@@ -91,7 +91,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       { execution: ctx.execution({ action: 'config' }), workflow: ctx.release('workflow.cjs').policy, releaseHash: ctx.binding.manifestHash };
   if (name === 'add') return mutate(async ledger => {
     check(a.workflow === 'v2' && a.title?.trim() && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(a.slug ?? '') && a.slug.length <= 48,
-      'add --workflow v2 --kind 종류 --authorization 원문 --title 제목 --desc-file 요청 --slug 영문 형식이 필요하다.');
+      'add --workflow v2 --kind 종류 [--authorization 원문] --title 제목 --desc-file 요청 --slug 영문 형식이 필요하다.');
     const description = readFileSync(a['desc-file'], 'utf8').trim();
     check(description.length > 0, '원래 요청 내용이 필요하다.');
     const flow = ctx.flow({ action: 'create', kind: a.kind, authorization: a.authorization });
@@ -168,6 +168,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
     if (name === 'collect') return collect(ctx, ledger, task);
     if (name === 'flow-resume') return resume(ctx, ledger, task, a);
     if (name === 'flow-close') return close(ctx, ledger, task, a, terminal);
+    if (name === 'flow-close-local') return closeLocal(ctx, ledger, task, a, terminal);
     if (name === 'flow-accept-merged') return closeMerged(ctx, ledger, task, a, terminal);
     withoutDecision(ctx, ledger, task);
     if (name === 'cleanup-worktree') {
@@ -192,21 +193,29 @@ function requireDecisionReview(ctx, ledger, task) {
     '. 계획을 바꾸면 flow-resume ' + task.id + ' --stage research --decision KEY --revision N --evidence "변경 근거", 바꾸지 않으면 같은 명령에서 --stage 없이 판정 근거를 기록한다.');
 }
 
-function publishable(ctx, ledger, task) {
+// 게시와 로컬 종결이 함께 쓰는 QA PASS·결정 검사.
+function qaPassed(ctx, ledger, task) {
   withoutDecision(ctx, ledger, task);
   check(task.state === 'QA' && !activeRun(task) && task.x_flow.phase === 'publish' && task.x_flow.verification?.verdict === 'PASS',
     '독립 QA를 통과한 게시 대기 업무만 허용한다.');
   requireDecisionReview(ctx, ledger, task);
 }
 
+function publishable(ctx, ledger, task) {
+  qaPassed(ctx, ledger, task);
+  check(task.x_flow.authorization != null, '게시·병합 권한이 없는 로컬 업무다. 게시하지 않고 flow-close-local로 종결한다.');
+}
+
+function sameCandidate(ctx, task) {
+  const current = candidate(ctx, task);
+  check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
+}
+
 function publicationCheck(ctx, ledger, id, committed) {
   const task = taskById(ledger, id);
   publishable(ctx, ledger, task);
   const anchor = committed ? verifyCommit(ctx, task) : null;
-  if (!anchor) {
-    const current = candidate(ctx, task);
-    check(current.fingerprint === task.candidate.fingerprint && current.tree === task.candidate.tree, 'QA 이후 후보가 바뀌었다.');
-  }
+  if (!anchor) sameCandidate(ctx, task);
   const left = remaining(ctx, task.x_flow);
   // HH는 QA 실행 영수증을 쓰지 않는다. PR 본문에는 남은 검증 줄만 넣는다.
   return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}) };
@@ -296,6 +305,20 @@ async function close(ctx, ledger, task, a, terminal) {
   entry.closure = { ...closure };
   save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'closed', closure: closure.kind });
   return { id: task.id, state: task.state, phase: flow.phase, closure, cleanup: cleanupWorktree(ctx, ledger, task) };
+}
+
+// 게시 권한 없는 업무를 독립 QA PASS로 종결한다. 판정과 DONE 기록은 고정 release(core/workflow.cjs closeLocal)가 만든다.
+async function closeLocal(ctx, ledger, task, a, terminal) {
+  check(a.evidence?.trim(), '--evidence에 로컬 종결 근거가 필요하다.');
+  check(!task.x_archive, '보관된 업무는 요약만 남아 종결할 수 없다.');
+  const result = ctx.flow({ action: 'close-local', task, evidence: a.evidence, terminal, now: now() });
+  qaPassed(ctx, ledger, task);
+  sameCandidate(ctx, task);
+  check(result.task?.id === task.id && result.task.state === 'DONE', '공통 판정 결과가 이 업무의 종결이 아니다.');
+  const { at: _, project: __, ...event } = result.event;
+  ledger.tasks[task.id] = result.task;
+  save(ctx, ledger, event);
+  return { id: task.id, state: 'DONE', phase: result.task.x_flow.phase, closure: result.task.x_flow.closure, cleanup: cleanupWorktree(ctx, ledger, result.task) };
 }
 
 // 이미 main에 병합된 PR의 업무를 사용자 승인으로 종결한다. PR·원격 main 확인과 DONE 기록은 고정 release가 만들고(core/merged-closure.cjs),

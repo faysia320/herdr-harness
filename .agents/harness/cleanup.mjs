@@ -32,8 +32,8 @@ export function cleanupWorktree(ctx, ledger, task, { retry = false } = {}) {
   const closure = flow.phase === 'closed' ? flow.closure?.kind : null;
   let result;
   try {
-    check(task.state === 'DONE' && (merged || ['policy-exception', 'merged-accepted'].includes(closure)),
-      '병합 증명·정책 예외·사용자 승인 병합 종결로 DONE이 된 업무만 정리한다.');
+    check(task.state === 'DONE' && (merged || ['policy-exception', 'local-only', 'merged-accepted'].includes(closure)),
+      '병합 증명·정책 예외·로컬·사용자 승인 병합 종결로 DONE이 된 업무만 정리한다.');
     // 끝난 업무이므로 활동 조회 전에 남겨 둔 위임 터미널을 다시 닫는다.
     reclaimTerminals(ctx, ledger, task);
     check(JSON.stringify(adapter.binding(ctx.file)) === JSON.stringify(ctx.binding), '실행 중 binding이 바뀌었다. 고정 릴리스로 다시 실행한다.');

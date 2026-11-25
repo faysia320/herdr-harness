@@ -19,9 +19,10 @@ const markup = [
 ];
 const markupIn = value => markup.find(([pattern]) => pattern.test(value))?.[1] ?? null;
 const scopesOf = plan => Array.isArray(plan?.checkScopes) ? plan.checkScopes : null;
-function create(kind, authorization) {
+// authorization 생략·null은 QA PASS 뒤 게시 없이 멈추는 로컬 업무다. closeLocal로 종결한다.
+function create(kind, authorization = null) {
   if (!Object.hasOwn(policy.playbooks, kind)) fail('지원하지 않는 workflow 종류');
-  if (!text(authorization)) fail('자동 게시·병합 권한의 사용자 근거가 필요하다.');
+  if (authorization !== null && !text(authorization)) fail('자동 게시·병합 권한의 사용자 근거가 비었다. 권한이 없는 로컬 업무는 생략하거나 null로 둔다.');
   return { version: 2, kind, phase: 'work', authorization, failures: [], repairs: 0, verification: null, delivery: null };
 }
 // planDeferred는 동결 계획에서 follow-up 항목으로만 판정하는 AC ID다. QA는 이 AC를 unverified로 적고 PASS할 수 있다.
@@ -87,7 +88,7 @@ function collect(flow, report, candidate) {
   next.verification = { ...report, digest: hash(report) };
   const followUp = remainingVerification(flow.plan, next.verification);
   if (report.verdict === 'PASS') { next.phase = 'publish'; next.delivery = null; return { flow: next, state: 'QA', pending: null, awaiting: null,
-    reason: '검증 통과 · 게시·자동 병합 대기' + (followUp.length ? ` · 남은 검증 ${followUp.length}건` : '') }; }
+    reason: (text(flow.authorization) ? '검증 통과 · 게시·자동 병합 대기' : '검증 통과 · 게시 권한 없음 · 로컬 종결 대기') + (followUp.length ? ` · 남은 검증 ${followUp.length}건` : '') }; }
   for (const f of new Map(report.findings.map(f=>[f.signature,f])).values()) next.failures.push({ signature: f.signature, kind: f.kind, candidate });
   const repeated = report.findings.some(f=>next.failures.filter(x=>x.signature===f.signature).length>=policy.max_same_failure);
   const code = report.findings.some(f=>f.kind==='code');
@@ -96,6 +97,21 @@ function collect(flow, report, candidate) {
   const pending = next.phase==='repair' ? 'implement' : 'qa';
   return { flow: next, state: next.phase==='repair' ? 'READY_TO_IMPLEMENT' : 'BLOCKED', pending,
     awaiting: next.phase==='repair' ? null : `flow-${next.phase}`, reason: report.findings.map(f=>`${f.kind}: ${f.next}`).join('; ') };
+}
+// 게시·병합 권한(authorization)이 없는 업무를 독립 QA PASS로 DONE 종결한다. Lead 인증·잠금·현재 후보와 결정 확인·저장은 프로젝트 어댑터가 맡는다.
+function closeLocal(task, input, { now = new Date().toISOString() } = {}) {
+  const flow = task?.x_flow;
+  if (flow?.version !== 2) fail('v2 업무가 아니다.');
+  if (flow.authorization != null) fail('게시·병합 권한이 있는 업무는 로컬 종결하지 않는다.');
+  if (!text(input?.evidence) || !text(input?.terminal)) fail('로컬 종결 근거(evidence)와 실행한 Lead 터미널(terminal)이 필요하다.');
+  if (task.state !== 'QA' || task.current || task.pending != null || flow.phase !== 'publish' || flow.delivery) fail('PR이 연결되지 않은 QA 통과 대기 업무만 로컬 종결한다.');
+  if (flow.verification?.verdict !== 'PASS' || !text(task.candidate?.fingerprint) || flow.verification.candidate !== task.candidate.fingerprint) fail('독립 QA PASS가 저장 후보와 일치해야 한다.');
+  const left = remainingVerification(flow.plan, flow.verification);
+  const closure = { kind: 'local-only', at: now, terminal: input.terminal, evidence: input.evidence.trim(), previousPhase: flow.phase, qaVerdict: 'PASS',
+    published: false, merged: false, ...(left.length ? { remainingVerification: left } : {}) };
+  const next = { ...task, state: 'DONE', pending: null, awaiting: null, updated: now, x_flow: { ...flow, phase: 'closed', delivery: null, closure },
+    history: [...(task.history ?? []), { at: now, from: task.state, to: 'DONE', why: '로컬 종결(게시·병합 없음): ' + closure.evidence, closure: { ...closure } }] };
+  return { task: next, event: { at: now, project: task.project, task: task.id, event: 'x_flow', from: task.state, to: 'DONE', phase: 'closed', closure: closure.kind } };
 }
 // 어댑터가 선언한 독립 QA 실행 수단. ids는 그 검사 ID 전용(예: QA runner), pattern은 검사 행 command의 전체 형식이다.
 function qaExecutors(executors) {
@@ -353,4 +369,4 @@ function mergeGate(flow, pr, required) {
   );
   return { ready: !reasons.length, reasons, blocked };
 }
-module.exports = { policy, planScopeVersion, create, validateReport, collect, instructions, freezePlan, remainingVerification, missingRemaining, mergeGate };
+module.exports = { policy, planScopeVersion, create, validateReport, collect, closeLocal, instructions, freezePlan, remainingVerification, missingRemaining, mergeGate };

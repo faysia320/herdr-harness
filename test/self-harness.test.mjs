@@ -500,6 +500,46 @@ test('재회수 대상: 끝난 회차의 kept·still-live·unknown·rm 실패만
   assert.deepEqual([...sessions.keys()], ['t-foreign', 't-done', 't-active']);
 });
 
+test('로컬 업무 종결: 권한 없는 QA PASS 업무는 게시를 거부하고 flow-close-local로 게시·병합 없음을 남긴다', async t => {
+  const fixture = await setup(t);
+  const { repo, main, herdr, run, refused } = fixture;
+  await run('recover');
+  const request = join(repo, '.local/request.txt');
+  writeFileSync(request, 'Local only.\n');
+  const task = await main(['add', '--title', 'Local', '--desc-file', request, '--workflow', 'v2', '--kind', 'bug-fix', '--slug', 'local-only'],
+    { cwd: repo, terminal: 't-lead', herdr });
+  assert.equal(task.x_flow.authorization, null);
+  const closeLocal = (terminal = 't-lead', evidence = 'local QA') => main(['flow-close-local', task.id, '--evidence', evidence], { cwd: repo, terminal, herdr });
+  await refused(() => closeLocal(), /QA 통과 대기/);
+  const { context, candidate, verifyCommit } = await import(pathToFileURL(join(repo, '.agents/harness/repository.mjs')));
+  const ctx = context(repo, herdr), target = join(task.worktree, 'tracked.txt');
+  writeFileSync(target, 'local\n');
+  const current = candidate(ctx, task);
+  const { run: _, ...plan } = focusedPlan('fixture');
+  fixture.edit(ledger => Object.assign(ledger.tasks[task.id], { state: 'QA', pending: null, candidate: current,
+    x_flow: { ...task.x_flow, plan, phase: 'publish', verification: { verdict: 'PASS', candidate: current.fingerprint } } }));
+  for (const name of ['publish-check ', 'direct-publish ']) await refused(() => run(name + task.id), /권한이 없는 로컬 업무/);
+  await refused(() => fixture.close(task.id, 'exception'), /권한이 없는 로컬 업무/);
+  await refused(() => closeLocal('t-other'), /살아 있는 Lead/);
+  await refused(() => closeLocal('t-lead', ' '), /--evidence/);
+  writeFileSync(target, 'changed after QA\n');
+  await refused(() => closeLocal(), /QA 이후 후보/);
+  writeFileSync(target, 'local\n');
+  // 커밋 후보가 QA와 같아도 권한이 없으면 PR을 연결하지 않는다.
+  git(task.worktree, 'commit', '-am', 'local candidate');
+  assert.ok(verifyCommit(ctx, fixture.ledger().tasks[task.id]));
+  await refused(() => run('flow-attach-pr ' + task.id + ' --pr 7', 't-lead', { prView: () => assert.fail('PR을 조회하지 않는다') }), /권한이 없는 로컬 업무/);
+  git(task.worktree, 'reset', '--mixed', fixture.base);
+  const closed = await closeLocal();
+  const saved = fixture.ledger().tasks[task.id];
+  assert.deepEqual([saved.state, saved.x_flow.phase, saved.x_flow.delivery, saved.x_flow.closure], ['DONE', 'closed', null, closed.closure]);
+  assert.deepEqual([closed.closure.kind, closed.closure.published, closed.closure.merged, saved.history.at(-1).why],
+    ['local-only', false, false, '로컬 종결(게시·병합 없음): local QA']);
+  assert.equal(closed.cleanup.status, 'done', closed.cleanup.reasons?.join('\n'));
+  assert.deepEqual([closed.cleanup.branch.state, closed.cleanup.patch.paths, existsSync(task.worktree)], ['kept', ['tracked.txt'], false]);
+  await refused(() => closeLocal(), /QA 통과 대기/);
+});
+
 test('병합 증명 경로: flow-deliver --apply·flow-prove-merged 직후 공통 정리를 부르고, 증명과 다른 브랜치는 지우지 않는다', async t => {
   const fixture = await setup(t);
   const { repo, base, main, herdr, run } = fixture;
