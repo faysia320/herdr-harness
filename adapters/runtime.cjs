@@ -91,6 +91,15 @@ function workflow(file, input) {
     if (input.task?.project !== undefined && input.task.project !== input.project) throw new Error('업무 프로젝트가 연결과 다르다.');
     return api.closeLocal(input.task, input, { now: input.now });
   }
+  // revalidate 재구현이 병합한 main을 {from,to}로 돌려준다(이동이 없으면 null). 호출자는 구현 DONE 수집에서 새 기준으로 후보를 검사하고 함께 저장한다.
+  if (input.action === 'merged-base') {
+    if (!api.mergedBase) throw new Error('고정 release가 재구현 기준 이동을 지원하지 않는다. 새 release를 설치한 뒤 재시도한다.');
+    return api.mergedBase(input.task, (...args) => {
+      const r = spawnSync('git', args, { cwd: input.task.worktree, encoding: 'utf8', windowsHide: true, shell: false, timeout: 60000 });
+      if (r.error || r.status !== 0) throw new Error('기준 확인 실패: ' + (r.error?.message ?? r.stderr.trim()));
+      return r.stdout.trim();
+    });
+  }
   // options는 새 계획 형식 문구(scopes)와 해소 결정(decisions)을 켜는 명시 입력이다. 이전 release는 무시하므로 features로 먼저 확인한다.
   if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate, input.options);
   if (input.action === 'features') return { planScopeVersion: api.planScopeVersion ?? null };

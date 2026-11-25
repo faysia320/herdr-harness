@@ -412,7 +412,9 @@ async function resume(ctx, ledger, task, a) {
     delete flow.runner;
     delete flow.decisionReviews;
   }
-  flow.recovery = { at: now(), evidence: a.evidence, ...(decision ? { decision } : {}), ...(withdrawn ? { withdrawn } : {}) };
+  // main 이동(revalidate)에서 되돌린 업무는 재구현 DONE 수집까지 표지를 잇는다. 이미 끝난 병합 시도의 blocked_delivery만으로는 켜지 않는다.
+  const revalidate = pending !== null && (flow.phase === 'delivery-blocked' ? flow.blocked_delivery?.phase === 'revalidate' : flow.recovery?.revalidate === true);
+  flow.recovery = { at: now(), evidence: a.evidence, ...(revalidate ? { revalidate } : {}), ...(decision ? { decision } : {}), ...(withdrawn ? { withdrawn } : {}) };
   task.pending = pending;
   flow.phase = phase;
   const to = pending === 'research' || pending === 'architect' ? 'RESEARCHING' : pending === 'implement' ? 'READY_TO_IMPLEMENT' : 'QA';
