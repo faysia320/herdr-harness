@@ -919,6 +919,7 @@ test('HH direct-publish: QA 후보만 커밋·push·PR 생성해 ci로 연결하
       return execute(cwd, file, args.map(a => a === 'origin' ? bare : a), options);
     }
     if (args[1] === 'list') return JSON.stringify(open);
+    if (args[1] === 'edit') { created = { ...created, body: readFileSync(args[args.indexOf('--body-file') + 1], 'utf8') }; return ''; }
     created = { args, title: args.find(a => a.startsWith('--title=')).slice(8), body: readFileSync(args[args.indexOf('--body-file') + 1], 'utf8') };
     return 'https://github.com/faysia320/herdr-harness/pull/9\n';
   };
@@ -984,8 +985,8 @@ test('HH direct-publish: QA 후보만 커밋·push·PR 생성해 ci로 연결하
   }
   git(task.worktree, 'reset', '-q', '--soft', commit);
   assert.equal(remote.length, 2);
-  // 같은 브랜치에 본문이 다른 열린 PR이 있으면 push 전에 멈춘다.
-  open = [{ number: 8, isCrossRepository: false, isDraft: false, headRefOid: commit, baseRefName: 'main', body: 'other' }];
+  // 같은 브랜치에 head가 다른 열린 PR이 있으면 push 전에 멈춘다.
+  open = [{ number: 8, isCrossRepository: false, isDraft: false, headRefOid: 'f'.repeat(40), baseRefName: 'main', body: 'other' }];
   await refused(direct, /게시 중단\(기존 PR 조회\).*#8/);
   assert.equal(remote.length, 3);
   open = [];
@@ -1014,6 +1015,12 @@ test('HH direct-publish: QA 후보만 커밋·push·PR 생성해 ci로 연결하
   open = [{ number: 9, url: result.url, isCrossRepository: false, isDraft: false, headRefOid: commit, baseRefName: 'main', body: created.body.replaceAll('\n', '\r\n') }];
   const writes = remote.length, again = await direct();
   assert.deepEqual([again.reusedPr, again.attached.phase, remote.slice(writes)], [true, 'ci', ['pr list']]);
+  // 같은 head의 열린 PR 본문만 다르면(재시도 사이 실행 증거 갱신) push 없이 본문을 갱신해 연결한다.
+  writeFileSync(fixture.ledgerFile, saved);
+  const body = created.body;
+  open = [{ number: 9, url: result.url, isCrossRepository: false, isDraft: false, headRefOid: commit, baseRefName: 'main', body: 'stale evidence' }];
+  const before = remote.length, third = await direct();
+  assert.deepEqual([third.reusedPr, third.attached.phase, remote.slice(before), created.body], [true, 'ci', ['pr list', 'pr edit'], body]);
 });
 
 test('HH revalidate 재구현: 병합한 main으로 기준을 옮겨 수집하고, 이미 커밋된 후보를 기존 PR에 push·본문 갱신·연결한다', async t => {
