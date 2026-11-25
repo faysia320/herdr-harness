@@ -22,7 +22,7 @@ export function build() {
     const from = join(root, 'core', name), to = join(root, 'mod/harness', name);
     if (!existsSync(to) || !readFileSync(to).equals(readFileSync(from))) copyFileSync(from, to);
   }
-  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'bin/claude-account.mjs', 'core/claude-accounts.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'core/worktree-cleanup.cjs', 'core/decision-closure.cjs', 'core/merged-closure.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
+  const files = ['package.json', 'adapters/runtime.cjs', 'bin/harness.mjs', 'bin/decision-bridge.mjs', 'bin/claude-account.mjs', 'core/claude-accounts.mjs', 'core/execution-policy.cjs', 'core/artifact-policy.cjs', 'core/ledger-archive.cjs', 'core/worktree-cleanup.cjs', 'core/merged-closure.cjs', 'policy/execution.json', 'policy/artifacts.json', 'policy/ledger.json',
     ...['decisions.js', 'contract.js', 'decision-store.js', 'process.js'].map((n) => `core/${n}`), ...modFiles.map((n) => `mod/harness/${n}`), ...autoFiles.map((n) => `mod/harness-auto/${n}`), ...accountFiles.map((n) => `mod/claude-accounts/${n}`)];
   files.push('bin/herdr-browser.mjs', 'core/herdr-browser.mjs', 'bin/heavy.mjs', 'core/heavy-slots.mjs');
   files.push('core/workflow.cjs', 'core/delivery.cjs', 'core/dev14.cjs', 'policy/workflow.json', 'bin/watch-delivery.mjs', 'bin/watch-stage.mjs');

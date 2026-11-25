@@ -30,8 +30,11 @@ export async function watch({ id, hh, cli, sleep, now, deadline, interval = 3000
     if (['DONE', 'FAILED', 'BLOCKED'].includes(t.state)) return stop(1, t, `상태 ${t.state}`);
     // AC 승인·결정·진단·게시 차단 등은 awaiting으로, 게시(publish) 이후는 v2 phase로 드러난다.
     if (t.awaiting) return stop(1, t, `대기 ${t.awaiting}`);
-    const phase = t.x_flow?.phase;
-    if (phase && !['work', 'repair'].includes(phase)) return stop(1, t, `phase ${phase}`);
+    // x_flow 없는 업무(v1)와 보관 업무는 조회만 한다.
+    if (t.archived || t.x_archive) return stop(1, t, '보관된 업무다.');
+    if (t.x_flow?.version !== 2) return stop(1, t, 'v2 업무가 아니다. 과거 기록은 조회만 한다.');
+    const phase = t.x_flow.phase;
+    if (!['work', 'repair'].includes(phase)) return stop(1, t, `phase ${phase}`);
     if (t.current) {
       const c = cli(['collect', id]), out = json(c.stdout);
       if (c.code === 9 || out?.status === 'blocked') return stop(1, t, `에이전트가 사람 확인을 기다린다: ${(out?.note ?? c.stdout).trim().slice(0, 300)}`);

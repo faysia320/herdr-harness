@@ -2,3 +2,4 @@
 *.mjs  text eol=lf
 *.cjs  text eol=lf
 *.json text eol=lf
+.agents/harness/CONTRACT.md text eol=lf
