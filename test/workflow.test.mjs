@@ -205,7 +205,9 @@ test('revalidate 재구현만 병합을 지시하고 병합된 main을 새 기�
   assert.equal(mergedBase(task(recovery),()=>assert.fail('git 호출')),null);
   assert.doesNotMatch(instructions(task(recovery).x_flow,'implement',fingerprint),/main 이동 재구현/);
  }
- assert.match(instructions(task({revalidate:true}).x_flow,'implement',fingerprint),/main 이동 재구현: 먼저 업무 브랜치에서 git fetch origin main 뒤 git merge origin\/main로 .*새 기준으로 기록한다\.\n/);
+ const recovery=instructions(task({revalidate:true}).x_flow,'implement',fingerprint);
+ assert.match(recovery,/main 이동 재구현: .*git ls-remote origin refs\/heads\/<업무 브랜치>.*있으면 git fetch origin <업무 브랜치> main 뒤 git merge origin\/<업무 브랜치>로 .*이어서 git merge origin\/main로 .*새 기준으로 기록한다\.\n/);
+ assert.match(recovery,/원격에 없으면 git fetch origin main 뒤 git merge origin\/main만 한다\. .*\(rebase·강제 이동·push 금지\)/);
  assert.doesNotMatch(instructions(task({revalidate:true}).x_flow,'qa',fingerprint),/main 이동 재구현/);
 });
 test('해소 결정은 인용 JSON 데이터로 넣고 조회 결과가 없으면 0건으로 바꾸지 않는다',()=>{

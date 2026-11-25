@@ -1059,17 +1059,31 @@ test('HH revalidate 재구현: 병합한 main으로 기준을 옮겨 수집하�
     headRefName: branch, headRefOid: git(worktree, 'rev-parse', 'HEAD'), baseRefName: 'main', body: 'old body' });
   await run('flow-attach-pr ' + id + ' --pr 9', 't-lead', { prView });
 
+  // CI 대기 중 DEV-14가 먼저 움직인 main을 동기화한 커밋은 원격 업무 브랜치에만 있다. 로컬 업무 브랜치는 최초 게시 커밋에 남는다.
+  const bare = join(repo, '.local/origin.git');
+  git(repo, 'init', '-q', '--bare', bare);
+  writeFileSync(join(repo, 'synced.txt'), 'synced\n');
+  git(repo, 'add', '--', 'synced.txt');
+  git(repo, 'commit', '-qm', 'synced');
+  const firstMove = git(repo, 'rev-parse', 'HEAD');
+  const sync = git(repo, 'commit-tree', git(repo, 'merge-tree', '--write-tree', firstMove, published), '-p', published, '-p', firstMove, '-m', 'Sync main for PR #9 (DEV-14)');
+  git(repo, 'push', '-q', bare, sync + ':refs/heads/' + branch);
+
   // main이 후보 경로까지 옮겨 revalidate가 나온다. 재구현이 병합하면 새 main을 기준으로 후보를 잡는다.
   writeFileSync(join(repo, 'tracked.txt'), 'upstream\n');
   writeFileSync(join(repo, 'upstream-only.txt'), 'upstream\n');
   git(repo, 'add', '--', 'tracked.txt', 'upstream-only.txt');
   git(repo, 'commit', '-qm', 'upstream');
   const moved = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'push', '-q', bare, moved + ':refs/heads/main');
   git(repo, 'update-ref', 'refs/remotes/origin/main', moved);
   await run('flow-deliver ' + id + ' --apply', 't-lead', { delivery: () => ({ phase: 'revalidate', reasons: ['QA 경로 겹침: tracked.txt'] }) });
   await run('flow-resume ' + id + ' --stage implement --evidence main-moved');
   let again = await dispatch();
-  assert.match(promptOf(again), /main 이동 재구현: .*git merge origin\/main/);
+  assert.match(promptOf(again), /main 이동 재구현: .*git merge origin\/<업무 브랜치>로 .*이어서 git merge origin\/main/);
+  assert.equal(git(worktree, 'branch', '--show-current'), branch);
+  git(worktree, '-c', 'url.' + bare + '.insteadOf=' + git(repo, 'remote', 'get-url', 'origin'), 'fetch', '-q', 'origin', branch, 'main');
+  git(worktree, 'merge', '-q', '--no-edit', 'origin/' + branch);
   git(worktree, 'merge', '-q', '--no-edit', '-X', 'ours', 'origin/main');
   // 병합 뒤 origin/main이 더 움직여도 병합된 지점까지만 옮긴다.
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'later');
@@ -1092,11 +1106,10 @@ test('HH revalidate 재구현: 병합한 main으로 기준을 옮겨 수집하�
   const qa = await pass();
   assert.match(promptOf(qa), new RegExp('Base: ' + moved));
 
-  // 이미 커밋된 후보: 커밋 없이 검증한 HEAD를 push하고 뒤처진 기존 PR의 본문을 갱신해 연결한다.
-  const head = git(worktree, 'rev-parse', 'HEAD'), bare = join(repo, '.local/origin.git');
-  git(repo, 'init', '-q', '--bare', bare);
-  git(worktree, 'push', '-q', bare, published + ':refs/heads/' + branch);
-  const open = { number: 9, url: 'https://github.com/faysia320/herdr-harness/pull/9', isCrossRepository: false, isDraft: false, headRefOid: published, baseRefName: 'main', body: 'old body' };
+  // 이미 커밋된 후보: 커밋 없이 검증한 HEAD를 원격 동기화 커밋 위에 일반 push하고 기존 PR의 본문을 갱신해 연결한다.
+  const head = git(worktree, 'rev-parse', 'HEAD');
+  assert.equal(git(worktree, 'merge-base', sync, head), sync);
+  const open = { number: 9, url: 'https://github.com/faysia320/herdr-harness/pull/9', isCrossRepository: false, isDraft: false, headRefOid: sync, baseRefName: 'main', body: 'old body' };
   const calls = [];
   let failing = null, body = null;
   const exec = (cwd, file, args, options) => {
