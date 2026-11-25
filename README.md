@@ -10,7 +10,7 @@
 - QA는 독립 세션에서 원래 AC를 확인하고 `verification.json`에 후보 지문·AC·검사·원인별 결함을 기록한다. PASS는 현재 후보의 `target/sw-verify/latest-qa.json` 실행 증거도 있어야 한다. QA PASS는 업무 DONE이 아니라 게시 대기다. 운영 위험이 아닌 Medium·Low 결함과 QA 환경에서 확인할 수 없는 AC는 PASS를 막지 않고 «남은 검증»으로 넘긴다([QA 남는 한계](#qa-남는-한계와-환경상-확인-불가-ac)).
 - 원인은 code/environment/test/verification/decision으로 나눈다. 코드 결함만 구현 재작업 횟수를 소모한다. 같은 원인이 두 회차 나오면 진단으로 전환하며 `flow-resume ID --evidence <조건이 달라진 근거>`로만 재개한다. 일반 unblock·force로 진단을 건너뛰지 못한다.
 - SW runner의 `--role qa --resume-qa`는 동일한 전체 후보 tree·명령·도구·설치·환경에 대한 QA 기록만 재사용한다. 구현자 기록·실패·DB 등 동적 검사는 재사용하지 않는다. 변경 이후 관련 없는 파일을 임의로 제외하는 부분 캐시는 아직 도입하지 않는다.
-- v2 업무가 독립 QA PASS 후 `publish`에 도달하면 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
+- v2 업무가 독립 QA PASS 후 `publish`에 도달하면, [direct-publish](#명령-하나로-pr-게시)를 연결한 저장소의 Lead는 그 명령 하나로 PR을 올린다. 아직 연결하지 않은 저장소의 Lead는 `node <release>/bin/harness.mjs --binding <binding> publisher-command <ID>`로 게시자의 `worktree`와 `argv`를 조회한다. 같은 업무에 실행 중인 게시자가 없을 때 해당 worktree에서 반환된 인자 배열 그대로 한 세션을 시작하고 저장소 게시자의 PR 모드 지시, QA 후보, 업무별 게시 권한을 전달한다. `publisher-command`는 조회 전용이다. 게시자는 기존 게시 스킬로 커밋 blob과 QA 바이트·경로·Git mode를 대조하고 PR을 만든다. Lead가 `flow-attach-pr ID --pr N`으로 연결한다.
 - `flow-deliver ID`는 실제 PR·CI·main·보호 규칙을 조회한다. `--apply`는 조건을 만족하면 squash 병합하고 실제 MERGED·main 포함·부모·tree를 증명한 뒤 DONE으로 만든다. 누락·미실행 필수 CI, 요구되는 리뷰, 미해결 결정, 후보 이동은 병합을 막는다.
 - `node <release>/bin/watch-delivery.mjs <binding> <ID> [최대 분]`은 Lead 환경을 상속해 모델 없이 30초마다 CI를 확인한다. 서버 보호는 strict up-to-date와 우회 없는 ruleset 또는 관리자 포함 branch protection을 요구한다. DEV-14 후보는 strict가 꺼진 규칙도 조회로 확인되고 필수 검사 이름이 있으면 병합한다(아래 DEV-14). 실패·환경 대기·main 이동은 반환하고 Lead가 필요한 부분만 복구한다. 강제 병합·main 직접 push·배포는 수행하지 않는다.
 - CI 실패·필수 검사 누락·리뷰 조치는 즉시 `delivery-blocked`로 반환한다. `flow-resume --evidence`는 해결된 CI만 다시 확인하고, 코드 수정은 `--stage implement`, 요구사항 변경은 `--stage research`로 보낸다. watcher의 대기 상한 도달은 nonzero이며 완료로 보고하지 않는다.
@@ -18,6 +18,41 @@
 v2의 조사에는 `gpt-6.2-astra`/high, 설계에는 Fable/high, 구현에는 Opus/high(고위험 xhigh), 독립 QA에는 `gpt-6.2-sol`/high를 사용한다. 세 저장소의 PR 게시자는 Codex `gpt-6-luna`/medium이다. 정책은 다음 위임부터 적용한다. 조사·설계·구현·QA의 30/30/60/45분은 진단 점검 시점이며 재작업 횟수만으로 effort를 올리지 않는다. Lead는 기존 세션 모델을 사용하고, CI 대기와 병합 조건 판정은 스크립트가 수행한다.
 
 완료는 Git 병합 증명을 뜻한다. 운영 버전 통합검증·배포·티켓 전이는 별도 기존 절차를 유지한다. 실제 QA 단축 효과와 자동 병합은 fixture 결과만으로 실측 완료라고 부르지 않는다.
+
+### 명령 하나로 PR 게시
+
+`direct-publish <ID>`는 게시 에이전트(모델) 없이 QA 후보 커밋 → push → PR 생성 → `flow-attach-pr` 처리를 한 번에 한다. 검사를 다시 실행하거나 영수증을 발급하지 않으며 병합 판단은 PR CI와 `flow-deliver`가 한다. 공통 부분은 `core/direct-publish.cjs`이고 저장소 어댑터가 자기 Lead 명령으로 연결한다(HH는 연결돼 있다). 명령이 없는 어댑터·이전 release는 `publisher-command`를 그대로 쓴다.
+
+```powershell
+node <release>/bin/harness.mjs --binding <binding> direct-publish <ID>
+```
+
+순서는 게시 자격 → 봉투 → PR 본문 → 후보 대조 → 커밋 → 커밋 대조 → 열린 PR 조회 → push → PR 생성 → 연결이다. 어긋나면 되돌리거나 고치지 않고 `게시 중단(<단계>): <이유> [커밋 …] [PR #…]`로 던지며 CLI는 nonzero로 끝난다. 다시 실행하면 QA 당시 HEAD 바로 위에 이 명령이 만든 커밋(부모·메시지·후보 일치)과 head·본문이 같은 열린 PR을 재사용한다. QA 뒤 다른 커밋이 끼면 최종 tree가 같아도 push 전에 멈춘다. head나 본문이 다른 열린 PR이 있으면 push 전에 멈춘다(재조사 뒤 같은 브랜치 재게시는 Lead가 기존 방식으로 처리한다). push는 업무 브랜치만 보내고 태그를 따라 보내지 않는다(`push.followTags` 무시). 강제 push·병합은 하지 않는다.
+
+**어댑터 계약** — `publish(task, options, hooks)`(동기, 반환 `{pr, url, head, reusedCommit, reusedPr, attached?}`). 어댑터는 자기 Lead 잠금 안에서 등록된 Lead·열린 결정·활성 회차를 확인한 뒤 부른다. 훅은 같은 잠금을 다시 잡는 CLI가 아니라 처리기 함수를 직접 부른다.
+
+| 입력 | 내용 |
+|---|---|
+| `task` | 대장의 v2 업무. `id`·`title`·`worktree`·`branch`·`base`·`candidate`(DEV-14 형식 `head`·`fingerprint`·`paths`)·`runs`·`x_flow` |
+| `options.repository` | `owner/name`. origin push 주소와 같아야 한다 |
+| `options.envelope` | `required` 또는 `none`. 생략할 수 없다 |
+| `options.base`·`trailers` | PR 대상 브랜치(기본 `main`), 커밋 trailer 줄 배열(기본 `Published-by: herdr-harness`) |
+| `options.summary`·`qa` | 기본은 마지막 구현 회차(outcome `ok`)의 `note`와 마지막 QA PASS 회차의 `{round, token}`. 대장 형식이 다르면 덮어쓴다 |
+| `hooks.checkCandidate`·`checkCommitted` | 필수. 저장소의 publish-check(커밋 전/후) 처리기. 어긋나면 던진다 |
+| `hooks.prepare` | 선택. 후보 대조 전에 과정 문서를 보관·제외하는 저장소 명령 |
+| `hooks.envelope` | `required`일 때 승인된 QA 회차의 봉투 한 줄을 돌려준다. `run`(QA token)·`base`·후보 지문이 게시할 커밋과 같아야 한다 |
+| `hooks.body` | 선택. 만든 본문을 받아 최종 본문을 돌려준다. 봉투 줄을 직접 넣어도 되고, 없으면 공통부가 끝에 붙인다. 최종 본문에서 «남은 검증» 줄과 봉투 줄 수를 다시 대조한다 |
+| `hooks.attach` | 선택. PR 번호를 받아 `flow-attach-pr` 처리기를 부른다 |
+
+stage 대상은 `candidate.paths`뿐이다. 후보 밖이나 일부만 stage된 경로가 있으면 멈춘다. 커밋 전 index와 커밋 뒤 tree를 후보의 경로·mode·바이트와 대조하고, 커밋의 부모가 `candidate.head` 하나이며 메시지가 이 명령이 쓴 그대로인지 본다(메시지를 바꾸는 Git 훅이 있으면 멈춘다). 커밋·PR 제목은 업무 제목이다. 본문은 요약, 독립 QA 판정·회차·AC, 실행 검사, 한계, «남은 검증»(`remainingVerification`의 line 그대로), 봉투 순서다. 보고서 문장의 HTML·코드·멘션은 글자로 바꿔 «남은 검증»을 가리지 않는다. 보고서 글에 든 봉투 식별자(`herdr-qa-receipt:v2`)는 화면 표시를 그대로 두고 원문만 끊어 CI 해독기가 실제 봉투 줄만 세게 한다. `hooks.body`가 직접 넣는 글은 바꾸지 않는다.
+
+Python 어댑터는 `node <release>/core/direct-publish.cjs`에 stdin JSON `{task, options, commands}`를 준다. `commands`는 `prepare`·`checkCandidate`·`checkCommitted`·`envelope`·`body`의 argv 배열이고 업무 worktree에서 셸 없이 실행한다(`envelope`는 stdout 한 줄, `body`는 stdin→stdout). 성공하면 `{pr, url, head}` JSON을 출력하고 exit 0, 실패하면 stderr에 이유를 쓰고 exit 2다. 연결은 호출한 어댑터가 돌려받은 `pr`로 직접 한다. 검사 명령이 대장 잠금을 잡으면 안 된다.
+
+저장소 연결은 각 Lead가 새 release binding을 채택한 뒤 한다. 저장소 게시 명령이 검사를 다시 실행하지 않게 한다.
+
+- **SW**: `prepare`=swh 보관 처리, 검사=publish-check 처리기, `envelope: required`(승인 회차의 QA 봉투).
+- **VDP**: `prepare`=archive-artifacts, 검사=check-artifacts와 publish-check 처리기, `envelope`=`x_qa_receipt.envelope`, `body`=`pr-receipt-body.mjs`.
+- **VP**: 위 stdin 형식으로 부르고 기존 경로·승인 검사와 `flow-attach-pr` 처리기를 잇는다.
 
 ### DEV-14 동기화와 병합 증명
 
