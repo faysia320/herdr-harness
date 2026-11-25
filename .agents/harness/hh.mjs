@@ -15,7 +15,7 @@ const optionsByCommand = {
   add: { title: 'string', 'desc-file': 'string', slug: 'string', workflow: 'string', kind: 'string', authorization: 'string', profile: 'string', depends: 'string' },
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string', decision: 'string', revision: 'string' },
-  'publish-check': { committed: 'boolean' }, 'direct-publish': {}, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
+  'publish-check': { committed: 'boolean' }, 'direct-publish': { title: 'string' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
   'flow-close': { evidence: 'string' }, 'flow-close-local': { evidence: 'string' }, 'flow-accept-merged': { pr: 'string', evidence: 'string', source: 'string' },
   'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
@@ -177,7 +177,7 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       return { id: task.id, cleanup: cleanupWorktree(ctx, ledger, task, { retry: true }) };
     }
     if (name === 'flow-attach-pr') return attachPr(ctx, ledger, task, a.pr);
-    if (name === 'direct-publish') return directPublish(ctx, ledger, task, publishExec);
+    if (name === 'direct-publish') return directPublish(ctx, ledger, task, publishExec, a.title);
     return deliver(ctx, ledger, task, name, a);
   });
 }
@@ -241,11 +241,11 @@ function attachPr(ctx, ledger, task, text) {
 
 // 게시 에이전트 없이 커밋·push·PR 생성·연결까지 한 번에 한다. 공통 게시 모듈에 이 어댑터의 게시 검사와 연결 처리기를 넘기며 같은 Lead 잠금 안에서 끝낸다.
 // HH는 과정 문서 보관·QA 봉투·본문 보강을 쓰지 않는다.
-function directPublish(ctx, ledger, task, exec) {
+function directPublish(ctx, ledger, task, exec, title) {
   check(existsSync(join(ctx.binding.release, 'core/direct-publish.cjs')), '고정 release가 direct-publish를 지원하지 않는다. 새 release를 설치한 뒤 다시 실행한다.');
   publishable(ctx, ledger, task);
   assertBinding(ctx);
-  return ctx.release('direct-publish.cjs').publish(task, { repository, envelope: 'none' }, {
+  return ctx.release('direct-publish.cjs').publish(task, { repository, envelope: 'none', ...(title?.trim() ? { title } : {}) }, {
     checkCandidate: () => publicationCheck(ctx, ledger, task.id, false),
     checkCommitted: () => publicationCheck(ctx, ledger, task.id, true),
     attach: number => attachPr(ctx, ledger, task, String(number)),

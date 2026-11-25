@@ -83,7 +83,7 @@ function deliver(input, exec = execute) {
   };
   if (!proofOnly && (git('branch','--show-current')!==branch || (!dev14 && git('rev-parse','HEAD')!==flow.delivery.head))) throw new Error('로컬 게시 후보가 바뀌었다.');
   const number = String(flow.delivery.pr);
-  const fields = 'number,url,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,mergedAt,body';
+  const fields = 'number,url,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,mergedAt,body,title';
   const view = () => JSON.parse(gh('pr','view',number,'--repo',repo,'--json',fields));
   const pr = view();
   const samePR = p => p.number===flow.delivery.pr && p.headRefName===branch && p.baseRefName==='main' && (dev14 ? p.isCrossRepository===false : !p.isCrossRepository);
@@ -218,7 +218,9 @@ function deliver(input, exec = execute) {
   const finalGate=assess(fresh,getChecks());
   if (!finalGate.ready) return {phase:finalGate.blocked?'blocked':'ci',...finalGate};
   // 서버의 보호 규칙도 그대로 적용한다. admin 우회·강제 병합·브랜치 삭제는 하지 않는다.
-  const result=exec(cwd,'gh',['pr','merge',number,'--repo',repo,'--squash','--match-head-commit',pr.headRefOid],true);
+  // squash 커밋 제목은 현재 PR 제목을 쓴다. 커밋이 하나뿐이면 GitHub 기본값이 그 커밋 메시지라 PR 제목을 고쳐도 반영되지 않는다.
+  const subject=String(fresh.title??pr.title??'').trim();
+  const result=exec(cwd,'gh',['pr','merge',number,'--repo',repo,'--squash','--match-head-commit',pr.headRefOid,...(subject?['--subject',subject+' (#'+number+')']:[])],true);
   const after=view();
   const proof=verifyMerged(after);
   if (proof) return proof;

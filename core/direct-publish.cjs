@@ -60,7 +60,8 @@ function publish(task, options, hooks, exec = execute) {
     const qaRun = (task.runs ?? []).filter(r => r.stage === 'qa' && r.outcome === 'PASS').at(-1);
     const qa = options.qa ?? { round: qaRun?.round, token: qaRun?.token };
     const summary = options.summary ?? (task.runs ?? []).filter(r => r.stage === 'implement' && r.outcome === 'ok').at(-1)?.note;
-    const title = oneLine(task.title), trailers = (options.trailers ?? ['Published-by: herdr-harness']).map(oneLine);
+    // 저장소가 커밋·PR 제목 규칙(예: 영문 Conventional Commit)을 따로 쓰면 options.title로 바꾼다.
+    const title = oneLine(options.title ?? task.title), trailers = (options.trailers ?? ['Published-by: herdr-harness']).map(oneLine);
     const message = title + '\n\n' + task.id + '\n독립 QA 회차 ' + qa.token + ' PASS\n후보 지문: ' + task.candidate.fingerprint + '\n\n' + trailers.join('\n') + '\n';
     check(qa.token && summary?.trim() && title, 'PASS한 QA 회차·구현 요약·업무 제목이 필요하다.');
     check(['required', 'none'].includes(options.envelope), '봉투 정책은 required 또는 none이다.');
