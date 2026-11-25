@@ -70,8 +70,10 @@ function resolve(local, task, stage) {
   const role = { ...config.roles[stage], effort: route.effort[stage] ?? config.roles[stage].effort };
   if (task.x_flow?.version === 2) {
     const selected = require('../policy/workflow.json').roles[stage];
-    role.model = selected.model;
-    role.effort = route.canonical === 'high-risk' && stage === 'implement' ? 'xhigh' : selected.effort;
+    // config.roles는 execution.json 기본과 합쳐져 있으므로 저장소가 명시한 예외만 workflow 기본보다 우선한다.
+    const patch = local.execution_overrides?.roles?.[stage] ?? {};
+    role.model = patch.model ?? selected.model;
+    role.effort = patch.effort ?? (route.canonical === 'high-risk' && stage === 'implement' ? 'xhigh' : selected.effort);
   } else if (stage === 'implement') {
     const ladder = config.escalation.effort_ladder;
     role.effort = ladder[Math.min(ladder.indexOf(role.effort) + (task.rework ?? 0) * config.escalation.implement_step_per_rework, ladder.length - 1)];

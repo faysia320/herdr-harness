@@ -96,6 +96,12 @@ function workflow(file, input) {
   const api = require(path.join(b.release, 'core/workflow.cjs'));
   if (input.action === 'create') return api.create(input.kind, input.authorization);
   if (input.action === 'collect') return api.collect(input.flow, input.report, input.candidate);
+  // 게시 권한 없는 업무의 QA PASS 로컬 종결. 호출자는 Lead 잠금 안에서 현재 후보·결정을 확인하고 돌려받은 task·event를 저장한다.
+  if (input.action === 'close-local') {
+    if (!api.closeLocal) throw new Error('고정 release가 로컬 종결을 지원하지 않는다. 새 release를 설치한 뒤 재시도한다.');
+    if (input.task?.project !== undefined && input.task.project !== input.project) throw new Error('업무 프로젝트가 연결과 다르다.');
+    return api.closeLocal(input.task, input, { now: input.now });
+  }
   // options는 새 계획 형식 문구(scopes)와 해소 결정(decisions)을 켜는 명시 입력이다. 이전 release는 무시하므로 features로 먼저 확인한다.
   if (input.action === 'instructions') return api.instructions(input.flow, input.stage, input.candidate, input.options);
   if (input.action === 'features') return { planScopeVersion: api.planScopeVersion ?? null };

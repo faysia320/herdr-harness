@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-const { create, collect, mergeGate, instructions, freezePlan, remainingVerification, missingRemaining, planScopeVersion }=createRequire(import.meta.url)('../core/workflow.cjs');
+const { create, collect, closeLocal, mergeGate, instructions, freezePlan, remainingVerification, missingRemaining, planScopeVersion }=createRequire(import.meta.url)('../core/workflow.cjs');
 const fingerprint='a'.repeat(64);
 const flow=()=>({...create('bug-fix','사용자: 기준 충족 시 자동 병합'),plan:{criteria:['AC1'],checks:['repro']}});
 const report=(kind)=>({version:2,candidate:fingerprint,verdict:kind==='code'?'FAIL':kind?'BLOCKED':'PASS',criteria:[{id:'AC1',status:kind?'unverified':'passed',evidence:'원래 사용자 경로'}],checks:[{id:'repro',command:'node test.mjs',status:kind?'failed':'passed',evidence:'로그'}],findings:kind?[{id:'F1',kind,signature:'same-root',evidence:'재현 명령과 출력',next:'원인 수정'}]:[]});
@@ -22,6 +22,23 @@ test('다른 후보·누락 AC·불완전 PASS를 거부한다',()=>{
  assert.throws(()=>collect(flow(),report(),'b'.repeat(64)),/지문/);
  const missing=report();missing.criteria[0].id='other';assert.throws(()=>collect(flow(),missing,fingerprint),/누락/);
  const bad=report('environment');bad.verdict='PASS';assert.throws(()=>collect(flow(),bad,fingerprint),/PASS/);
+});
+test('권한 없는 업무는 QA PASS 뒤 게시 없이 멈추고 closeLocal로만 DONE이 된다',()=>{
+ const initial={version:2,kind:'bug-fix',phase:'work',authorization:null,failures:[],repairs:0,verification:null,delivery:null};
+ assert.deepEqual(create('bug-fix',null),initial);assert.deepEqual(create('bug-fix'),initial);
+ for(const bad of ['','  ',1,false]) assert.throws(()=>create('bug-fix',bad),/사용자 근거/);
+ const passed=collect({...create('bug-fix'),plan:flow().plan},report(),fingerprint);
+ assert.deepEqual([passed.state,passed.pending,passed.reason],['QA',null,'검증 통과 · 게시 권한 없음 · 로컬 종결 대기']);
+ const task={id:'T-1',project:'p',state:'QA',pending:null,current:null,candidate:{fingerprint},history:[],x_flow:passed.flow};
+ const input={evidence:' 로컬 확인 ',terminal:'t-lead'};
+ const done=closeLocal(task,input,{now:'2026-11-25T00:00:00.000Z'}).task;
+ const closure={kind:'local-only',at:'2026-11-25T00:00:00.000Z',terminal:'t-lead',evidence:'로컬 확인',previousPhase:'publish',qaVerdict:'PASS',published:false,merged:false};
+ assert.deepEqual([done.state,done.x_flow.phase,done.x_flow.delivery,done.x_flow.closure,done.history[0].closure],['DONE','closed',null,closure,closure]);
+ assert.equal(task.state,'QA');
+ const withFlow=patch=>({...task,x_flow:{...task.x_flow,...patch}});
+ for(const bad of [{...task,state:'DONE'},{...task,current:{run:0}},{...task,pending:'qa'},{...task,candidate:{fingerprint:'b'.repeat(64)}},
+  withFlow({authorization:'승인'}),withFlow({delivery:{pr:1}}),withFlow({phase:'work'}),withFlow({verification:{...passed.flow.verification,verdict:'FAIL'}})]) assert.throws(()=>closeLocal(bad,input));
+ assert.throws(()=>closeLocal(task,{...input,evidence:' '}),/evidence/);
 });
 test('head/base 이동·필수 CI 실패·리뷰 차단은 자동 병합 불가',()=>{
  const f=collect(flow(),report(),fingerprint).flow;f.delivery={head:'h',base:'b'};
