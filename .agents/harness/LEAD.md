@@ -75,6 +75,18 @@ BLOCKED 업무의 재조사(2)에도 `--decision KEY --revision N`을 붙이면 
 
 collect가 계획을 거부하면(`checkScopes` 누락, 독립 QA가 실행할 수 없는 항목의 필수 지정, 선언되지 않은 실행 수단(HH-020 이후 선언에서 빠진 `hh-suite` 포함), node-test 행의 와일드카드·전체 suite 명령, follow-up `environment`·`verify`의 링크·이미지 대괄호·꺾쇠·백틱·HTML 엔티티 등) 대장은 바뀌지 않는다. 같은 조사 회차의 verification-plan.json을 고치게 한 뒤 다시 collect한다. 오류 메시지에 원인 검사·AC ID가 있다.
 
+## 명령 하나로 게시와 중단 복구
+
+QA PASS 뒤 게시가 승인됐으면 `node .agents/harness/launch.mjs direct-publish HH-123`을 실행한다. watch-stage가 publish에서 Lead에게 넘긴 뒤에도 같다. 성공 출력의 `pr`·`attached.phase: ci`를 확인하고 `watch-delivery`로 이어간다.
+
+| «게시 중단» 단계 | 조치 |
+|---|---|
+| 게시 자격·QA 영수증 봉투·PR 본문·후보 대조 | 커밋 전이다. 이유를 해소한 뒤 다시 실행한다. 후보가 바뀌었으면 재QA한다. 일부만 stage된 경로는 사람이 확인해 stage를 정리한다 |
+| 커밋·커밋 대조 | pre-commit 훅 실패나 커밋 뒤 남은 변경이다. 출력된 커밋을 확인한다. 이 명령이 만든 커밋은 재실행 때 재사용된다. 부모·커밋 메시지 불일치는 QA 뒤 다른 커밋이 끼었거나 Git 훅이 메시지를 바꾼 것이다. 사람이 원인을 확인해 정리한 뒤 다시 실행한다 |
+| 기존 PR 조회 | head·본문이 다른 열린 PR이 있거나 gh 조회가 실패했다. 본문만 다르면 기존 PR을 확인해 `gh pr edit` 뒤 `flow-attach-pr`로 연결하고, 재조사 뒤 재게시는 기존 게시자 경로를 쓴다 |
+| push·PR 생성 | 원인을 해소한 뒤 다시 실행한다. 강제 push하지 않는다. 만든 PR이 있으면 재실행이 재사용한다 |
+| PR 연결 | PR은 이미 있다. 다시 실행하거나 `flow-attach-pr HH-123 --pr N`을 쓴다 |
+
 ## PR 본문 남은 검증 누락 복구
 
 `publish-check ID`의 `remainingVerification[].line`이 PR 본문 «남은 검증»에 `- [ ] <line>` 목록 줄로 한 줄씩 그대로 보여야 한다. 판정은 화면에 보이는 것이 확실한 줄만 인정한다([공통 규칙](../../README.md#qa와-남은-검증)).

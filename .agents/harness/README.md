@@ -45,7 +45,13 @@ HH는 저장소 전체가 하네스이므로 자체 QA는 전체 suite 대신 «
 
 ## 게시와 병합
 
-Lead는 publish-check ID를 확인한 뒤 공통 launcher의 publisher-command ID가 돌려준 argv를 사용한다. 게시자는 같은 ID의 후보를 확인하고 승인된 파일만 명시적으로 stage한다. 로컬 커밋 뒤 publish-check ID --committed로 Git tree·변경 경로·mode·blob을 대조한다. 이 판정을 얻은 뒤 해당 업무 브랜치만 push하고 main을 대상으로 PR을 만든다. PR 본문에 원래 AC, 독립 QA 회차·후보·실행한 검사(바뀐 파일 시험 명령과 결과), 남은 검증을 기록한다. QA 실행 영수증 줄은 넣지 않는다.
+Lead는 독립 QA PASS 뒤 게시가 승인된 업무를 명령 하나로 게시한다. 게시 에이전트·추가 검사·QA 봉투가 없다.
+
+    node .agents/harness/launch.mjs direct-publish HH-123
+
+후보 커밋 → push → PR 생성 → flow-attach-pr 처리까지 같은 Lead 잠금 안에서 끝내고 phase=ci로 만든다. 어긋나면 «게시 중단(단계): 이유»와 확보한 커밋·PR 번호를 출력하고 종료 코드 2로 멈추며 아무것도 되돌리거나 고치지 않는다. 동작과 본문 형식은 [공통 README](../../README.md#명령-하나로-pr-게시)에 있다. 커밋 trailer는 Published-by: herdr-harness다.
+
+고정 release가 direct-publish를 지원하지 않거나 열린 PR이 이번 게시와 다르면 아래 게시자 경로를 쓴다. Lead는 publish-check ID를 확인한 뒤 공통 launcher의 publisher-command ID가 돌려준 argv를 사용한다. 게시자는 같은 ID의 후보를 확인하고 승인된 파일만 명시적으로 stage한다. 로컬 커밋 뒤 publish-check ID --committed로 Git tree·변경 경로·mode·blob을 대조한다. 이 판정을 얻은 뒤 해당 업무 브랜치만 push하고 main을 대상으로 PR을 만든다. PR 본문에 원래 AC, 독립 QA 회차·후보·실행한 검사(바뀐 파일 시험 명령과 결과), 남은 검증을 기록한다. QA 실행 영수증 줄은 넣지 않는다.
 
 publish-check는 remainingVerification(동결 계획의 후속 확인)과 decisions(이 업무의 해소 결정)를 함께 돌려준다. 게시자는 PR 본문의 «남은 검증» 절에 remainingVerification 각 항목의 line을 `- [ ] <line>` 목록 줄(들여쓰기 0~3칸)로 한 줄씩 그대로 넣고, 이 절을 raw HTML(`<details>` 등)·들여쓴 코드 블록보다 앞에 둔다. 줄을 고치거나 합친 줄, 순서 목록·표시 없는 줄, HTML 주석·속성 안의 줄, 그런 HTML 뒤의 줄은 PR 화면에 보이는지 확정할 수 없어 누락으로 판정된다. 인라인 코드·울타리 코드 안의 `<!--`는 문자 그대로라 판정에 영향이 없다. 판정 규칙은 [공통 README](../../README.md#qa와-남은-검증)를 따른다. 후속 확인이 없으면 이 절의 형식은 기존과 같다. flow-status도 같은 remainingVerification을 보여 준다.
 

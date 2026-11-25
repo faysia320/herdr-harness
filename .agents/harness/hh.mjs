@@ -15,7 +15,7 @@ const optionsByCommand = {
   add: { title: 'string', 'desc-file': 'string', slug: 'string', workflow: 'string', kind: 'string', authorization: 'string', profile: 'string', depends: 'string' },
   next: { go: 'boolean' }, dispatch: {}, collect: {}, decision: { file: 'string', revision: 'string', all: 'boolean' },
   'flow-status': {}, 'flow-resume': { evidence: 'string', stage: 'string', decision: 'string', revision: 'string' },
-  'publish-check': { committed: 'boolean' }, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
+  'publish-check': { committed: 'boolean' }, 'direct-publish': {}, 'flow-attach-pr': { pr: 'string' }, 'flow-deliver': { apply: 'boolean' }, 'flow-prove-merged': {},
   'flow-close': { evidence: 'string' }, 'flow-accept-merged': { pr: 'string', evidence: 'string', source: 'string' },
   'cleanup-worktree': {}, 'archive-tasks': { apply: 'boolean' },
 };
@@ -46,14 +46,14 @@ async function update(ctx, terminal, handler, { recover = false } = {}) {
 const remaining = (ctx, flow) => scoped(ctx) ? ctx.flow({ action: 'remaining', plan: flow?.plan, verification: flow?.verification ?? undefined }) : null;
 
 // delivery·prView는 시험에서 병합 증명·PR 조회 결과만 바꾸는 프로세스 내 주입 지점이다. CLI 실행은 항상 고정 release의 delivery와 gh를 쓴다.
-// acceptMerged도 같은 시험용 주입 지점이다(임시 저장소에 GitHub 원격이 없다). CLI는 고정 release의 accept-merged 판정을 쓴다.
-export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery, prView, acceptMerged } = {}) {
+// acceptMerged와 publishExec(게시의 git·gh 실행)도 같은 시험용 주입 지점이다(임시 저장소에 GitHub 원격이 없다). CLI는 고정 release의 accept-merged 판정을 쓴다.
+export async function main(argv, { cwd = process.cwd(), terminal = process.env.HC_TERMINAL_ID, herdr, bindingFile, delivery, prView, acceptMerged, publishExec } = {}) {
   const [name, ...args] = argv;
   if (name === '--help' || !name) return { commands: Object.keys(optionsByCommand) };
   check(Object.hasOwn(optionsByCommand, name), '알 수 없는 명령: ' + name);
   const optionSpec = Object.fromEntries(Object.entries(optionsByCommand[name]).map(([k, type]) => [k, { type }]));
   const { values: a, positionals: p } = parseArgs({ args, options: optionSpec, allowPositionals: true });
-  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close',
+  const hasId = ['show', 'dispatch', 'collect', 'flow-status', 'publish-check', 'direct-publish', 'flow-attach-pr', 'flow-deliver', 'flow-prove-merged', 'flow-resume', 'flow-close',
     'flow-accept-merged', 'cleanup-worktree'].includes(name);
   if (name !== 'decision') check(p.length === Number(hasId), '명령의 위치 인자가 올바르지 않다.');
   const ctx = context(cwd, herdr);
@@ -175,23 +175,8 @@ export async function main(argv, { cwd = process.cwd(), terminal = process.env.H
       check(task.state === 'DONE', 'DONE 업무만 정리한다.');
       return { id: task.id, cleanup: cleanupWorktree(ctx, ledger, task, { retry: true }) };
     }
-    if (name === 'flow-attach-pr') {
-      const { committed: anchor } = publicationCheck(ctx, ledger, task.id, true);
-      const number = Number(a.pr);
-      check(Number.isSafeInteger(number) && number > 0 && /^[1-9][0-9]*$/.test(a.pr), '--pr에 PR 번호가 필요하다.');
-      const pr = ctx.viewPr(number);
-      check(pr.number === number && pr.state === 'OPEN' && pr.isCrossRepository === false && !pr.isDraft &&
-        pr.headRefName === task.branch && pr.headRefOid === anchor.head && pr.baseRefName === 'main', '원격 PR이 최초 게시 후보와 다르다.');
-      // 후속 확인 0건·기존 계획은 본문을 요구하지 않는다. 연결 뒤 본문을 지우면 병합 직전 게이트(core/delivery.cjs)가 다시 막는다.
-      const missing = scoped(ctx) ? ctx.flow({ action: 'pr-remaining', plan: task.x_flow.plan, body: pr.body ?? null, verification: task.x_flow.verification ?? undefined }) : [];
-      check(!missing.length, 'PR 본문 «남은 검증»에 publish-check의 remainingVerification 줄이 빠졌다: ' + missing.map(m => m.line).join(' / ') +
-        ' (각 line을 HTML·코드 블록보다 앞에 "- [ ] " 목록 항목으로 적는다)');
-      task.x_flow.delivery = { pr: number, url: pr.url, ...anchor, original: anchor };
-      task.x_flow.phase = 'ci';
-      task.updated = now();
-      save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'ci', pr: number });
-      return { id: task.id, phase: 'ci', ...task.x_flow.delivery };
-    }
+    if (name === 'flow-attach-pr') return attachPr(ctx, ledger, task, a.pr);
+    if (name === 'direct-publish') return directPublish(ctx, ledger, task, publishExec);
     return deliver(ctx, ledger, task, name, a);
   });
 }
@@ -207,12 +192,16 @@ function requireDecisionReview(ctx, ledger, task) {
     '. 계획을 바꾸면 flow-resume ' + task.id + ' --stage research --decision KEY --revision N --evidence "변경 근거", 바꾸지 않으면 같은 명령에서 --stage 없이 판정 근거를 기록한다.');
 }
 
-function publicationCheck(ctx, ledger, id, committed) {
-  const task = taskById(ledger, id);
+function publishable(ctx, ledger, task) {
   withoutDecision(ctx, ledger, task);
   check(task.state === 'QA' && !activeRun(task) && task.x_flow.phase === 'publish' && task.x_flow.verification?.verdict === 'PASS',
     '독립 QA를 통과한 게시 대기 업무만 허용한다.');
   requireDecisionReview(ctx, ledger, task);
+}
+
+function publicationCheck(ctx, ledger, id, committed) {
+  const task = taskById(ledger, id);
+  publishable(ctx, ledger, task);
   const anchor = committed ? verifyCommit(ctx, task) : null;
   if (!anchor) {
     const current = candidate(ctx, task);
@@ -221,6 +210,37 @@ function publicationCheck(ctx, ledger, id, committed) {
   const left = remaining(ctx, task.x_flow);
   // HH는 QA 실행 영수증을 쓰지 않는다. PR 본문에는 남은 검증 줄만 넣는다.
   return { allowed: true, id, branch: task.branch, candidate: task.candidate, committed: anchor, ...(left ? { remainingVerification: left } : {}) };
+}
+
+function attachPr(ctx, ledger, task, text) {
+  const { committed: anchor } = publicationCheck(ctx, ledger, task.id, true);
+  const number = Number(text);
+  check(Number.isSafeInteger(number) && number > 0 && /^[1-9][0-9]*$/.test(text), '--pr에 PR 번호가 필요하다.');
+  const pr = ctx.viewPr(number);
+  check(pr.number === number && pr.state === 'OPEN' && pr.isCrossRepository === false && !pr.isDraft &&
+    pr.headRefName === task.branch && pr.headRefOid === anchor.head && pr.baseRefName === 'main', '원격 PR이 최초 게시 후보와 다르다.');
+  // 후속 확인 0건·기존 계획은 본문을 요구하지 않는다. 연결 뒤 본문을 지우면 병합 직전 게이트(core/delivery.cjs)가 다시 막는다.
+  const missing = scoped(ctx) ? ctx.flow({ action: 'pr-remaining', plan: task.x_flow.plan, body: pr.body ?? null, verification: task.x_flow.verification ?? undefined }) : [];
+  check(!missing.length, 'PR 본문 «남은 검증»에 publish-check의 remainingVerification 줄이 빠졌다: ' + missing.map(m => m.line).join(' / ') +
+    ' (각 line을 HTML·코드 블록보다 앞에 "- [ ] " 목록 항목으로 적는다)');
+  task.x_flow.delivery = { pr: number, url: pr.url, ...anchor, original: anchor };
+  task.x_flow.phase = 'ci';
+  task.updated = now();
+  save(ctx, ledger, { event: 'x_flow', task: task.id, phase: 'ci', pr: number });
+  return { id: task.id, phase: 'ci', ...task.x_flow.delivery };
+}
+
+// 게시 에이전트 없이 커밋·push·PR 생성·연결까지 한 번에 한다. 공통 게시 모듈에 이 어댑터의 게시 검사와 연결 처리기를 넘기며 같은 Lead 잠금 안에서 끝낸다.
+// HH는 과정 문서 보관·QA 봉투·본문 보강을 쓰지 않는다.
+function directPublish(ctx, ledger, task, exec) {
+  check(existsSync(join(ctx.binding.release, 'core/direct-publish.cjs')), '고정 release가 direct-publish를 지원하지 않는다. 새 release를 설치한 뒤 다시 실행한다.');
+  publishable(ctx, ledger, task);
+  assertBinding(ctx);
+  return ctx.release('direct-publish.cjs').publish(task, { repository, envelope: 'none' }, {
+    checkCandidate: () => publicationCheck(ctx, ledger, task.id, false),
+    checkCommitted: () => publicationCheck(ctx, ledger, task.id, true),
+    attach: number => attachPr(ctx, ledger, task, String(number)),
+  }, exec);
 }
 
 async function deliver(ctx, ledger, task, name, a) {
