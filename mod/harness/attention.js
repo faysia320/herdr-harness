@@ -3,7 +3,7 @@ import { workflowLabel, workflowPhase } from './logic.js';
 // 사람의 확인에 필요한 정보만 계산한다. 대장 변경·자동 승인·문장 의미 추론은 하지 않는다.
 export const at = (value) => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
 const str = (value) => typeof value === "string" ? value.trim() : "";
-const excerpt = (value) => value.length > 88 ? value.slice(0, 87).trimEnd() + "…" : value;
+const excerpt = (value, max = 88) => value.length > max ? value.slice(0, max - 1).trimEnd() + "…" : value;
 const active = (p) => p.tasks.filter((t) => !t.archived);
 export const projectKey = (p) => JSON.stringify([p.root.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase(), p.projectId]);
 export const seenKey = (p) => `harness.attention.v1.${projectKey(p)}`;
@@ -85,16 +85,20 @@ export function decisions(p) {
   }).sort((a, b) => b.affected.length - a.affected.length || (b.task.priority ?? 0) - (a.task.priority ?? 0) || a.since - b.since);
 }
 
+const MERGE_SHA = /^병합 SHA 확인: ([a-f0-9]{40}|[a-f0-9]{64})$/i;
+// 현재 병합 상태를 만든 마지막 전이인지 확인한다.
+function lastMerge(e, task) {
+  const last = task.history.at(-1);
+  return task.state === "DONE" && task.x_flow?.phase === "merged" && last?.to === "DONE" &&
+    at(last.at) === at(e.at) && last.from === e.from && (last.why ?? "") === (e.why ?? "");
+}
+
 function doneKind(e, task) {
   if (e.x_closure) return "closed";
   if (!workflowPhase(task)) return "qa";
   // SW·VDP가 해당 전이에 쓴 병합 근거는 업무가 다시 열려도 그대로다.
-  if (/^병합 SHA 확인: (?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(e.why ?? "")) return "merged";
   // 구버전 대장의 근거 없는 행에는 현재 상태를 소급하지 않는다. 마지막 전이만 보완한다.
-  const last = task.history.at(-1);
-  if (task.state === "DONE" && task.x_flow.phase === "merged" && last?.to === "DONE" &&
-      at(last.at) === at(e.at) && last.from === e.from && (last.why ?? "") === (e.why ?? "")) return "merged";
-  return "ended";
+  return MERGE_SHA.test(e.why ?? "") || lastMerge(e, task) ? "merged" : "ended";
 }
 
 function kindOf(e, task) {
@@ -107,6 +111,61 @@ function kindOf(e, task) {
 }
 const TITLE = { qa: "로컬 QA 통과", merged: "병합 완료", ended: "업무 종결", failed: "실행 실패", blocked: "사람 확인 필요", waiting: "선행 업무 대기", resolved: "막힘 해소", rework: "QA 재작업", closed: "사용자 결정 종결", decision: "결정 사유 변경", approval: "사람이 남긴 승인 근거", note: "최근 실행 결과" };
 
+// «최근 결과»에는 사용자가 알아야 할 결과만 올린다. 나머지 기록은 업무 카드에서 본다.
+const SHOWN = new Set(["merged", "ended", "closed", "rework", "failed", "blocked", "decision"]);
+
+const TECH = [
+  [/https?:\/\/\S+/gi, " "],
+  [/(?<![A-Za-z])[A-Za-z]:[\\/][^\s,;()"'`]*/g, " "],
+  [/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/gi, " "],
+  // 경로는 빼되 «2/2», «CI/CD», «준비/자원» 같은 짧은 병기는 남긴다.
+  [/[\w.@~*가-힣-]*[\\/][^\s,;()"'`»·]+/g, (x) => /^[A-Z0-9가-힣][\w가-힣]*\/[A-Z0-9가-힣][\w가-힣]*$/.test(x) ? x : " "],
+  [/(?:sha(?:1|256)[:=]\s*)?\b(?:(?=[a-f]*\d)(?=\d*[a-f])[a-f0-9]{7,64}|[a-f0-9]{32,64})\b(?:(?:으로|에서|까지|부터|을|를|이|가|은|는|와|과|의|에|로|도|만)(?![가-힣]))?/gi, " "],
+  [/[\w.-]+\.(?:[cm]?[jt]sx?|jsonl?|md|rs|py|ya?ml|toml|txt|log|lock|html|css|ps1|sh)(?!\w)(?:(?:으로|에서|까지|부터|을|를|이|가|은|는|와|과|의|에|로|도|만)(?![가-힣]))?/gi, " "],
+  [/(?<![\w-])--[a-z][\w-]*(?:=[^\s)]+)?/gi, " "],
+];
+
+// 막힌 사유에서 JSON·경로·SHA 같은 기술 토큰을 붙은 조사와 함께 빼고 80자 이내로 줄인다. 뜻을 새로 만들지 않는다.
+export function plainReason(value) {
+  let text = str(value).replace(/`+/g, "");
+  for (let before; before !== text;) { before = text; text = text.replace(/\{[^{}]*\}|\[[^[\]]*"[^[\]]*\]/g, " "); }
+  text = text.replace(/\{\s*"[\s\S]*$/, " ");
+  const parts = text.split(/\s+\/\s+|;\s+|\r?\n/).map((part) => {
+    let s = part.trim().replace(/^(?:(?:사용자 )?중단|code|test|environment|verification|decision):\s*/i, "");
+    for (const [pattern, to] of TECH) s = s.replace(pattern, to);
+    return s.replace(/\(\s*[,·]?\s*\)|\[[\s,]*\]|«\s*»|"\s*"|'\s*'/g, " ").replace(/\s+/g, " ")
+      .replace(/\s+([,.:;)])/g, "$1").replace(/^[\s,.:;·—–-]+|[\s,:;·—–-]+$/g, "");
+  }).filter((s) => /[가-힣A-Za-z]/.test(s));
+  return excerpt([...new Set(parts)].join(" · "), 80);
+}
+
+// 사용자에게 보여 줄 결과 문장. 원문은 카드를 펼쳤을 때만 보인다.
+function resultText(kind, task, e, body) {
+  const merged = (pr) => `main에 병합됐어요${Number.isInteger(pr) ? ` · PR #${pr}` : ""}`;
+  if (kind === "merged") {
+    // 다시 열린 업무의 예전 병합에 나중 PR 번호를 붙이지 않는다.
+    const delivery = task.x_flow?.delivery, sha = MERGE_SHA.exec(e.why ?? "")?.[1].toLowerCase();
+    const same = sha && typeof delivery?.merge === "string" ? delivery.merge.toLowerCase() === sha : lastMerge(e, task);
+    return merged(same ? delivery?.pr : null);
+  }
+  if (kind === "closed") return "사용자 결정으로 마쳤어요";
+  if (kind === "ended") {
+    if (e.closure?.kind === "merged-accepted") return merged(e.closure.pr);
+    if (e.closure?.kind === "local-only") return "게시 없이 마쳤어요";
+    return e.closure?.kind === "policy-exception" ? "사용자 결정으로 마쳤어요" : "업무를 마쳤어요";
+  }
+  if (kind === "rework") return task.state === "DONE" ? "QA에서 문제가 나와 다시 고쳤어요" : "QA에서 문제가 나와 다시 고치는 중";
+  if (kind === "failed") return "실행이 실패했어요 · Lead 확인 필요";
+  if (kind === "blocked" || kind === "decision") {
+    if (userPaused(task)) return "사용자 요청으로 멈췄어요";
+    // «막힘 해소»를 따로 올리지 않으므로 이미 풀린 확인 요청은 여기서 구분한다.
+    if (task.state !== "BLOCKED") return "확인이 필요했지만 지금은 풀렸어요";
+    const reason = plainReason(body);
+    return `확인이 필요해요${reason ? ` · ${reason}` : ""}`;
+  }
+  return null;
+}
+
 // 사건 파일과 업무 history의 같은 전이는 한 번만 표시한다. 시각이 같아도 내용이 다르면 보존한다.
 export function importantRecords(p) {
   const tasks = new Map(active(p).map((t) => [t.id, t]));
@@ -118,14 +177,15 @@ export function importantRecords(p) {
     const kind = kindOf(e, tasks.get(e.task));
     if (!kind) continue;
     const id = JSON.stringify(["state", e.task, at(e.at), e.from ?? null, e.to, e.why ?? ""]);
-    if (!e.x_closure && records.get(id)?.kind === "closed") continue;
-    add({ id, task: tasks.get(e.task), kind, at: at(e.at), body: str(e.why), from: e.from, to: e.to });
+    const closure = e.closure ?? e.x_closure ?? null, task = tasks.get(e.task), body = str(e.why);
+    if (!closure && records.get(id)?.closure) continue;
+    add({ id, task, kind, at: at(e.at), body, from: e.from, to: e.to, closure, text: resultText(kind, task, e, body) });
   }
   for (const t of tasks.values()) {
     if (t.state === "BLOCKED") {
       // 동일 상태에서 사유가 바뀌어도 새 확인 항목이다. updated만 변하면 같은 항목이다.
       const signature = decisionSignature(t);
-      add({ id: JSON.stringify(["decision", t.id, signature]), task: t, kind: "decision", at: t.updated, body: str(t.reason), signature });
+      add({ id: JSON.stringify(["decision", t.id, signature]), task: t, kind: "decision", at: t.updated, body: str(t.reason), signature, text: resultText("decision", t, {}, t.reason) });
     }
     if (t.approval?.by === "user" && str(t.approval.quote)) {
       add({ id: JSON.stringify(["approval", t.id, t.approval]), task: t, kind: "approval", at: at(t.approval.at), body: t.approval.quote });
@@ -146,10 +206,12 @@ export function changes(p, value, now = Date.now()) {
   const seen = validSeen(value), ids = new Set(seen?.ids ?? []);
   const records = p.attentionRecords ?? importantRecords(p);
   return records.filter((r) => {
+    if (!SHOWN.has(r.kind)) return false;
     // 첫 화면은 최근 하루만. 과거 전체를 새 소식으로 쏟아내지 않는다.
     if (!seen && r.at < now - 86400000) return false;
     if (r.kind === "decision") {
       if ((p.observedAt ?? 0) < (seen?.observedAt ?? 0)) return false;
+      if (waitingOn(r.task, p)) return false;
       // 새로운 막힘은 결정함과 상태 기록으로 전달하고 같은 상태의 사유 변경만 여기 올린다.
       const before = seen?.decisions[r.task.id];
       return Boolean(before && before !== r.signature);
