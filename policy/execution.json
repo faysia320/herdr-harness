@@ -5,7 +5,7 @@
     "research": { "cli": "codex", "fast": false, "sandbox": "danger-full-access" },
     "architect": { "cli": "claude", "fast": false, "permission_mode": "auto" },
     "implement": { "cli": "claude", "fast": false, "permission_mode": "auto" },
-    "qa": { "cli": "codex", "fast": true, "sandbox": "danger-full-access" }
+    "qa": { "cli": "codex", "fast": false, "sandbox": "danger-full-access" }
   },
   "profiles": {
     "simple": { "stages": ["research", "implement", "qa"], "effort": {}, "exclusive": false },
