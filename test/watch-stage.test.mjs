@@ -35,6 +35,18 @@ test('산출물 대기는 30초 뒤 다시 수집하고 hc 판단 불가의 exit
   assert.deepEqual([r.code, r.result.state, r.result.reason, r.sleeps, r.left], [1, 'DONE', '상태 DONE', [30000, 30000], 0]);
 });
 
+test('대장 잠금 충돌은 수집·위임 모두 다음 주기에 다시 시도한다', async () => {
+  const busy = task({ current: { run: 0 } }), lock = err(2, '대장 잠금이 사용 중이다. 종료된 실행이면 소유 PID를 확인한다.');
+  const next = task({ state: 'QA', pending: 'qa' });
+  const r = await run([
+    [show, ok(busy)], [collect, lock], [show, ok(busy)], [show, ok(busy)],
+    [collect, ok({})], [show, ok(next)],
+    [decisions, ok([])], [['dispatch', 'T-1', 'qa'], lock], [show, ok(next)],
+    [decisions, ok([])], [['dispatch', 'T-1', 'qa'], ok({})], [show, ok(task({ state: 'DONE' }))],
+  ]);
+  assert.deepEqual([r.code, r.result.state, r.sleeps, r.left], [1, 'DONE', [30000, 30000], 0]);
+});
+
 test('v2 HH repair는 단계 없이 위임하고 QA PASS 뒤 publish에서 멈춘다', async () => {
   const r = await run([
     [show, ok(task({ state: 'QA', pending: 'implement', x_flow: { phase: 'repair' } }))],
