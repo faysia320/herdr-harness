@@ -8,18 +8,22 @@ import * as context from './context.js';
 // 호스트 경계만 대역으로 바꾸고 실제 load/render/클릭 함수를 실행한다.
 const source = fs.readFileSync(new URL('./main.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export default class Harness', 'class Harness');
 function setup(overrides = {}) {
-  const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [], reads = [];
+  const files = new Map(), store = new Map(), clicks = new Map(), commands = [], texts = [], reads = [], tips = [], nodes = new WeakMap();
   const terminalList = [{ address: 't7', state: 'live', status: 'working', created_ms: 10 }];
   const spaceList = [{ name: 'fixture', active: true, machine: null }], paneList = [];
   const el = () => {
     let id;
+    const node = { id: null, kids: [] };
     const element = new Proxy({}, { get: (_, name) => (...args) => {
-      if (name === 'id') id = args[0];
+      if (name === 'id') id = node.id = args[0];
+      if (name === 'tooltip') tips.push(args[0]);
+      if (name === 'child' || name === 'children') node.kids.push(...args.flat().map((x) => nodes.get(x) ?? x));
       if (name === 'on_click') clicks.set(id, args[0]);
       if (name === 'when' && args[0]) args[1](element);
       if (name === 'child' && typeof args[0] === 'string') texts.push(args[0]);
       return element;
     } });
+    nodes.set(element, node);
     return element;
   };
   const api = { CONTRACT: 1, View: class {}, div: el, svg: el, h_flex: el, v_flex: el,
@@ -32,7 +36,7 @@ function setup(overrides = {}) {
     InputState: { new: () => { let value = ''; return { value: () => value, set_value: (v) => { value = v; }, focus() {}, on() {} }; } },
     Input: { new: () => el() }, exec: async () => ({ code: 1, stdout: '', stderr: '' }), home: () => 'C:/fixture-home', hc: async () => ({ code: 0, stdout: '', stderr: '' }), ...overrides };
   const module = new Function(...Object.keys(api), `${source}; return {Harness, load, normalize};`)(...Object.values(api));
-  return { ...module, files, store, clicks, commands, texts, reads, terminalList, spaceList, paneList,
+  return { ...module, files, store, clicks, commands, texts, reads, tips, tree: (e) => nodes.get(e), terminalList, spaceList, paneList,
     cx: { notify() {}, stop_propagation() {} } };
 }
 const project = { name: 'fixture', root: 'D:/fixture' };
@@ -50,7 +54,12 @@ test('준비·자원 카드는 펼쳤을 때만 읽고, 진행 중인 조회를 
   Object.assign(v, { projects: [p], expanded: new Set() });
   const jobs = [];
   const cx = { ...s.cx, spawn(fn) { jobs.push(fn(cx)); } };
-  v.render(); v.refreshResources(cx); assert.equal(jobs.length, 0);
+  const layout = () => s.tree(v.render()).kids.map((node) => node.id);
+  assert.deepEqual(layout().slice(1), ['harness-list', 'harness-changes', 'harness-resources']);
+  assert.ok(s.texts.includes('준비·자원 ▾'));
+  s.clicks.get('harness-change-toggle')({}, cx);
+  assert.deepEqual(layout().slice(1), ['harness-list', 'harness-changes', 'harness-resources']);
+  v.refreshResources(cx); assert.equal(jobs.length, 0);
   s.clicks.get('harness-resource-toggle')({}, cx);
   v.refreshResources(cx); await Promise.resolve();
   assert.equal(jobs.length, 1);
@@ -457,8 +466,8 @@ test('변화가 많아도 진행 업무가 함께 보이고 펼침·전체 읽�
   const ledger = JSON.parse(s.files.get(ledgerPath));
   ledger.tasks.running = { ...task, id: 'running', title: '현재 진행 업무', state: 'IMPLEMENTING', awaiting: null, blocked_reason: null };
   for (let i = 0; i < 4; i++) {
-    ledger.tasks[`done-${i}`] = { ...task, id: `done-${i}`, state: 'DONE', awaiting: null, blocked_reason: null };
-    events.push({ project: 'fixture', event: 'state', task: `done-${i}`, at: stamp, from: 'QA', to: 'DONE', why: `결과 ${i}` });
+    ledger.tasks[`done-${i}`] = { ...task, id: `done-${i}`, title: `끝난 업무 ${i}`, state: 'DONE', awaiting: null, blocked_reason: null };
+    events.push({ project: 'fixture', event: 'state', task: `done-${i}`, at: stamp, from: 'QA', to: 'READY_TO_IMPLEMENT', why: `code: 결과 원문 ${i}` });
   }
   s.files.set(ledgerPath, JSON.stringify(ledger));
   s.files.set(project.root + '/state/events.jsonl', events.map((e) => JSON.stringify(e)).join('\n'));
@@ -467,14 +476,24 @@ test('변화가 많아도 진행 업무가 함께 보이고 펼침·전체 읽�
   const draw = () => { s.clicks.clear(); s.texts.length = 0; v.render(); };
   const changeCount = () => [...s.clicks.keys()].filter((k) => k?.startsWith('more-change-')).length;
   draw(); assert.equal(changeCount(), 3);
-  assert.ok(s.texts.indexOf('업무 진행') < s.texts.indexOf('알아둘 변화'));
+  assert.ok(s.texts.indexOf('업무 진행') < s.texts.indexOf('최근 결과 4건'));
+  assert.ok(s.texts.some((x) => x.endsWith('최근 결과 4건') && x !== '최근 결과 4건'));
   s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 0);
   assert.equal(attention.decisions(p).length, 1);
   s.clicks.get('harness-change-toggle')({}, s.cx); draw(); assert.equal(changeCount(), 3);
   assert.ok(s.texts.includes('현재 진행 업무')); assert.ok(s.texts.includes('나머지 1건 보기'));
-  assert.ok(s.texts.includes('변화 4건 모두 읽음'));
+  assert.ok(s.texts.includes('모두 확인'));
+  const find = (node, id) => node?.id === id ? node : (node?.kids ?? []).map((x) => find(x, id)).find(Boolean);
   const card = [...s.clicks.keys()].find((k) => k?.startsWith('more-change-'));
-  s.clicks.get(card)({}, s.cx); draw(); assert.ok(s.texts.includes('커밋·PR·병합·배포는 별도 확인'));
+  s.tips.length = 0;
+  const rows = find(s.tree(v.render()), card).kids;
+  const words = (node) => typeof node === 'string' ? [node] : node.kids.flatMap(words);
+  assert.equal(rows.length, 2);
+  assert.equal(words(rows[0])[0], 'QA에서 문제가 나와 다시 고쳤어요');
+  assert.deepEqual(words(rows[1]), ['끝난 업무 0', '· done-0', '확인']);
+  assert.ok(![...s.texts, ...s.tips].some((x) => x.includes('결과 원문')));
+  s.clicks.get(card)({}, s.cx); draw();
+  assert.ok(s.texts.includes('자세히')); assert.ok(s.texts.includes('code: 결과 원문 0'));
   s.clicks.get('harness-more-changes')({}, s.cx); draw(); assert.equal(changeCount(), 4);
   s.clicks.get('harness-more-changes')({}, s.cx); draw(); assert.equal(changeCount(), 3);
   s.clicks.get('read-fixture')({}, s.cx); draw(); assert.equal(changeCount(), 0);
@@ -632,7 +651,7 @@ test('설정 자체를 못 읽으면 표시명과 ID가 달라도 마지막 질�
 test('전체 이력은 로드 때 계산하고 반복 렌더·읽음은 재순회하지 않으며 갱신 시 새 사건을 반영한다', async () => {
   const s = setup(); install(s);
   const past = '2020-01-01T00:00:00Z';
-  const history = Array.from({ length: 2000 }, (_, i) => ({ at: past, from: 'QA', to: 'DONE', why: `과거 결과 ${i}` }));
+  const history = Array.from({ length: 2000 }, (_, i) => ({ at: past, from: 'QA', to: 'READY_TO_IMPLEMENT', why: `과거 결과 ${i}` }));
   const raw = { version: 1, project: 'fixture', tasks: { a: { ...task, state: 'DONE', history } } };
   s.files.set(ledgerPath, JSON.stringify(raw));
   const p = await s.load(project);
@@ -642,7 +661,7 @@ test('전체 이력은 로드 때 계산하고 반복 렌더·읽음은 재순�
   for (let i = 0; i < 3; i++) v.render();
   s.clicks.get('read-fixture')({}, s.cx);
   assert.equal(s.store.get(attention.seenKey(p)).ids.length, 2000);
-  raw.tasks.a.history.push({ at: new Date().toISOString(), from: 'QA', to: 'DONE', why: '새 QA 결과' });
+  raw.tasks.a.history.push({ at: new Date().toISOString(), from: 'QA', to: 'READY_TO_IMPLEMENT', why: '새 QA 결과' });
   s.files.set(ledgerPath, JSON.stringify(raw));
   const updated = await s.load(project);
   assert.equal(updated.attentionRecords.length, 2001);

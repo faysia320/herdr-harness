@@ -62,7 +62,7 @@ function normalize(t) {
     round: run?.round ?? null, rework: t.rework ?? 0, reason: t.blocked_reason ?? null, awaiting: t.awaiting ?? null,
     resume: t.resume_state ?? null, branch: t.branch ?? null, updated: time(t.updated), archived: Boolean(t.archived),
     run: run && { address: run.address, cli: run.cli, model: run.model, outcome: run.outcome ?? null, live: run.status === "running", started: time(run.started) },
-    runs, history: (t.history ?? []).map((h) => ({ at: time(h.at), from: h.from, to: h.to, why: h.why ?? "", x_closure: h.x_closure ?? null })),
+    runs, history: (t.history ?? []).map((h) => ({ at: time(h.at), from: h.from, to: h.to, why: h.why ?? "", x_closure: h.x_closure ?? null, closure: h.closure ?? null })),
   };
 }
 
@@ -611,39 +611,40 @@ export default class Harness extends View {
 
   changeCard(p, r, t) {
     const key = `change-${p.name}-${r.id}`, expanded = this.expanded.has(key);
-    const color = ["qa", "closed", "merged"].includes(r.kind) ? t.done : ["failed", "rework", "decision", "blocked"].includes(r.kind) ? t.blocked : t.muted;
+    const color = ["closed", "merged", "ended"].includes(r.kind) ? t.done : r.kind === "failed" ? t.ansi1 : t.blocked;
     const body = r.body || `${stateLabel(r.from, r.task) ?? "—"} → ${r.to === "DONE" ? r.title : stateLabel(r.to, r.task)}`;
-    return v_flex().id(`more-${key}`).flex_none().min_w(0).py(8).gap(3).border_t(1).border_color(t.border)
+    return v_flex().id(`more-${key}`).flex_none().min_w(0).py(6).gap(2).border_t(1).border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { expanded ? this.expanded.delete(key) : this.expanded.add(key); cx.notify(); })
-      .child(h_flex().gap(6).items_center()
-        .child(div().text_size(11).font_medium().text_color(color).child(r.title))
+      .child(h_flex().min_w(0).gap(6).items_center()
+        .child(div().size(7).flex_none().rounded_full().bg(color))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).font_medium().tooltip(r.text).child(r.text))
+        .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${clock(r.at)} ${expanded ? "▾" : "▸"}`)))
+      .child(h_flex().min_w(0).gap(6).items_center().pl(13).text_size(11).text_color(t.muted)
+        .child(div().min_w(0).truncate().tooltip(r.task.title ?? r.task.id).child(r.task.title ?? r.task.id))
+        .child(div().flex_none().text_color(t.dim).child(`· ${r.task.id}`))
         .child(div().flex_1())
-        .child(div().text_size(10.5).text_color(t.dim).child(`${clock(r.at)}  ${expanded ? "▾" : "▸"}`))
         .when(!p.stale && !this.error, (e) => e.child(this.button(`read-change-${r.id}`, "확인", () => {
           const current = this.currentProject();
           if (!current || current.root !== p.root || current.projectId !== p.projectId || current.stale || this.error) return;
           const record = current.attentionRecords?.find((x) => x.id === r.id);
           if (record) setShared(seenKey(current), recordSnapshot(current, record, Date.now(), shared(seenKey(current))));
         }, t))))
-      .child(div().min_w(0).truncate().font_medium().text_size(12).tooltip(r.task.title ?? r.task.id).child(r.task.title ?? r.task.id))
-      .child(div().text_size(10.5).text_color(t.dim).child(r.task.id))
-      .when(!expanded && Boolean(r.body), (e) => e.child(div().text_size(11).text_color(t.muted).truncate().tooltip(r.body).child(r.body)))
       .when(expanded, (e) => e
-        .child(div().whitespace_normal().text_size(11).text_color(t.muted).child(body))
-        .when(r.kind === "qa", (e) => e.child(div().text_size(10.5).text_color(t.dim).child("커밋·PR·병합·배포는 별도 확인")))
+        .child(div().text_size(10.5).text_color(t.dim).child("자세히"))
+        .child(div().whitespace_normal().text_size(10.5).text_color(t.muted).child(body))
         .child(this.detail(r.task, t)));
   }
 
-  changeReadTools(p, t, records) {
+  changeReadTools(p, t) {
     const seen = validSeen(shared(seenKey(p)));
     return h_flex().flex_wrap().gap(6).items_center()
-      .child(div().text_size(10.5).text_color(t.dim).child(p.stale ? "갱신 실패 · 확인 기준 유지" : seen ? `${ago(seen.at)} 확인` : "최근 24시간"))
-      .when(!p.stale && !this.error, (e) => e.child(this.button(`read-${p.name}`, records.length ? `변화 ${records.length}건 모두 읽음` : "현재까지 확인", () => {
-        // 화면에 적재된 변화만 읽음 처리하며 결정함과 업무 상태는 바꾸지 않는다.
+      .child(div().text_size(10.5).text_color(t.dim).child(p.stale ? "새로 읽지 못했어요" : seen ? `${ago(seen.at)} 확인` : "최근 24시간"))
+      .when(!p.stale && !this.error, (e) => e.child(this.button(`read-${p.name}`, "모두 확인", () => {
+        // 지금 읽어 온 결과만 읽음 처리하며 결정함과 업무 상태는 바꾸지 않는다.
         setShared(seenKey(p), snapshot(p, Date.now(), shared(seenKey(p))));
-      }, t).tooltip("접힌 변화를 포함해 이 저장소의 변화를 모두 확인합니다. 승인하거나 업무를 재개하지 않습니다.")));
+      }, t).tooltip("접혀 있는 결과까지 모두 확인한 것으로 표시해요. 승인하거나 작업을 다시 시작하지는 않아요.")));
   }
 
   refreshResources(cx) {
@@ -685,16 +686,17 @@ export default class Harness extends View {
     };
     // 1초 미만은 ms, 그 이상은 초 단위 소수 한 자리로 보여 준다.
     const pair = values => values ? values.map(v => v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)}초`).join(" / ") : "—";
-    const card = v_flex().flex_none().min_w(0).p(10).gap(6).rounded(8)
-      .bg(open ? t.selected : t.raised).border_1().border_color(open ? t.accent : t.border)
-      .child(div().id("harness-resource-toggle").font_medium().text_size(13).cursor_pointer()
+    const footer = v_flex().id("harness-resources").flex_none().min_w(0).px(14).py(8).gap(6).border_t(1).border_color(t.border)
+      .child(div().id("harness-resource-toggle").font_medium().text_size(12).cursor_pointer()
         .on_click((_e, cx) => {
           this.resourcesOpen = !this.resourcesOpen;
           if (this.resourcesOpen) { this.resourceData = null; this.resourceError = null; this.refreshResources(cx); }
           cx.notify();
         }).child(open ? "준비·자원 ▴" : "준비·자원 ▾"));
-    if (!open) return card;
-    if (!data) return card.child(line(this.resourceError ?? "자원 상태 조회 중…"));
+    if (!open) return footer;
+    if (!data) return footer.child(line(this.resourceError ?? "자원 상태 조회 중…"));
+    // 내용이 길어도 위의 업무 목록과 버튼을 밀어내지 않게 이 안에서 스크롤한다.
+    const card = v_flex().id("harness-resource-list").flex_none().min_w(0).h(180).overflow_y_scrollbar().gap(6);
     card.child(line(`준비 슬롯 · ${slotLabel(data.preparation)}`));
     data.heavy.forEach((s, i) => card.child(line(`시험·빌드 슬롯 ${i + 1} · ${slotLabel(s)}`)));
     card.child(div().pt(4).font_medium().child(`최근 기록 · 종류별 최근 ${data.limit}건을 프로젝트별로 나눔(누계 아님)`));
@@ -720,7 +722,7 @@ export default class Harness extends View {
         if (codes.length) card.child(line(`오류 코드 · ${codes.map(([code, count]) => `${code} ${count}건`).join(" · ")}`));
       }
     }
-    return card;
+    return footer.child(card);
   }
 
   basicAgent(agent, t) {
@@ -769,7 +771,7 @@ export default class Harness extends View {
     const unseen = p ? changes(p, shared(seenKey(p))).length : null;
     const mode = ["unavailable", "loading"].includes(context.kind) ? "연결 확인 필요" : p ? p.stale || this.error ? "하네스 확인 필요" : "하네스 연결" : this.error || this.loading ? "하네스 연결 확인 중" : "기본 브리핑";
     const ready = p && !p.stale && !this.error && p.decisionStatus === "ready";
-    const summary = p ? [ready ? needs ? `내 답변 필요 ${needs}건` : "내 답변 필요 없음" : "결정 상태 확인 필요", p.stale || this.error ? "업무 상태 확인 필요" : null, unseen ? `새 변화 ${unseen}` : null].filter(Boolean).join(" · ")
+    const summary = p ? [ready ? needs ? `내 답변 필요 ${needs}건` : "내 답변 필요 없음" : "결정 상태 확인 필요", p.stale || this.error ? "업무 상태 확인 필요" : null, unseen ? `최근 결과 ${unseen}건` : null].filter(Boolean).join(" · ")
       : ["unavailable", "loading", "none"].includes(context.kind) ? "현재 상태 확인 불가" : `에이전트 ${context.agents.length} · 터미널 확인 ${needs}`;
     return v_flex().flex_none().min_w(0).px(14).py(12).gap(6).border_b(1).border_color(t.border)
       .child(h_flex().gap(8).items_start()
@@ -783,18 +785,20 @@ export default class Harness extends View {
   }
 
   changesFooter(shown, t) {
-    const byProject = new Map(shown.map((p) => [p, changes(p, shared(seenKey(p)))]));
-    const updates = shown.flatMap((p) => byProject.get(p).map((r) => ({ p, r }))).sort((a, b) => b.r.at - a.r.at);
+    const updates = shown.flatMap((p) => changes(p, shared(seenKey(p))).map((r) => ({ p, r }))).sort((a, b) => b.r.at - a.r.at);
     const visible = this.showChanges ? updates : updates.slice(0, 3);
-    return v_flex().flex_none().min_w(0).px(14).py(10).gap(6).border_t(1).border_color(t.border)
+    // 접힌 카드는 두 줄이다. 펼친 카드가 있으면 원문을 읽을 높이를 준다.
+    const opened = visible.some(({ p, r }) => this.expanded.has(`change-${p.name}-${r.id}`));
+    const height = opened ? 220 : Math.min(220, visible.length * 62 + (updates.length > 3 ? 32 : 0));
+    return v_flex().id("harness-changes").flex_none().min_w(0).px(14).py(10).gap(6).border_t(1).border_color(t.border)
       .child(h_flex().flex_wrap().gap(6).items_center()
         .child(h_flex().id("harness-change-toggle").gap(6).items_center().cursor_pointer()
           .on_click((_e, cx) => { this.changesCollapsed = !this.changesCollapsed; cx.notify(); })
-          .child(this.section("알아둘 변화", updates.length, t.muted, t))
+          .child(div().pt(4).pb(2).font_semibold().text_size(12).child(`최근 결과 ${updates.length}건`))
           .child(div().text_size(11).text_color(t.dim).child(this.changesCollapsed ? "▾" : "▴")))
         .child(div().flex_1())
-        .when(shown.length === 1, (e) => e.child(this.changeReadTools(shown[0], t, byProject.get(shown[0])))))
-      .when(!this.changesCollapsed && updates.length > 0, (e) => e.child(v_flex().id("harness-change-list").flex_none().h(Math.min(220, visible.length * 104 + (updates.length > 3 ? 32 : 0))).overflow_y_scrollbar().gap(4)
+        .when(shown.length === 1, (e) => e.child(this.changeReadTools(shown[0], t))))
+      .when(!this.changesCollapsed && updates.length > 0, (e) => e.child(v_flex().id("harness-change-list").flex_none().h(height).overflow_y_scrollbar().gap(4)
         .children(visible.map(({ p, r }) => this.changeCard(p, r, t)))
         .when(updates.length > 3, (e) => e.child(h_flex().child(this.button("harness-more-changes", this.showChanges ? "최근 3건만 보기" : `나머지 ${updates.length - 3}건 보기`, (cx) => {
           this.showChanges = !this.showChanges; cx.notify();
@@ -823,10 +827,10 @@ export default class Harness extends View {
           .child(div().flex_1().min_w(0).truncate().child(report.text)));
       }
     }
-    if (showsLocalResources(context)) body.child(this.resourceCard(t));
     return v_flex().id("harness").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(12)
       .child(this.contextHeader(context, shown, t, overlay))
       .child(body)
-      .when(shown.length > 0, (e) => e.child(this.changesFooter(shown, t)));
+      .when(shown.length > 0, (e) => e.child(this.changesFooter(shown, t)))
+      .when(showsLocalResources(context), (e) => e.child(this.resourceCard(t)));
   }
 }

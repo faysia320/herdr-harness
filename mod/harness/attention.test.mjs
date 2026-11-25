@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decisions, pausedTasks, blockedSummary, importantRecords, changes, snapshot, recordSnapshot, projectKey, digest, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
+import { decisions, pausedTasks, blockedSummary, importantRecords, changes, snapshot, recordSnapshot, projectKey, digest, plainReason, leadTerminal, leadReport, decisionInbox, openRequests, waitingOn } from './attention.js';
 
 const now = Date.parse('2026-11-09T02:00:00Z');
 const task = (id, state, patch = {}) => ({ id, state, title: id, reason: '', awaiting: null, updated: now - 1000, runs: [], history: [], depends: [], ...patch });
@@ -69,7 +69,8 @@ test('event/history 중복은 합치고 같은 시각의 서로 다른 사건은
   const t = task('a', 'DONE', { history: [{ ...e, at: new Date(e.at).toISOString() }] });
   const p = project([t, task('b', 'FAILED')], [e, transition('b', 'IMPLEMENTING', 'FAILED', '실패')]);
   assert.equal(importantRecords(p).length, 2);
-  assert.deepEqual(digest(changes(p, null, now)).map((x) => x.kind).sort(), ['failed', 'qa']);
+  assert.deepEqual(digest(importantRecords(p)).map((x) => x.kind).sort(), ['failed', 'qa']);
+  assert.deepEqual(changes(p, null, now).map((r) => r.kind), ['failed']);
 });
 
 test('updated만 변경되면 새 소식이 아니며 같은 상태의 사유 변경은 다시 보인다', () => {
@@ -123,6 +124,44 @@ test('사건 파일이 사라졌다 돌아와도 이미 확인한 사건을 반�
   const second = snapshot(p, now + 1, first);
   p.events = original;
   assert.equal(changes(p, second, now).length, 0);
+});
+
+test('최근 결과에는 알아야 할 결과만 쉬운 문장으로 남고 막힌 사유의 기술 토큰은 빠진다', () => {
+  const sha = 'a'.repeat(40), v2 = (phase, delivery = null) => ({ version: 2, phase, delivery });
+  const rows = [
+    ['merged', 'DONE', 'QA', `병합 SHA 확인: ${sha}`, { x_flow: v2('merged', { pr: 28, merge: sha }) }, {}, 'main에 병합됐어요 · PR #28'],
+    ['older', 'DONE', 'QA', `병합 SHA 확인: ${sha}`, { x_flow: v2('merged', { pr: 99, merge: 'b'.repeat(40) }) }, {}, 'main에 병합됐어요'],
+    ['accepted', 'DONE', 'QA', '사용자 승인 병합 종결', { x_flow: v2('closed') }, { closure: { kind: 'merged-accepted', pr: 30 } }, 'main에 병합됐어요 · PR #30'],
+    ['local', 'DONE', 'QA', '로컬 종결(게시·병합 없음): 확인', { x_flow: v2('closed') }, { closure: { kind: 'local-only' } }, '게시 없이 마쳤어요'],
+    ['ended', 'DONE', 'QA', '종료', { x_flow: v2('closed') }, {}, '업무를 마쳤어요'],
+    ['closed', 'DONE', 'BLOCKED', '사용자 결정 종결', {}, { x_closure: 'user-decision' }, '사용자 결정으로 마쳤어요'],
+    ['rework', 'READY_TO_IMPLEMENT', 'QA', 'code: 수정', {}, {}, 'QA에서 문제가 나와 다시 고치는 중'],
+    ['failed', 'FAILED', 'IMPLEMENTING', 'exit 1', {}, {}, '실행이 실패했어요 · Lead 확인 필요'],
+    ['blocked', 'BLOCKED', 'QA', '중단: 민감 경로 변경: core/a.cjs / 민감 경로 변경: test/b.mjs', { reason: '중단' }, {}, '확인이 필요해요 · 민감 경로 변경'],
+    ['bare', 'BLOCKED', 'QA', `{"run":{"head":"${sha}"}}`, { reason: '중단' }, {}, '확인이 필요해요'],
+    ['released', 'QA', 'QA', '중단: 환경', {}, {}, '확인이 필요했지만 지금은 풀렸어요'],
+    ['passed', 'DONE', 'QA', 'PASS', {}, {}, null],
+    ['waiting', 'BLOCKED', 'QA', '중단: 선행 대기 B-2: 순서', { reason: '중단: 선행 대기 B-2: 순서' }, {}, null],
+    ['resolved', 'QA', 'BLOCKED', '답변', {}, {}, null],
+  ];
+  const tasks = rows.map(([id, state, from, why, patch, extra]) =>
+    task(id, state, { ...patch, history: [{ ...transition(id, from, id === 'released' ? 'BLOCKED' : state, why), ...extra }] }));
+  tasks.push(task('B-2', 'IMPLEMENTING', { approval: { by: 'user', quote: '승인', at: new Date(now).toISOString() }, runs: [{ status: 'done', note: '메모', ended: new Date(now).toISOString() }] }));
+  const p = project(tasks), shown = changes(p, null, now);
+  assert.deepEqual(Object.fromEntries(shown.map((r) => [r.task.id, r.text])), Object.fromEntries(rows.filter((r) => r[6]).map((r) => [r[0], r[6]])));
+  // 같은 전이의 사건 행에 종결 근거가 없어도 업무 이력의 근거를 잃지 않는다.
+  p.events = [transition('local', 'QA', 'DONE', '로컬 종결(게시·병합 없음): 확인')];
+  assert.equal(importantRecords(p).find((r) => r.task.id === 'local').text, '게시 없이 마쳤어요');
+  // 확인한 막힘이 선행 대기로 바뀐 것은 새 결과가 아니다.
+  const waiting = p.tasks.find((t) => t.id === 'waiting'), reason = waiting.reason;
+  waiting.reason = '범위 선택'; const seen = snapshot(p, now); waiting.reason = reason;
+  assert.equal(changes(p, seen, now).length, 0);
+  // 예전 판이 저장한 version 1 기록(빠진 종류 포함)도 그대로 읽는다.
+  assert.equal(changes(p, { version: 1, at: now, ids: importantRecords(p).map((r) => r.id), decisions: {} }, now).length, 0);
+
+  assert.equal(plainReason('code: `mod/harness/main.js`를 고친 뒤 C:\\Users\\a\\x.log와 0419dfdf를 확인(--apply)'), '고친 뒤 확인');
+  assert.equal(plainReason('동시 실행 2/2 · CI/CD·준비/자원 20261125 확인'), '동시 실행 2/2 · CI/CD·준비/자원 20261125 확인');
+  assert.equal(plainReason('가'.repeat(200)).length, 80);
 });
 
 test('확인 기준은 root/id로 분리되며 직렬화·두 인스턴스에 재사용된다', () => {
