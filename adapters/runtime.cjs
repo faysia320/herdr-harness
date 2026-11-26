@@ -111,6 +111,12 @@ function workflow(file, input) {
     return api.missingRemaining(input.plan, input.body, input.verification);
   }
   if (input.action === 'verify-receipt') return require(path.join(b.release, 'core/verification-receipt.cjs')).verifyReceipt(input.cwd,input.since,input.base,input.receipt);
+  // 발급 뒤 영수증 tree 검증. 발급기가 후보 객체를 남기지 않으므로 어댑터는 tree를 git으로 읽지 않고 이 결과로 대조한다.
+  if (input.action === 'receipt-tree-check') {
+    const api = require(path.join(b.release, 'core/verification-receipt.cjs'));
+    if (!api.receiptTreeCheck) throw new Error('고정 release가 영수증 tree 검사를 지원하지 않는다. 새 release를 설치한 뒤 재시도한다.');
+    return api.receiptTreeCheck({ worktree: input.worktree, base: input.base, tree: input.tree });
+  }
   if (input.action === 'delivery') return require(path.join(b.release, 'core/delivery.cjs')).deliver(input);
   // 사용자 승인 병합 종결. PR·원격 main 조회는 binding의 저장소(cwd)에서 release가 직접 한다. 호출자는 Lead 잠금 안에서
   // 돌려받은 task·event를 저장하고 worktree 정리를 부른다. pr을 생략하면 연결된 PR을 쓰고 브랜치 대조를 면제하지 않는다.
