@@ -2,14 +2,14 @@
 // 모두 통과하고 후보가 그대로일 때만 receipt.json과 PR 본문용 envelope.txt를 쓴다.
 // Docker·이미지·사본 준비에 실패하면 영수증 없이 BLOCKED, 검사가 실패하면 FAIL이다. 하네스 독립 QA와 하네스 밖 PR이 같은 함수를 쓴다.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { arch, release as osRelease, tmpdir } from 'node:os';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { arch, release as osRelease } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { runTree } from './process.js';
 
 const require = createRequire(import.meta.url);
-const { publishTree } = require('./verification-receipt.cjs');
+const { publishTree, privateObjects } = require('./verification-receipt.cjs');
 const { renameRetry } = require('./atomic-rename.cjs');
 const contract = require('./qa-receipt-policy.cjs');
 export const runnerId = { id: 'herdr-qa-receipt', version: 1 };
@@ -24,16 +24,6 @@ function gitIn(cwd, env = process.env) {
     if (r.error || r.status !== 0) throw Error('git ' + args[0] + ' 실패: ' + (r.error?.message ?? r.stderr.trim()));
     return r.stdout.includes('\0') ? r.stdout : r.stdout.trim();
   };
-}
-// 발급 한 번 동안만 쓰는 임시 객체 저장소. 발급기의 모든 git 호출이 이 env로 새 객체를 임시 폴더에 쓰고 원래 objects는 읽기만 한다.
-// 검사 명령에는 넘기지 않는다. 시험이 만드는 별도 저장소의 객체까지 이 폴더에 묶이기 때문이다.
-function privateObjects(worktree) {
-  const shared = resolve(worktree, gitIn(worktree)('rev-parse', '--git-path', 'objects'));
-  const dir = mkdtempSync(join(tmpdir(), 'herdr-proof-')), objects = join(dir, 'objects');
-  mkdirSync(objects);
-  const alternates = [shared, process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES].filter(Boolean).join(delimiter);
-  return { env: { ...process.env, GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates },
-    remove: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) };
 }
 const version = command => {
   const r = spawnSync(command, ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
@@ -143,14 +133,14 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   if (round !== null && !(Number.isSafeInteger(round) && round > 0)) throw Error('round는 양의 정수여야 한다.');
   if (!heavy || !existsSync(heavy)) throw Error('공용 heavy 슬롯 실행기(bin/heavy.mjs)를 찾을 수 없다: ' + heavy);
   const policy = contract.loadPolicy(resolve(worktree, policyFile));
-  // 임시 객체 저장소 격리는 선택이다(HERDR_RECEIPT_PRIVATE_OBJECTS=1). 기본은 공유 objects에 쓴다.
-  // 어댑터(VDP vdh verifyQaReceipt 등)가 발급 뒤 반환 tree를 일반 git으로 읽기 때문이다(HH-027 회귀, VDP-095).
-  const store = env.HERDR_RECEIPT_PRIVATE_OBJECTS === '1' ? privateObjects(worktree) : { env: process.env, remove() {} };
+  // 기본은 임시 객체 저장소 격리다. HERDR_RECEIPT_PRIVATE_OBJECTS=0이면 공유 objects에 쓴다(opt-out).
+  // 어댑터는 발급 뒤 반환 tree를 git으로 읽지 않고 receiptTreeCheck(workflow 'receipt-tree-check')로 검증한다(HH-029).
+  const store = env.HERDR_RECEIPT_PRIVATE_OBJECTS === '0' ? { env: process.env, remove() {} } : privateObjects(worktree);
   try {
     return await issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv: store.env });
   } finally { store.remove(); }
 }
-// 격리를 켜면 반환하는 tree는 해시만 남고 객체는 발급이 끝나면 없다. 그때 객체가 필요한 소비자는 publishTree로 직접 계산한다.
+// 격리하면 반환하는 tree는 해시만 남고 객체는 발급이 끝나면 없다. 소비자는 receiptTreeCheck로 다시 계산해 대조한다.
 async function issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv }) {
   const git = gitIn(worktree, gitEnv);
   const rel = policy.output.replace(/\/$/, '') + '/' + run;

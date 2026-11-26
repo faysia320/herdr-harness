@@ -20,12 +20,13 @@ function seedIndex(cwd, env, base=process.env) {
   if(info.length)git(['update-index','-z','--index-info'],env,Buffer.concat(info));
   if(skip.length)git(['update-index','-z','--skip-worktree','--stdin'],env,Buffer.concat(skip));
 }
-function candidateTree(cwd) {
+// source는 모든 git 호출의 바탕 env다. receiptTreeCheck는 임시 객체 저장소를 가리키는 env를 넘긴다.
+function candidateTree(cwd, source=process.env) {
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'herdr-proof-'));
-  const git=(args,env=process.env)=>execFileSync('git',args,{cwd,env,encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe'],timeout:30000}).trim();
+  const git=(args,env)=>execFileSync('git',args,{cwd,env,encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe'],timeout:30000}).trim();
   try {
-    const env={...process.env,GIT_INDEX_FILE:path.join(scratch,'index')};
-    seedIndex(cwd,env);
+    const env={...source,GIT_INDEX_FILE:path.join(scratch,'index')};
+    seedIndex(cwd,env,source);
     git(['add','-A'],env);
     git(['rm','-r','--cached','-q','--ignore-unmatch','--','docs/tasks','docs/projects'],env);
     // add가 작업 바이트를 기록한 index의 지문이다. 큰 저장소의 기존 blob 존재 여부를 다시 읽지 않는다.
@@ -65,6 +66,30 @@ function publishTree(cwd, base, source=process.env) {
     return git(['write-tree','--missing-ok'],env).trim();
   } finally { fs.rmSync(scratch,{recursive:true,force:true,maxRetries:5,retryDelay:100}); }
 }
+// 발급·검사 한 번 동안만 쓰는 임시 객체 저장소. 이 env의 git 호출은 새 객체를 임시 폴더에 쓰고 원래 objects는 읽기만 한다.
+// 검사 명령에는 넘기지 않는다. 시험이 만드는 별도 저장소의 객체까지 이 폴더에 묶이기 때문이다.
+function privateObjects(worktree) {
+  const shared=path.resolve(worktree,execFileSync('git',['rev-parse','--git-path','objects'],{cwd:worktree,encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe'],timeout:30000}).trim());
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'herdr-proof-')),objects=path.join(dir,'objects');
+  fs.mkdirSync(objects);
+  const alternates=[shared,process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES].filter(Boolean).join(path.delimiter);
+  return {env:{...process.env,GIT_OBJECT_DIRECTORY:objects,GIT_ALTERNATE_OBJECT_DIRECTORIES:alternates},
+    remove:()=>fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100})};
+}
+// 어댑터용 발급 뒤 tree 검증. 발급기는 후보 객체를 임시 저장소에 쓰고 지우므로 반환 tree를 git으로 읽지 않는다.
+// 같은 방식의 임시 저장소에서 v2 publishTree와 v1 candidateTree를 다시 계산해 비교하고 끝나면 지운다. 공유 objects·실제 index는 바꾸지 않는다.
+// match: 재계산 v2 tree가 영수증 tree와 같다. outside: v1↔v2 차이 중 과정 문서(docs/tasks·docs/projects) 밖 경로.
+// binding: base(영수증의 base 커밋 SHA) 대비 재계산 v2 tree의 후보 지문(paths·digest·count). 영수증 candidate와 대조한다.
+function receiptTreeCheck({worktree, base, tree}) {
+  const {candidateBinding}=require('./qa-receipt-policy.cjs');
+  const store=privateObjects(worktree);
+  try {
+    const git=(...args)=>{const out=execFileSync('git',args,{cwd:worktree,env:store.env,encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe'],maxBuffer:64<<20,timeout:30000});return out.includes('\0')?out:out.trim();};
+    const publish=publishTree(worktree,base,store.env),v1=candidateTree(worktree,store.env);
+    const outside=git('diff-tree','-r','--no-renames','--name-only','-z',v1,publish).split('\0').filter(p=>p&&!/^docs\/(tasks|projects)\//.test(p));
+    return {match:publish===tree,tree:publish,outside,binding:candidateBinding(git,base,base,publish)};
+  } finally { store.remove(); }
+}
 function verifyReceipt(cwd, since, base, receipt = 'target/sw-verify/latest-qa.json') {
   // 어댑터가 지정한 저장소 내부 runner 경로만 읽는다. 기존 SW 호출의 기본 경로는 유지한다.
   if (typeof receipt !== 'string' || !/^target\/[a-z0-9-]+\/latest-qa\.json$/.test(receipt)) throw new Error('QA runner 영수증 경로가 올바르지 않다.');
@@ -75,4 +100,4 @@ function verifyReceipt(cwd, since, base, receipt = 'target/sw-verify/latest-qa.j
     || r.tree!==candidateTree(cwd)) throw new Error('현재 후보의 독립 QA runner 증거가 없거나 불완전하다.');
   return {tree:r.tree,completedAt:r.completedAt,checks:r.checks};
 }
-module.exports={candidateTree,publishTree,verifyReceipt};
+module.exports={candidateTree,publishTree,privateObjects,receiptTreeCheck,verifyReceipt};

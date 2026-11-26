@@ -409,7 +409,24 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 
 ### 발급기의 임시 폴더와 공유 객체
 
-영수증 발급기는 후보 tree를 계산할 때 공용 temp의 `herdr-proof-*` 폴더(임시 index)를 만들고 지우며, 새 Git 객체는 기본적으로 worktree가 공유하는 `.git/objects`에 쓴다. 어댑터(예: VDP `verifyQaReceipt`)가 발급 뒤 반환 tree를 일반 git으로 읽기 때문이다. `HERDR_RECEIPT_PRIVATE_OBJECTS=1`이면 발급 한 번 동안만 쓰는 임시 객체 저장소에 쓰고 발급 뒤 지운다. 이때 반환 tree의 객체가 필요한 소비자는 `publishTree`로 다시 계산해야 한다(HH-027, 기본값 아님). 이 temp 폴더는 발급기 소유 동작이므로 QA는 외부 변경으로 보지 않는다. 실제 index·작업 파일·ref는 발급기의 후보 tree 계산이 바꾸지 않으며, 이런 변화까지 예외로 두지 않는다. 강제 종료로 남은 `herdr-proof-*` 폴더는 지워도 된다.
+영수증 발급기는 후보 tree를 계산할 때 공용 temp의 `herdr-proof-*` 폴더(임시 index와 임시 Git 객체 저장소)를 만들고 지운다. 기본적으로 새 Git 객체는 발급 한 번 동안만 쓰는 임시 객체 저장소에 쓰고 발급 뒤 지우며, worktree가 공유하는 `.git/objects`는 읽기만 한다. `HERDR_RECEIPT_PRIVATE_OBJECTS=0`이면 예전처럼 공유 `.git/objects`에 쓴다(opt-out, HH-029). 이 temp 폴더와 객체 쓰기는 발급기 소유 동작이므로 QA는 외부 변경으로 보지 않는다. 실제 index·작업 파일·ref는 발급기의 후보 tree 계산이 바꾸지 않으며, 이런 변화까지 예외로 두지 않는다. 강제 종료로 남은 `herdr-proof-*` 폴더는 지워도 된다.
+
+### 어댑터 계약: 발급 뒤 tree 검증
+
+발급기가 돌려준 `tree`(영수증 `receipt.tree`)는 해시만 남고 객체는 없다. 어댑터는 발급 뒤 이 tree를 `git diff-tree`·`cat-file`·`candidateBinding` 등으로 직접 읽지 않는다(`bad object`). 대신 공통 API `receiptTreeCheck({ worktree, base, tree })`(`core/verification-receipt.cjs`)를 쓴다. 이 API도 같은 방식의 임시 객체 저장소에서 v2 `publishTree`와 v1 `candidateTree`를 다시 계산하고 끝나면 지우므로 공유 objects·실제 index를 바꾸지 않는다. binding으로 고정한 release에서는 `adapters/runtime.cjs`의 workflow 동작 `receipt-tree-check`로 부른다.
+
+```js
+const r = runtime.workflow(bindingFile, { project, stateDir, action: 'receipt-tree-check', worktree, base: receipt.base, tree: receipt.tree });
+// r = { match, tree, outside: [...], binding: { base, paths, digest, count } }
+if (!r.match || r.outside.length || r.binding.digest !== receipt.candidate.digest || r.binding.count !== receipt.candidate.count)
+  throw Error('QA 영수증 후보 불일치');
+```
+
+- `match`: 다시 계산한 v2 tree가 `tree`와 같다. 없는 SHA를 넘겨도 Git으로 읽지 않으므로 `false`다.
+- `outside`: v1 `candidateTree` ↔ v2 tree 차이 중 과정 문서(`docs/tasks/`·`docs/projects/`) 밖 경로. 비어 있어야 한다.
+- `binding`: `candidateBinding(base, base, v2 tree)` 결과(`paths`·`digest`·`count`). 영수증 `candidate`와 같아야 한다. `base`는 영수증의 40자리 base 커밋 SHA다.
+
+고정 release에 이 API가 없으면 `고정 release가 영수증 tree 검사를 지원하지 않는다`로 거부한다. 어댑터를 이 API로 옮긴 뒤 격리 기본값이 든 release를 설치한다.
 
 ### 후보 지문
 
