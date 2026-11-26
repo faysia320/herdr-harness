@@ -71,8 +71,9 @@ function fixture(t, mainPath='docs/readme.md', opts={}) {
     }
     const call=args.join(' ');
     if (call.startsWith('pr view')) state.onView?.(++state.views);
-    const h=state.finalHead??tip('topic'), b=tip('main');
+    const h=state.finalHead??tip('topic'), b=state.staleBase??tip('main');
     const link='https://fixture.invalid/jobs/42';
+    if (call.startsWith('api -X PATCH') && call.endsWith('pulls/7 -f base=main')) { state.baseRefreshes=(state.baseRefreshes??0)+1; state.staleBase=null; return result({}); }
     if (call.startsWith('repo view')) return result({nameWithOwner:'fixture/dev14'});
     if (call.startsWith('api ') && call.includes('/branches/main/protection')) return result({required_status_checks:{strict:state.strict,checks:[{context:'CI',app_id:42}]},enforce_admins:{enabled:true}});
     if (call.endsWith('/rules/branches/main')) return result([]);
@@ -97,6 +98,10 @@ function fixture(t, mainPath='docs/readme.md', opts={}) {
 
 test('독립 main 이동 두 번, 새 head CI·리뷰·권한을 확인하고 한 번만 squash한다',t=>{
   const f=fixture(t);
+  // GitHub이 PR base SHA를 늦게 갱신하면 apply가 같은 base로 다시 지정해 갱신을 요청하고 기다린다. 조회만 하는 호출은 요청하지 않는다.
+  f.state.staleBase='0'.repeat(40);
+  assert.match(f.query({apply:false}).reasons[0],/PR base 갱신 대기/); assert.equal(f.state.baseRefreshes,undefined);
+  assert.match(f.query().reasons[0],/PR base 갱신 대기/); assert.deepEqual([f.state.baseRefreshes,f.state.staleBase,f.state.pushes],[1,null,0]);
   assert.match(f.query({apply:false}).reasons[0],/동기화 가능/);
   assert.equal(f.query({dev14:{candidate:f.input.dev14.candidate}}).phase,'blocked');
   assert.equal(f.query({proofOnly:true,apply:false}).phase,'not-merged');

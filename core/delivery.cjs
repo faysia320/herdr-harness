@@ -161,7 +161,11 @@ function deliver(input, exec = execute) {
   if (dev14) {
     if (pr.state!=='OPEN' || pr.isDraft || !['ci','merged'].includes(flow.phase)) return {phase:'blocked',reasons:['열린 게시 후보가 아니다.']};
     if (apply && dev14.mergeAuthorized!==true) return {phase:'blocked',reasons:['업무별 동기화·병합 권한 확인 필요']};
-    if (main!==pr.baseRefOid) return {phase:'ci',ready:false,reasons:['원격 main과 PR base 갱신 대기']};
+    if (main!==pr.baseRefOid) {
+      // GitHub은 base 브랜치가 움직여도 열린 PR의 base SHA를 한참 갱신하지 않을 수 있다(HH-027 #36). 같은 base로 다시 지정해 갱신을 요청하고 다음 확인을 기다린다.
+      if (apply) exec(cwd,'gh',['api','-X','PATCH',`repos/${repo}/pulls/${number}`,'-f',`base=${pr.baseRefName}`],true);
+      return {phase:'ci',ready:false,reasons:['원격 main과 PR base 갱신 대기']};
+    }
     const history=syncHistory(git,publication,pr.headRefOid,main);
     if (history.reasons.length) return {phase:'revalidate',reasons:history.reasons};
     if (!history.heads.has(git('rev-parse','HEAD'))) throw new Error('로컬 HEAD는 검증된 게시·동기화 계보에 없다.');
