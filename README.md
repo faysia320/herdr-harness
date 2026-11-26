@@ -409,7 +409,7 @@ CI는 최소 필수 검사만 한다. 전체 시험은 개발·독립 QA 단계�
 
 ### 발급기의 임시 폴더와 공유 객체
 
-영수증 발급기는 발급 한 번 동안 공용 temp의 `herdr-proof-*` 폴더(임시 index·임시 객체 저장소)만 쓰고 발급 뒤 지운다(`herdr-proof-*` temp는 발급기가 만들고 지움). 발급기의 git 호출은 새 객체를 임시 저장소에 쓰고 worktree가 공유하는 `.git/objects`에는 쓰지 않으므로, 반환한 tree 해시의 객체가 필요한 소비자는 `publishTree`로 다시 계산한다. 이 temp 폴더는 발급기 소유 동작이므로 QA는 외부 변경으로 보지 않는다. 실제 index·작업 파일·ref는 발급기의 후보 tree 계산이 바꾸지 않으며, 이런 변화까지 예외로 두지 않는다. 강제 종료로 남은 `herdr-proof-*` 폴더는 지워도 된다.
+영수증 발급기는 후보 tree를 계산할 때 공용 temp의 `herdr-proof-*` 폴더(임시 index)를 만들고 지우며, 새 Git 객체는 기본적으로 worktree가 공유하는 `.git/objects`에 쓴다. 어댑터(예: VDP `verifyQaReceipt`)가 발급 뒤 반환 tree를 일반 git으로 읽기 때문이다. `HERDR_RECEIPT_PRIVATE_OBJECTS=1`이면 발급 한 번 동안만 쓰는 임시 객체 저장소에 쓰고 발급 뒤 지운다. 이때 반환 tree의 객체가 필요한 소비자는 `publishTree`로 다시 계산해야 한다(HH-027, 기본값 아님). 이 temp 폴더는 발급기 소유 동작이므로 QA는 외부 변경으로 보지 않는다. 실제 index·작업 파일·ref는 발급기의 후보 tree 계산이 바꾸지 않으며, 이런 변화까지 예외로 두지 않는다. 강제 종료로 남은 `herdr-proof-*` 폴더는 지워도 된다.
 
 ### 후보 지문
 

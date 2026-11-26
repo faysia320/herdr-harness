@@ -99,7 +99,7 @@ test('PASS: 정책의 두 OS를 heavy 슬롯에서 하나씩 실행하고 영수
   assert.deepEqual(docs.receipt.results.map(x => x.platform + '/' + x.check), ['windows/suite', 'windows/docs', 'linux/suite']);
 });
 
-test('발급기는 임시 객체 저장소만 쓰고 지운다: 연결 worktree·빈 실제 index에서도 공유 objects와 tree 해시가 그대로다', async t => {
+test('격리를 켜면 발급기는 임시 객체 저장소만 쓰고 지운다: 연결 worktree·빈 실제 index에서도 공유 objects와 tree 해시가 그대로다', async t => {
   const r = repo(t), temp = mkdtempSync(join(tmpdir(), 'hh-qa-temp-')), keys = ['TEMP', 'TMP', 'TMPDIR'], saved = keys.map(key => process.env[key]);
   t.after(() => rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const cwd = join(temp, 'linked'), scratch = join(temp, 'scratch');
@@ -110,6 +110,7 @@ test('발급기는 임시 객체 저장소만 쓰고 지운다: 연결 worktree�
   const before = objects(), runs = [];
   t.after(() => keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }));
   for (const key of keys) process.env[key] = scratch;
+  process.env.HERDR_RECEIPT_PRIVATE_OBJECTS = '1'; t.after(() => delete process.env.HERDR_RECEIPT_PRIVATE_OBJECTS);
   for (const empty of [false, true]) {
     if (empty) assert.equal(spawnSync('git', ['read-tree', '--empty'], { cwd, windowsHide: true }).status, 0);
     runs.push(await issue({ cwd, base: r.base }, fake()));
