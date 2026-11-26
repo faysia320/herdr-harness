@@ -92,6 +92,22 @@ test('v2는 workflow 기본 → 저장소 예외 → 업무 예외 순서로 mod
   assert.throws(() => pick('implement', { overrides: { implement: { model: 'claude-opus-5-5', reason: '업무 예외' } } }), /제공자/);
 });
 
+test('업무별 예외로 단계 CLI를 claude↔codex 전환하면 새 CLI의 실행 옵션·스킬 경로를 쓰고 Fast는 끈다', () => {
+  const qa = resolve(local(), { overrides: { qa: { cli: 'claude', model: 'claude-opus-5-5', effort: 'high', reason: 'Codex 필터 차단으로 이 업무 QA만 Opus' } } }, 'qa');
+  assert.deepEqual([qa.cli, qa.model, qa.effort, qa.fast, qa.permission_mode, qa.sandbox], ['claude', 'claude-opus-5-5', 'high', false, 'auto', undefined]);
+  assert.deepEqual(qa.argv.slice(0, 7), ['claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--permission-mode', 'auto']);
+  assert.equal(JSON.parse(qa.argv[qa.argv.indexOf('--settings') + 1]).fastMode, false);
+  const c = { ...local(), roles: { ...local().roles, qa: { skill: '.agents/skills/qa/SKILL.md', invoke: '$qa' } } };
+  const moved = resolve(c, { overrides: { qa: { cli: 'claude', model: 'claude-opus-5-5', reason: '전환' } } }, 'qa');
+  assert.deepEqual([moved.skill, moved.invoke], ['.claude/skills/qa/SKILL.md', '/qa']);
+  const impl = resolve(local(), { overrides: { implement: { cli: 'codex', model: 'gpt-6.2-sol', reason: '전환' } } }, 'implement');
+  assert.deepEqual([impl.cli, impl.sandbox, impl.permission_mode, impl.argv[0]], ['codex', 'danger-full-access', undefined, 'codex']);
+  assert.throws(() => resolve(local(), { overrides: { qa: { cli: 'claude', reason: '모델 없음' } } }, 'qa'), /모델도 함께/);
+  assert.throws(() => resolve(local(), { overrides: { qa: { cli: 'claude', model: 'gpt-6.2-sol', reason: '제공자 불일치' } } }, 'qa'), /제공자/);
+  assert.throws(() => resolve(local(), { overrides: { qa: { cli: 'claude', model: 'claude-opus-5-5' } } }, 'qa'), /사유/);
+  assert.throws(() => resolve(local(), { overrides: { qa: { cli: 'gemini', model: 'x', reason: 'r' } } }, 'qa'), /codex 또는 claude/);
+});
+
 test('프로젝트별 변경은 사유를 가진 실행 예외만 허용하고 기존 중복 설정은 거부한다', () => {
   const c = local(); c.execution_overrides = { reason: '명시적 비용 예외', roles: { implement: { fast: false, effort: 'medium' } } };
   assert.equal(resolve(c, {}, 'implement').fast, false);

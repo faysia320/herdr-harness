@@ -69,11 +69,23 @@ function resolve(local, task, stage) {
   if (!route) fail(`알 수 없는 실행 프로필: ${profile}`);
   if (!Number.isInteger(task.rework ?? 0) || (task.rework ?? 0) < 0) fail('재작업 횟수가 올바르지 않다.');
   const override = task.overrides?.[stage] ?? {};
-  if (!object(override) || Object.keys(override).some((k) => !['model', 'effort', 'reason'].includes(k))) fail('업무별 예외 형식이 올바르지 않다.');
-  if ((override.model != null || override.effort != null) && (typeof override.reason !== 'string' || !override.reason.trim())) fail('업무별 모델·effort 변경에는 사유가 필요하다.');
+  if (!object(override) || Object.keys(override).some((k) => !['cli', 'model', 'effort', 'reason'].includes(k))) fail('업무별 예외 형식이 올바르지 않다.');
+  if ((override.cli != null || override.model != null || override.effort != null) && (typeof override.reason !== 'string' || !override.reason.trim())) fail('업무별 CLI·모델·effort 변경에는 사유가 필요하다.');
   // 공통 역할 → 프로필 effort → 저장소 예외 → 업무 예외 순서다. x_flow 없는 조회 입력도 v2 정책으로 해석한다.
   const role = { ...config.roles[stage] };
   role.effort = local.execution_overrides?.roles?.[stage]?.effort ?? route.effort[stage] ?? role.effort;
+  if (override.cli != null && override.cli !== role.cli) {
+    // 업무별 CLI 전환(예: 공급자 필터로 막힌 QA만 다른 CLI로). 모델은 새 CLI의 것을 함께 지정해야 하고 Fast는 끈다.
+    if (!['codex', 'claude'].includes(override.cli)) fail('업무별 CLI는 codex 또는 claude다.');
+    if (override.model == null) fail('업무별 CLI를 바꾸면 그 CLI의 모델도 함께 지정한다.');
+    role.cli = override.cli;
+    role.fast = false;
+    if (role.cli === 'claude') { role.permission_mode = 'auto'; delete role.sandbox; }
+    else { role.sandbox = defaults.roles[stage].cli === 'codex' ? defaults.roles[stage].sandbox : 'danger-full-access'; delete role.permission_mode; }
+    const provider = role.cli === 'codex' ? '.agents' : '.claude';
+    if (typeof role.skill === 'string') role.skill = role.skill.replace(/^\.(?:agents|claude)\/skills\//, `${provider}/skills/`);
+    if (typeof role.invoke === 'string') role.invoke = role.invoke.replace(/^[$/]/, role.cli === 'codex' ? '$' : '/');
+  }
   if (override.model != null) role.model = override.model;
   if (override.effort != null) role.effort = override.effort;
   roleCheck(role);
