@@ -143,12 +143,14 @@ export async function issueReceipt({ worktree, base, run, round = null, heavy, r
   if (round !== null && !(Number.isSafeInteger(round) && round > 0)) throw Error('round는 양의 정수여야 한다.');
   if (!heavy || !existsSync(heavy)) throw Error('공용 heavy 슬롯 실행기(bin/heavy.mjs)를 찾을 수 없다: ' + heavy);
   const policy = contract.loadPolicy(resolve(worktree, policyFile));
-  const store = privateObjects(worktree);
+  // 임시 객체 저장소 격리는 선택이다(HERDR_RECEIPT_PRIVATE_OBJECTS=1). 기본은 공유 objects에 쓴다.
+  // 어댑터(VDP vdh verifyQaReceipt 등)가 발급 뒤 반환 tree를 일반 git으로 읽기 때문이다(HH-027 회귀, VDP-095).
+  const store = env.HERDR_RECEIPT_PRIVATE_OBJECTS === '1' ? privateObjects(worktree) : { env: process.env, remove() {} };
   try {
     return await issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv: store.env });
   } finally { store.remove(); }
 }
-// 반환하는 tree는 해시만 남고 객체는 발급이 끝나면 없다. 객체가 필요한 소비자는 publishTree로 직접 계산한다.
+// 격리를 켜면 반환하는 tree는 해시만 남고 객체는 발급이 끝나면 없다. 그때 객체가 필요한 소비자는 publishTree로 직접 계산한다.
 async function issue({ worktree, base, run, round, heavy, release, policy, hostOs, exec, env, timeout, now, gitEnv }) {
   const git = gitIn(worktree, gitEnv);
   const rel = policy.output.replace(/\/$/, '') + '/' + run;
